@@ -184,3 +184,14 @@ type Diagnostics struct {
 	Revision string            `json:"revision,omitempty"`
 	Checks   []DiagnosticCheck `json:"checks"`
 }
+
+type NodeTestResult struct {
+	NodeID    string    `json:"node_id"`
+	Name      string    `json:"name"`
+	Success   bool      `json:"success"`
+	Stage     string    `json:"stage"`
+	Detail    string    `json:"detail"`
+	Target    string    `json:"target"`
+	LatencyMS int64     `json:"latency_ms"`
+	TestedAt  time.Time `json:"tested_at"`
+}

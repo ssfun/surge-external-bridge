@@ -943,6 +943,39 @@ func (a *App) StopEngine() error {
 	return err
 }
 
+func (a *App) RestartEngine() error {
+	a.applyMu.Lock()
+	defer a.applyMu.Unlock()
+	if a.engine.Status().State != "running" {
+		return errors.New("Engine is not running; use start instead")
+	}
+	a.mu.RLock()
+	applied := clonePtr(a.state.Applied)
+	config := clone(a.config)
+	safeMode := a.state.SafeMode
+	a.mu.RUnlock()
+	if safeMode {
+		return errors.New("Engine is in safe mode; apply a confirmed draft to recover")
+	}
+	if applied == nil || len(applied.Nodes) == 0 {
+		return errors.New("there is no applied revision")
+	}
+	compiled, err := a.compiler.Compile(config, applied)
+	if err != nil {
+		return err
+	}
+	if err := a.engine.Apply(applied, compiled, revisionInbound(config, applied)); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.state.AutoStart = true
+	a.state.LastError = ""
+	a.addEventLocked("info", fmt.Sprintf("Engine restarted with applied revision: %s", applied.ID))
+	err = a.store.SaveState(&a.state)
+	a.mu.Unlock()
+	return err
+}
+
 func (a *App) RedactedDraftConfig() ([]byte, error) {
 	a.mu.RLock()
 	config := clone(a.config)

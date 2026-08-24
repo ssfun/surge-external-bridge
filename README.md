@@ -180,9 +180,11 @@ xattr -d com.apple.quarantine vless2surge-darwin-arm64
 
 1. 添加订阅 URL、导入 Clash `proxy-providers`，或粘贴 VLESS/Base64/Clash `proxies` 内容。
 2. 刷新订阅并检查保留、丢弃节点及原因。
-3. 校验并应用第一份 revision。
-4. 复制总览中的 Surge `policy-path` URL。
-5. 在 Surge 中加入策略组并测速。
+3. 校验并应用第一份配置版本。
+4. 在“节点”页面发起实测；测试会经过当前本地网关，并区分认证、VLESS 出站、TLS 和 HTTP 阶段。
+5. 复制总览中的 Surge `policy-path` URL，在 Surge 中加入策略组并测速。
+
+配置台将“网关”“配置”“诊断”“日志”拆分为独立页面。网关页面负责启动、重启和停止 Embedded Engine；部署地址、访问保护与系统服务在“配置”页面管理。
 
 示例：
 
@@ -209,7 +211,7 @@ macOS 使用用户级 LaunchAgent，Linux 默认使用 systemd user service：
 ./vless2surge service uninstall
 ```
 
-也可以在配置台“网关 → 参数”中管理。服务只托管一个 vless2surge 进程，不要求系统安装 sing-box。
+也可以在配置台“配置 → 运行与维护”中管理。服务只托管一个 vless2surge 进程，不要求系统安装 sing-box。
 
 安装流程会先把数据目录解析为绝对路径，并以 `0700` 权限创建或收紧。LaunchAgent 和 systemd user service 都使用 `0077` umask；macOS 服务输出保存在私有数据目录，Linux 日志由 systemd journal 承载。
 

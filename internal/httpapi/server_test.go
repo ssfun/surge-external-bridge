@@ -105,6 +105,8 @@ func TestEveryManagementMutationRejectsCrossOrigin(t *testing.T) {
 		"/api/apply",
 		"/api/engine/start",
 		"/api/engine/stop",
+		"/api/engine/restart",
+		"/api/nodes/applied-node/test",
 		"/api/service/install",
 	}
 	for _, path := range paths {
@@ -194,6 +196,19 @@ func TestDiagnosticsAreAuthenticatedAndRedacted(t *testing.T) {
 	assertDoesNotContain(t, response.Body.String(), uuidSecret, realitySecret, passwordSecret, managementSecret, policySecret)
 	if !strings.Contains(response.Body.String(), `"name":"draft"`) || !strings.Contains(response.Body.String(), `"name":"applied"`) || !strings.Contains(response.Body.String(), `"name":"engine"`) {
 		t.Fatalf("diagnostic layers are incomplete: %s", response.Body.String())
+	}
+}
+
+func TestNodeTestAndRestartExplainUnavailableRuntime(t *testing.T) {
+	application, handler := httpFixture(t)
+	defer application.Close()
+	nodeResponse := request(handler, http.MethodPost, "/api/nodes/applied-node/test", managementSecret, "http://vless2surge.local", "")
+	if nodeResponse.Code != http.StatusConflict || !strings.Contains(nodeResponse.Body.String(), "网关未运行") {
+		t.Fatalf("node test did not explain the stopped gateway: %d %s", nodeResponse.Code, nodeResponse.Body.String())
+	}
+	restartResponse := request(handler, http.MethodPost, "/api/engine/restart", managementSecret, "http://vless2surge.local", "")
+	if restartResponse.Code != http.StatusConflict || !strings.Contains(restartResponse.Body.String(), "not running") {
+		t.Fatalf("restart did not explain the stopped Engine: %d %s", restartResponse.Code, restartResponse.Body.String())
 	}
 }
 

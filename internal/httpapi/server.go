@@ -56,6 +56,8 @@ func New(application *app.App) (*Server, error) {
 	mux.HandleFunc("POST /api/apply", server.authorize(server.apply))
 	mux.HandleFunc("POST /api/engine/start", server.authorize(server.startEngine))
 	mux.HandleFunc("POST /api/engine/stop", server.authorize(server.stopEngine))
+	mux.HandleFunc("POST /api/engine/restart", server.authorize(server.restartEngine))
+	mux.HandleFunc("POST /api/nodes/{id}/test", server.authorize(server.testNode))
 	mux.HandleFunc("GET /api/events", server.authorize(server.events))
 	mux.HandleFunc("GET /api/diagnostics", server.authorize(server.diagnostics))
 	mux.HandleFunc("POST /api/credentials/rotate", server.authorize(server.rotateCredentials))
@@ -422,6 +424,23 @@ func (s *Server) stopEngine(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
+}
+
+func (s *Server) restartEngine(w http.ResponseWriter, _ *http.Request) {
+	if err := s.app.RestartEngine(); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "running"})
+}
+
+func (s *Server) testNode(w http.ResponseWriter, r *http.Request) {
+	result, err := s.app.TestNode(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) events(w http.ResponseWriter, _ *http.Request) {

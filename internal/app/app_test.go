@@ -354,6 +354,52 @@ func TestRotateAllSkipsRetiredRegistryIdentities(t *testing.T) {
 	}
 }
 
+func TestRestartEngineKeepsAppliedRevisionAndAutostart(t *testing.T) {
+	application := newTestApp(t)
+	defer application.Close()
+	if _, err := application.AddManualSubscription("Restart", []byte(links(1))); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Apply(false); err != nil {
+		t.Fatal(err)
+	}
+	before := application.EngineStatus()
+	if err := application.RestartEngine(); err != nil {
+		t.Fatal(err)
+	}
+	after := application.EngineStatus()
+	if after.State != "running" || after.Revision != before.Revision || after.Inbound != before.Inbound {
+		t.Fatalf("restart changed the applied runtime fact: before=%+v after=%+v", before, after)
+	}
+	if !application.State().AutoStart {
+		t.Fatal("restart disabled Engine autostart")
+	}
+	found := false
+	for _, event := range application.State().Events {
+		if strings.Contains(event.Message, "Engine restarted with applied revision") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("restart event is missing: %+v", application.State().Events)
+	}
+	if err := application.StopEngine(); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.RestartEngine(); err == nil {
+		t.Fatal("stopped Engine was silently treated as a restart")
+	}
+}
+
+func TestNodeTestRequiresRunningAppliedNode(t *testing.T) {
+	application := newTestApp(t)
+	defer application.Close()
+	if _, err := application.TestNode(context.Background(), "missing"); err == nil || !strings.Contains(err.Error(), "网关未运行") {
+		t.Fatalf("node test did not explain the stopped gateway: %v", err)
+	}
+}
+
 func TestDiscardDraftRestoresAppliedInputsAndKeepsControlSettings(t *testing.T) {
 	application := newTestApp(t)
 	defer application.Close()
