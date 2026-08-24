@@ -63,7 +63,7 @@ make release VERSION=0.1.0
 
 额外输出 `dist/SHA256SUMS`、`dist/BUILDINFO.txt` 和 `dist/THIRD_PARTY_NOTICES.txt`。生成器会硬校验产品版本、目标架构、构建标签、Core 版本、macOS 13.0 最低版本标记和 Linux 静态链接，并收集 Go 工具链及全部链接模块的许可声明。
 
-## macOS 签名与公证
+## macOS Developer ID 签名与公证
 
 GitHub Actions 默认发布未签名的命令行二进制。如需提供经过 Apple Developer ID 签名和公证的版本，应在发布前准备 `Developer ID Application` 证书、对应 Team ID 和 App 专用密码。
 
@@ -109,6 +109,52 @@ spctl --assess --type execute --verbose=2 dist/vless2surge-darwin-amd64
 ```
 
 普通命令行二进制不能像 `.app`、`.pkg` 或 `.dmg` 那样 stapling 公证票据，因此应分发已经通过公证的 ZIP；Gatekeeper 会在线验证公证记录。不要在生成 `SHA256SUMS` 后再次修改或签名二进制。
+
+## macOS 本地自签名
+
+没有 Apple Developer ID 时，可以对自己使用的二进制做本地签名。自签名不能建立 Apple 公证记录，也不适合作为面向公众的可信发布方式。
+
+### 方法一：ad-hoc 签名
+
+这是单机使用最快的方法，不需要创建证书。先在签名前核对下载文件；以下命令应在同时包含二进制和 `SHA256SUMS` 的目录执行，并只校验当前架构对应的清单条目：
+
+```bash
+grep 'vless2surge-darwin-arm64$' SHA256SUMS | shasum -a 256 -c -
+codesign --force --options runtime --timestamp=none --sign - vless2surge-darwin-arm64
+codesign --verify --strict --verbose=2 vless2surge-darwin-arm64
+codesign --display --verbose=4 vless2surge-darwin-arm64
+```
+
+Intel Mac 将文件名替换为 `vless2surge-darwin-amd64`。ad-hoc 签名只表明文件签名后没有再被修改，没有可供其他设备信任的签名身份。
+
+### 方法二：钥匙串自建 Code Signing 证书
+
+1. 打开“钥匙串访问”；
+2. 选择“钥匙串访问 → 证书助理 → 创建证书”；
+3. 名称可设为 `vless2surge Local`，身份类型选择“自签名根”，证书类型选择“代码签名”；
+4. 创建后打开证书的“信任”设置，仅在自己的登录钥匙串中设为信任；
+5. 用 `security find-identity -v -p codesigning` 确认签名身份可用。
+
+然后签名并验证：
+
+```bash
+codesign --force --options runtime --timestamp=none \
+  --sign "vless2surge Local" \
+  vless2surge-darwin-arm64
+codesign --verify --strict --verbose=2 vless2surge-darwin-arm64
+codesign --display --verbose=4 vless2surge-darwin-arm64
+```
+
+如需在自己的另一台 Mac 使用，需要安全导出并导入证书及私钥，并在那台 Mac 上单独信任该证书。不要公开分享自签名私钥。
+
+浏览器下载的文件可能带有 quarantine 属性。只有在 SHA-256 已经与 Release 清单一致、且你确认文件来自本项目后，才可以移除该文件的 quarantine 标记：
+
+```bash
+xattr -p com.apple.quarantine vless2surge-darwin-arm64
+xattr -d com.apple.quarantine vless2surge-darwin-arm64
+```
+
+签名会改变二进制内容，因此签名前的 `SHA256SUMS` 在签名后失效。若要保存本地签名版本，应重新计算并单独保存校验和，不得用它覆盖官方 Release 的校验清单。
 
 ## 首次运行
 
