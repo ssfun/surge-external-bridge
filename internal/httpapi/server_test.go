@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/ssfun/vless2surge/internal/app"
 	"github.com/ssfun/vless2surge/internal/domain"
+	"github.com/ssfun/vless2surge/internal/revision"
 	"github.com/ssfun/vless2surge/internal/store"
 )
 
@@ -19,7 +21,7 @@ const (
 	policySecret     = "policy-super-secret"
 	passwordSecret   = "socks-super-secret"
 	uuidSecret       = "11111111-1111-4111-8111-111111111111"
-	realitySecret    = "reality-public-key-secret"
+	realitySecret    = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY"
 )
 
 func TestManagementAuthenticationAndPublicProjections(t *testing.T) {
@@ -101,6 +103,93 @@ func TestLegacySettingsUpdatePreservesNodeTestDefaults(t *testing.T) {
 	defaults := domain.DefaultConfig()
 	if updated.UserAgent != "legacy-client" || updated.NodeTestURL != defaults.NodeTestURL || updated.NodeTestUDPAddress != defaults.NodeTestUDPAddress || updated.NodeTestTimeoutSeconds != defaults.NodeTestTimeoutSeconds {
 		t.Fatalf("legacy update changed node test defaults: %+v", updated)
+	}
+}
+
+func TestExplicitCredentialRotationSynchronizesRunningGateway(t *testing.T) {
+	application, handler := httpFixture(t)
+	defer application.Close()
+	if err := application.StartEngine(); err != nil {
+		t.Fatal(err)
+	}
+	before := application.State().Applied
+	response := request(handler, http.MethodPost, "/api/credentials/rotate", managementSecret, "http://vless2surge.local", `{}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("credential rotation failed: %d %s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("X-Vless2Surge-Sync") != "synced" {
+		t.Fatalf("credential rotation sync status = %q", response.Header().Get("X-Vless2Surge-Sync"))
+	}
+	state := application.State()
+	if state.Applied.ID == before.ID || state.Applied.ID != state.Draft.ID || state.Applied.Nodes[0].Password == before.Nodes[0].Password {
+		t.Fatalf("credential rotation was not synchronized: before=%+v after=%+v", before, state)
+	}
+}
+
+func TestSynchronizationFailureIsReportedWithoutChangingCurrentRuntime(t *testing.T) {
+	application, handler := httpFixture(t)
+	defer application.Close()
+	if err := application.StartEngine(); err != nil {
+		t.Fatal(err)
+	}
+	before := application.State().Applied
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	settings := publicSettingsFrom(application.Config())
+	settings.SocksPort = uint16(listener.Addr().(*net.TCPAddr).Port)
+	payload, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := request(handler, http.MethodPut, "/api/settings", managementSecret, "http://vless2surge.local", string(payload))
+	if response.Code != http.StatusOK || response.Header().Get("X-Vless2Surge-Sync") != "failed" {
+		t.Fatalf("failed synchronization was not reported: %d headers=%+v body=%s", response.Code, response.Header(), response.Body.String())
+	}
+	state := application.State()
+	status := application.EngineStatus()
+	if state.Applied.ID != before.ID || state.Draft.ConfigHash == state.Applied.ConfigHash || status.State != "running" || status.Revision != before.ID {
+		t.Fatalf("failed synchronization changed the current runtime: status=%+v state=%+v", status, state)
+	}
+}
+
+func TestDiscardEndpointCannotRollbackSavedSources(t *testing.T) {
+	application, handler := httpFixture(t)
+	defer application.Close()
+	added, err := application.AddManualSubscription("Saved source", []byte("vless://11111111-1111-4111-8111-000000000001@example.net:443?type=tcp#Saved"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := request(handler, http.MethodPost, "/api/draft/discard", managementSecret, "http://vless2surge.local", "")
+	if response.Code != http.StatusGone {
+		t.Fatalf("deprecated discard endpoint returned %d: %s", response.Code, response.Body.String())
+	}
+	config, state := application.Config(), application.State()
+	if len(config.Subscriptions) != 2 {
+		t.Fatalf("discard endpoint changed saved sources: %+v", config.Subscriptions)
+	}
+	if _, found := state.Snapshots[added.ID]; !found {
+		t.Fatalf("discard endpoint removed the saved snapshot: %+v", state.Snapshots)
+	}
+}
+
+func TestLegacyAutoApplySettingIsAlwaysProjectedAndStoredAsEnabled(t *testing.T) {
+	application, handler := httpFixture(t)
+	defer application.Close()
+	settings := publicSettingsFrom(application.Config())
+	settings.AutoApply = false
+	payload, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := request(handler, http.MethodPut, "/api/settings", managementSecret, "http://vless2surge.local", string(payload))
+	if response.Code != http.StatusOK {
+		t.Fatalf("legacy auto_apply update failed: %d %s", response.Code, response.Body.String())
+	}
+	if !application.Config().AutoApply || !strings.Contains(response.Body.String(), `"auto_apply":true`) {
+		t.Fatalf("legacy auto_apply=false remained externally effective: config=%+v body=%s", application.Config(), response.Body.String())
 	}
 }
 
@@ -383,6 +472,13 @@ func httpFixture(t *testing.T) (*app.App, http.Handler) {
 	state.Applied = applied
 	state.Draft = &draft
 	state.Snapshots["secret-sub"] = domain.Snapshot{SubscriptionID: "secret-sub", Nodes: []domain.Node{applied.Nodes[0].Node}, RawCount: 1, FetchedAt: now}
+	fingerprint, err := revision.Fingerprint(applied.Nodes[0].Node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Registry["secret-sub:"+fingerprint] = domain.Identity{
+		NodeID: applied.Nodes[0].NodeID, Fingerprint: fingerprint, AuthUser: applied.Nodes[0].AuthUser, Password: applied.Nodes[0].Password, CreatedAt: now, LastSeenAt: now,
+	}
 	if err := persistence.SaveConfig(config); err != nil {
 		t.Fatal(err)
 	}

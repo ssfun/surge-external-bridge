@@ -258,6 +258,9 @@ func TestRunningEngineAutoAppliesOnlySafeRefreshes(t *testing.T) {
 		t.Fatal(err)
 	}
 	initial := application.State().Applied.ID
+	application.mu.Lock()
+	application.config.AutoApply = false // Legacy preference no longer blocks safe synchronization.
+	application.mu.Unlock()
 
 	safe := strings.Replace(links(3), "example.com:4001", "example.net:4001", 1)
 	feed.set(safe, http.StatusOK)
@@ -359,6 +362,164 @@ func TestCredentialRotationCreatesDraftWithoutChangingApplied(t *testing.T) {
 	}
 }
 
+func TestStartEngineSynchronizesLatestSafeCandidate(t *testing.T) {
+	application := newTestApp(t)
+	defer application.Close()
+	if _, err := application.AddManualSubscription("Latest", []byte(links(1))); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Apply(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.StopEngine(); err != nil {
+		t.Fatal(err)
+	}
+	oldApplied := application.State().Applied
+	if _, err := application.RotateCredentials(""); err != nil {
+		t.Fatal(err)
+	}
+	pending := application.State().Draft
+	if pending.ID == oldApplied.ID || pending.Nodes[0].Password == oldApplied.Nodes[0].Password {
+		t.Fatalf("credential rotation did not create a distinct candidate: old=%+v pending=%+v", oldApplied, pending)
+	}
+	if err := application.StartEngine(); err != nil {
+		t.Fatal(err)
+	}
+	state := application.State()
+	if application.EngineStatus().State != "running" || state.Applied.ID != pending.ID || state.Applied.Nodes[0].Password != pending.Nodes[0].Password {
+		t.Fatalf("start did not synchronize the latest safe candidate: %+v", state)
+	}
+}
+
+func TestStartFailureFallsBackToCurrentRuntime(t *testing.T) {
+	application := newTestApp(t)
+	defer application.Close()
+	if _, err := application.AddManualSubscription("Fallback", []byte(links(1))); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Apply(false); err != nil {
+		t.Fatal(err)
+	}
+	current := application.State().Applied
+	if err := application.StopEngine(); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	config := application.Config()
+	config.SocksPort = uint16(listener.Addr().(*net.TCPAddr).Port)
+	if err := application.UpdateConfig(config); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.StartEngine(); err == nil {
+		t.Fatal("occupied candidate endpoint unexpectedly started")
+	}
+	state := application.State()
+	status := application.EngineStatus()
+	if status.State != "running" || status.Revision != current.ID || state.Applied.ID != current.ID || !state.AutoStart || state.Draft.ConfigHash == state.Applied.ConfigHash {
+		t.Fatalf("failed candidate did not restore the current runtime: status=%+v state=%+v", status, state)
+	}
+}
+
+func TestAutomaticRestartSynchronizesLatestSafeCandidate(t *testing.T) {
+	dir := t.TempDir()
+	application := newTestAppAt(t, dir)
+	if _, err := application.AddManualSubscription("Latest after restart", []byte(links(1))); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Apply(false); err != nil {
+		t.Fatal(err)
+	}
+	oldApplied := application.State().Applied
+	if _, err := application.RotateCredentials(""); err != nil {
+		t.Fatal(err)
+	}
+	pending := application.State().Draft
+	if pending.ID == oldApplied.ID {
+		t.Fatal("credential rotation did not create a pending safe candidate")
+	}
+	if err := application.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	state := reopened.State()
+	status := reopened.EngineStatus()
+	if status.State != "running" || status.Revision != pending.ID || state.Applied.ID != pending.ID || state.Draft.ID != pending.ID {
+		t.Fatalf("automatic restart skipped the latest safe candidate: status=%+v state=%+v", status, state)
+	}
+}
+
+func TestLegacyDisabledAutoApplyMigratesToMandatorySafeSynchronization(t *testing.T) {
+	dir := t.TempDir()
+	persistence := store.New(dir)
+	config, state, err := persistence.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.AutoApply = false
+	if err := persistence.SaveConfigAndState(config, &state); err != nil {
+		t.Fatal(err)
+	}
+	application, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !application.Config().AutoApply {
+		t.Fatal("legacy auto_apply=false was not migrated")
+	}
+	if err := application.Close(); err != nil {
+		t.Fatal(err)
+	}
+	persisted, _, err := persistence.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !persisted.AutoApply {
+		t.Fatal("mandatory safe synchronization was not persisted")
+	}
+}
+
+func TestRiskyCandidateKeepsCurrentRuntimeUntilConfirmed(t *testing.T) {
+	application := newTestApp(t)
+	defer application.Close()
+	sub, err := application.AddManualSubscription("Risk boundary", []byte(links(3)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Apply(false); err != nil {
+		t.Fatal(err)
+	}
+	current := application.State().Applied
+	if err := application.DeleteSubscription(sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	status, err := application.SyncPending()
+	if err != nil || status != "confirmation_required" {
+		t.Fatalf("risky candidate synchronization = %q, %v", status, err)
+	}
+	state := application.State()
+	if state.Draft == nil || !state.Draft.Risky || state.Applied.ID != current.ID {
+		t.Fatalf("risky candidate changed current runtime: %+v", state)
+	}
+	if err := application.StopEngine(); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.StartEngine(); err != nil {
+		t.Fatal(err)
+	}
+	if status := application.EngineStatus(); status.State != "running" || status.Revision != current.ID {
+		t.Fatalf("start did not preserve the confirmed runtime: %+v", status)
+	}
+}
+
 func TestRotateAllSkipsRetiredRegistryIdentities(t *testing.T) {
 	application := newTestApp(t)
 	defer application.Close()
@@ -423,52 +584,6 @@ func TestNodeTestRequiresRunningAppliedNode(t *testing.T) {
 	}
 }
 
-func TestDiscardDraftRestoresAppliedInputsAndKeepsControlSettings(t *testing.T) {
-	application := newTestApp(t)
-	defer application.Close()
-	first, err := application.AddManualSubscription("Applied source", []byte(links(1)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := application.Apply(false); err != nil {
-		t.Fatal(err)
-	}
-	appliedID := application.State().Applied.ID
-	config := application.Config()
-	config.ManagementToken = "new-management-token"
-	config.PolicyToken = "new-policy-token"
-	config.UserAgent = "new-agent"
-	config.NodeTestURL = "http://connectivity.example/generate_204"
-	config.NodeTestUDPAddress = "9.9.9.9:53"
-	config.NodeTestTimeoutSeconds = 9
-	if err := application.UpdateConfig(config); err != nil {
-		t.Fatal(err)
-	}
-	second, err := application.AddManualSubscription("Pending source", []byte(links(1)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(application.State().Draft.Nodes) != 2 {
-		t.Fatalf("pending source did not change draft: %+v", application.State().Draft)
-	}
-	if err := application.DiscardDraft(); err != nil {
-		t.Fatal(err)
-	}
-	state, restoredConfig := application.State(), application.Config()
-	if state.Applied.ID != appliedID || state.Draft.ConfigHash != state.Applied.ConfigHash || len(state.Draft.Nodes) != 1 {
-		t.Fatalf("discard did not restore applied revision: %+v", state)
-	}
-	if len(restoredConfig.Subscriptions) != 1 || restoredConfig.Subscriptions[0].ID != first.ID {
-		t.Fatalf("discard did not restore applied sources: %+v", restoredConfig.Subscriptions)
-	}
-	if _, found := state.Snapshots[second.ID]; found || len(state.Snapshots[first.ID].Nodes) != 1 {
-		t.Fatalf("discard did not restore applied snapshots: %+v", state.Snapshots)
-	}
-	if restoredConfig.ManagementToken != "new-management-token" || restoredConfig.PolicyToken != "new-policy-token" || restoredConfig.UserAgent != "new-agent" || restoredConfig.NodeTestURL != "http://connectivity.example/generate_204" || restoredConfig.NodeTestUDPAddress != "9.9.9.9:53" || restoredConfig.NodeTestTimeoutSeconds != 9 {
-		t.Fatalf("discard rolled back immediate control settings: %+v", restoredConfig)
-	}
-}
-
 func TestNodeTestSettingsAreValidated(t *testing.T) {
 	config := domain.DefaultConfig()
 	config.NodeTestURL = "ftp://example.com/file"
@@ -491,7 +606,7 @@ func TestNodeTestSettingsAreValidated(t *testing.T) {
 	}
 }
 
-func TestProxiesAndRestartUseOnlyAppliedEndpoint(t *testing.T) {
+func TestProxiesStayCurrentUntilRestartSynchronizesSafeEndpoint(t *testing.T) {
 	feed := &mutableFeed{body: links(1)}
 	server := httptest.NewServer(feed)
 	defer server.Close()
@@ -529,6 +644,7 @@ func TestProxiesAndRestartUseOnlyAppliedEndpoint(t *testing.T) {
 	if application.State().Draft.ConfigHash == application.State().Applied.ConfigHash {
 		t.Fatal("endpoint change did not mark the draft dirty")
 	}
+	pending := application.State().Draft
 
 	if err := application.Close(); err != nil {
 		t.Fatal(err)
@@ -539,8 +655,14 @@ func TestProxiesAndRestartUseOnlyAppliedEndpoint(t *testing.T) {
 	}
 	defer reopened.Close()
 	status := reopened.EngineStatus()
-	if status.State != "running" || status.Inbound != net.JoinHostPort(applied.SocksBind, fmt.Sprint(applied.SocksPort)) {
-		t.Fatalf("restart did not restore the applied endpoint: %+v", status)
+	if status.State != "running" || status.Revision != pending.ID || status.Inbound != net.JoinHostPort(pending.SocksBind, fmt.Sprint(pending.SocksPort)) {
+		t.Fatalf("restart did not synchronize the latest safe endpoint: %+v", status)
+	}
+	if state := reopened.State(); state.Applied.ID != pending.ID || state.Draft.ID != pending.ID {
+		t.Fatalf("restart did not commit the latest safe endpoint: %+v", state)
+	}
+	if content, revision, err := reopened.Proxies(); err != nil || revision != pending.ID || !strings.Contains(content, fmt.Sprintf(", %s, %d,", pending.SocksAdvertise, pending.SocksPort)) {
+		t.Fatalf("restarted proxy output did not publish the synchronized endpoint: revision=%q content=%q err=%v", revision, content, err)
 	}
 }
 
@@ -1055,7 +1177,7 @@ func TestEngineLifecycleDoesNotChangeRuntimeWhenStateSaveFails(t *testing.T) {
 	application.store = original
 }
 
-func TestAutoApplyRequiresTheExpectedCurrentRevision(t *testing.T) {
+func TestSynchronizationRequiresTheExpectedCurrentRevision(t *testing.T) {
 	application := newTestApp(t)
 	defer application.Close()
 	if _, err := application.AddManualSubscription("Expected", []byte(links(1))); err != nil {
@@ -1070,20 +1192,17 @@ func TestAutoApplyRequiresTheExpectedCurrentRevision(t *testing.T) {
 	}
 	currentDraftID := application.State().Draft.ID
 	application.applyMu.Lock()
-	err := application.applyLocked(false, appliedID, true)
+	err := application.applyLocked(false, appliedID)
 	application.applyMu.Unlock()
 	if err != nil || application.State().Applied.ID != appliedID || currentDraftID == appliedID {
-		t.Fatalf("stale auto-apply expectation changed applied revision: err=%v state=%+v", err, application.State())
+		t.Fatalf("stale synchronization expectation changed current revision: err=%v state=%+v", err, application.State())
 	}
 
-	application.mu.Lock()
-	application.config.AutoApply = false
-	application.mu.Unlock()
 	application.applyMu.Lock()
-	err = application.applyLocked(false, currentDraftID, true)
+	err = application.applyLocked(false, currentDraftID)
 	application.applyMu.Unlock()
-	if err != nil || application.State().Applied.ID != appliedID {
-		t.Fatalf("disabled auto-apply changed applied revision: err=%v state=%+v", err, application.State())
+	if err != nil || application.State().Applied.ID != currentDraftID {
+		t.Fatalf("current synchronization expectation was not committed: err=%v state=%+v", err, application.State())
 	}
 }
 

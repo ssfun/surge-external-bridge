@@ -233,6 +233,7 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.syncPending(w)
 	writeJSON(w, http.StatusOK, publicSettingsFrom(config))
 }
 
@@ -261,6 +262,7 @@ func (s *Server) addSubscription(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.syncPending(w)
 	writeJSON(w, http.StatusCreated, makePublicSubscription(created, domain.Snapshot{}, s.app.Config().RefreshSeconds))
 }
 
@@ -280,6 +282,7 @@ func (s *Server) pasteSubscription(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.syncPending(w)
 	writeJSON(w, http.StatusCreated, makePublicSubscription(created, s.app.State().Snapshots[created.ID], s.app.Config().RefreshSeconds))
 }
 
@@ -314,6 +317,7 @@ func (s *Server) updateSubscription(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.syncPending(w)
 	writeJSON(w, http.StatusOK, makePublicSubscription(updated, s.app.State().Snapshots[id], s.app.Config().RefreshSeconds))
 }
 
@@ -326,6 +330,7 @@ func (s *Server) deleteSubscription(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
+	s.syncPending(w)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -344,6 +349,7 @@ func (s *Server) importProviders(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.syncPending(w)
 	result := make([]publicSubscription, 0, len(added))
 	for _, sub := range added {
 		result = append(result, makePublicSubscription(sub, domain.Snapshot{}, s.app.Config().RefreshSeconds))
@@ -369,15 +375,12 @@ func (s *Server) rebuildDraft(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.syncPending(w)
 	writeJSON(w, http.StatusOK, publicRevisionValue(revision))
 }
 
 func (s *Server) discardDraft(w http.ResponseWriter, _ *http.Request) {
-	if err := s.app.DiscardDraft(); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "discarded"})
+	writeError(w, http.StatusGone, "discard is no longer supported; saved sources and settings are never rolled back")
 }
 
 func (s *Server) draftConfig(w http.ResponseWriter, r *http.Request) {
@@ -475,7 +478,18 @@ func (s *Server) rotateCredentials(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.syncPending(w)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "rotated", "count": count})
+}
+
+func (s *Server) syncPending(w http.ResponseWriter) {
+	status, err := s.app.SyncPending()
+	if err != nil {
+		w.Header().Set("X-Vless2Surge-Sync", "failed")
+		s.app.AddEvent("error", "automatic synchronization failed: "+err.Error())
+		return
+	}
+	w.Header().Set("X-Vless2Surge-Sync", status)
 }
 
 func (s *Server) serviceStatus(w http.ResponseWriter, _ *http.Request) {
@@ -554,7 +568,7 @@ func publicSettingsFrom(config domain.Config) publicSettings {
 		SocksAdvertise: config.SocksAdvertise, PolicyBaseURL: config.PolicyBaseURL, RefreshSeconds: config.RefreshSeconds,
 		UserAgent: config.UserAgent, NodeTestURL: &config.NodeTestURL, NodeTestUDPAddress: &config.NodeTestUDPAddress,
 		NodeTestTimeoutSeconds: &config.NodeTestTimeoutSeconds, IncludeTypes: config.IncludeTypes, ExcludeName: config.ExcludeName,
-		PrefixSubscription: config.PrefixSubscription, AutoApply: config.AutoApply,
+		PrefixSubscription: config.PrefixSubscription, AutoApply: true,
 		DropThresholdPercent: config.DropThresholdPercent, ManagementProtected: config.ManagementToken != "", PolicyProtected: config.PolicyToken != "",
 	}
 }
@@ -580,7 +594,7 @@ func (settings publicSettings) apply(config *domain.Config) {
 	config.IncludeTypes = settings.IncludeTypes
 	config.ExcludeName = settings.ExcludeName
 	config.PrefixSubscription = settings.PrefixSubscription
-	config.AutoApply = settings.AutoApply
+	config.AutoApply = true
 	config.DropThresholdPercent = settings.DropThresholdPercent
 	if settings.ManagementToken != nil {
 		config.ManagementToken = *settings.ManagementToken

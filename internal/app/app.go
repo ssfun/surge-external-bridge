@@ -67,6 +67,8 @@ func New(dataDir string) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	legacyAutoApplyDisabled := !config.AutoApply
+	config.AutoApply = true
 	if err := ValidateConfig(config); err != nil {
 		return nil, fmt.Errorf("invalid saved configuration: %w", err)
 	}
@@ -110,11 +112,14 @@ func New(dataDir string) (*App, error) {
 		application.addEventLocked("warn", fmt.Sprintf("recovered config/state generation mismatch at generation %d", config.Generation))
 	}
 	application.addEventLocked("info", fmt.Sprintf("vless2surge %s started with Embedded sing-box %s", Version, core.CoreVersion))
+	if legacyAutoApplyDisabled {
+		application.addEventLocked("info", "legacy auto_apply=false migrated to mandatory safe synchronization")
+	}
 	if err := application.store.SaveConfigAndState(config, &application.state); err != nil {
 		return nil, err
 	}
 	if state.AutoStart && state.Applied != nil && !state.SafeMode {
-		if err := application.startApplied(); err != nil {
+		if err := application.StartEngine(); err != nil {
 			application.mu.Lock()
 			application.state.LastError = err.Error()
 			application.addEventLocked("error", "automatic Engine start failed: "+err.Error())
@@ -209,16 +214,16 @@ func (a *App) Diagnostics() domain.Diagnostics {
 	}
 
 	if state.Draft == nil || len(state.Draft.Nodes) == 0 {
-		add("draft", "error", "没有可编译的 VLESS 草稿")
+		add("draft", "error", "没有可编译的 VLESS 同步结果")
 	} else if state.Draft.Risky {
 		add("draft", "warn", state.Draft.RiskReason)
 	} else {
-		add("draft", "ok", fmt.Sprintf("草稿 %s 包含 %d 个节点和 %d 条丢弃记录", state.Draft.ID, len(state.Draft.Nodes), len(state.Draft.Dropped)))
+		add("draft", "ok", fmt.Sprintf("最新同步版本 %s 包含 %d 个节点和 %d 条丢弃记录", state.Draft.ID, len(state.Draft.Nodes), len(state.Draft.Dropped)))
 	}
 
 	identitiesValid := false
 	if state.Applied == nil || len(state.Applied.Nodes) == 0 {
-		add("applied", "error", "尚未应用可供 Surge 使用的 revision")
+		add("applied", "error", "尚无可供 Surge 使用的当前运行版本")
 	} else {
 		result.Revision = state.Applied.ID
 		users := map[string]bool{}
@@ -232,9 +237,9 @@ func (a *App) Diagnostics() domain.Diagnostics {
 		}
 		if valid {
 			identitiesValid = true
-			add("applied", "ok", fmt.Sprintf("revision %s 包含 %d 个唯一 SOCKS 身份", state.Applied.ID, len(state.Applied.Nodes)))
+			add("applied", "ok", fmt.Sprintf("当前运行版本 %s 包含 %d 个唯一 SOCKS 身份", state.Applied.ID, len(state.Applied.Nodes)))
 		} else {
-			add("applied", "error", "已应用 revision 的身份映射不完整或重复")
+			add("applied", "error", "当前运行版本的身份映射不完整或重复")
 		}
 	}
 
@@ -253,9 +258,9 @@ func (a *App) Diagnostics() domain.Diagnostics {
 	switch engine.State {
 	case "running":
 		if state.Applied != nil && engine.Revision == state.Applied.ID {
-			add("engine", "ok", fmt.Sprintf("Embedded Engine 正在 %s 运行 applied revision", engine.Inbound))
+			add("engine", "ok", fmt.Sprintf("网关正在 %s 运行当前版本", engine.Inbound))
 		} else {
-			add("engine", "error", "Engine revision 与 applied revision 不一致")
+			add("engine", "error", "网关实际版本与当前运行版本不一致")
 		}
 	case "stopped":
 		add("engine", "warn", "Embedded Engine 已停止；配置台仍可用")
@@ -265,7 +270,7 @@ func (a *App) Diagnostics() domain.Diagnostics {
 
 	authOK := false
 	if engine.State != "running" || state.Applied == nil || len(state.Applied.Nodes) == 0 || !identitiesValid {
-		add("auth_route", "warn", "Engine 未运行或 applied 身份不可用，未执行 SOCKS5 认证探测")
+		add("auth_route", "warn", "网关未运行或当前身份不可用，未执行 SOCKS5 认证探测")
 	} else {
 		node := state.Applied.Nodes[0]
 		wrongPassword := "invalid-diagnostic-password"
@@ -299,13 +304,13 @@ func (a *App) Diagnostics() domain.Diagnostics {
 		add("outbound", "warn", "尚未满足 outbound 连通性测试的本地前置条件")
 	}
 	add("tcp", "warn", "未主动向外部目标发起 TCP 流量；请通过 Surge url-test 或实际请求验证")
-	add("udp", "warn", "SOCKS5 UDP Relay 已编译；节点页可对每个已应用节点执行真实 UDP DNS 测试")
+	add("udp", "warn", "SOCKS5 UDP Relay 已编译；节点页可对每个当前运行节点执行真实 UDP DNS 测试")
 
 	policy, revisionID, policyErr := a.Proxies()
 	if policyErr != nil || state.Applied == nil || revisionID != state.Applied.ID || strings.TrimSpace(policy) == "" {
-		add("policy_path", "error", "无法从当前 applied revision 生成一致的 Surge policy-path 内容")
+		add("policy_path", "error", "无法从当前运行版本生成一致的 Surge policy-path 内容")
 	} else {
-		add("policy_path", "ok", fmt.Sprintf("/proxies 对应 applied revision %s，共 %d 个节点", revisionID, len(state.Applied.Nodes)))
+		add("policy_path", "ok", fmt.Sprintf("/proxies 对应当前运行版本 %s，共 %d 个节点", revisionID, len(state.Applied.Nodes)))
 	}
 
 	surgeStatus, surgeDetail := surgeRuntimeCheck()
@@ -743,9 +748,9 @@ func (a *App) Refresh(ctx context.Context, id string) error {
 	if saveErr != nil {
 		a.state = previousState
 	}
-	autoApply := a.config.AutoApply && a.state.Draft != nil && !a.state.Draft.Risky && engineRunning
+	autoSync := a.state.Draft != nil && !a.state.Draft.Risky && engineRunning
 	expectedRevision := ""
-	if autoApply {
+	if autoSync {
 		expectedRevision = a.state.Draft.ID
 	}
 	a.mu.Unlock()
@@ -753,8 +758,8 @@ func (a *App) Refresh(ctx context.Context, id string) error {
 		a.applyMu.Unlock()
 		return saveErr
 	}
-	if autoApply {
-		err := a.applyLocked(false, expectedRevision, true)
+	if autoSync {
+		err := a.applyLocked(false, expectedRevision)
 		a.applyMu.Unlock()
 		return err
 	}
@@ -802,43 +807,81 @@ func (a *App) RebuildDraft(generatedBy string) (*domain.Revision, error) {
 func (a *App) Apply(force bool) error {
 	a.applyMu.Lock()
 	defer a.applyMu.Unlock()
-	return a.applyLocked(force, "", false)
+	return a.applyLocked(force, "")
 }
 
-func (a *App) applyLocked(force bool, expectedRevision string, requireAutoApply bool) error {
+// SyncPending applies a validated, non-risky candidate when the gateway is
+// already running. Explicit control-plane mutations use this to keep the
+// runtime aligned without exposing the internal candidate transaction to users.
+func (a *App) SyncPending() (string, error) {
+	a.applyMu.Lock()
+	defer a.applyMu.Unlock()
+	a.mu.RLock()
+	draft := clonePtr(a.state.Draft)
+	applied := clonePtr(a.state.Applied)
+	safeMode := a.state.SafeMode
+	a.mu.RUnlock()
+	if draft == nil || (applied != nil && draft.ConfigHash == applied.ConfigHash) {
+		return "current", nil
+	}
+	if draft.Risky || safeMode {
+		return "confirmation_required", nil
+	}
+	if a.engine.Status().State != "running" {
+		return "waiting_for_start", nil
+	}
+	if err := a.applyLocked(false, ""); err != nil {
+		return "failed", err
+	}
+	return "synced", nil
+}
+
+func (a *App) applyLocked(force bool, expectedRevision string) error {
 	a.mu.RLock()
 	config := clone(a.config)
 	draft := clonePtr(a.state.Draft)
 	safeMode := a.state.SafeMode
 	previousState := clone(a.state)
 	a.mu.RUnlock()
-	if requireAutoApply && (!config.AutoApply || draft == nil || draft.ID != expectedRevision) {
+	if expectedRevision != "" && (draft == nil || draft.ID != expectedRevision) {
 		return nil
 	}
 	engineWasRunning := a.engine.Status().State == "running"
 	if draft == nil {
-		return errors.New("there is no draft to apply")
+		return errors.New("there is no synchronization result")
 	}
 	if len(draft.Nodes) == 0 {
-		return errors.New("cannot apply an empty draft")
+		return errors.New("cannot synchronize an empty update")
 	}
 	if draft.Risky && !force {
-		return fmt.Errorf("risky draft requires explicit force: %s", draft.RiskReason)
+		return fmt.Errorf("risky update requires explicit confirmation: %s", draft.RiskReason)
 	}
 	if safeMode && !force {
 		return errors.New("safe mode requires explicit confirmation")
 	}
 	compiled, err := a.compiler.Compile(config, draft)
 	if err != nil {
-		a.AddEvent("error", "draft validation failed: "+err.Error())
+		a.AddEvent("error", "synchronization validation failed: "+err.Error())
 		return err
 	}
 	inbound := revisionInbound(config, draft)
 	if err := a.engine.Apply(draft, compiled, inbound); err != nil {
+		rollbackErr := error(nil)
+		restoredCurrent := false
+		if !engineWasRunning && previousState.Applied != nil && len(previousState.Applied.Nodes) > 0 {
+			rollbackErr = a.restoreEngine(config, previousState, true)
+			restoredCurrent = rollbackErr == nil
+		}
 		a.mu.Lock()
 		a.state.LastError = err.Error()
+		if restoredCurrent {
+			a.state.AutoStart = true
+		}
 		_ = a.store.SaveState(&a.state)
 		a.mu.Unlock()
+		if rollbackErr != nil {
+			return fmt.Errorf("synchronize candidate: %v; start current runtime: %w", err, rollbackErr)
+		}
 		return err
 	}
 	now := time.Now().UTC()
@@ -853,7 +896,7 @@ func (a *App) applyLocked(force bool, expectedRevision string, requireAutoApply 
 	a.state.ConsecutiveCrash = 0
 	a.state.LastError = ""
 	a.state.AutoStart = true
-	a.addEventLocked("info", fmt.Sprintf("revision applied: %s", draft.ID))
+	a.addEventLocked("info", fmt.Sprintf("synchronization completed: %s", draft.ID))
 	err = a.store.SaveState(&a.state)
 	if err != nil {
 		a.state = previousState
@@ -888,49 +931,6 @@ func (a *App) restoreEngine(fallbackConfig domain.Config, previousState domain.R
 	return a.engine.Apply(previous, compiled, revisionInbound(config, previous))
 }
 
-func (a *App) DiscardDraft() error {
-	a.applyMu.Lock()
-	defer a.applyMu.Unlock()
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.state.Applied == nil || a.state.AppliedConfig == nil {
-		return errors.New("there is no applied revision to restore")
-	}
-	previousConfig, previousState := clone(a.config), clone(a.state)
-	restored := clone(*a.state.AppliedConfig)
-	// These settings control the HTTP service and refresh behavior immediately;
-	// they are not part of the Embedded Engine revision transaction.
-	restored.HTTPBind = a.config.HTTPBind
-	restored.PolicyBaseURL = a.config.PolicyBaseURL
-	restored.RefreshSeconds = a.config.RefreshSeconds
-	restored.UserAgent = a.config.UserAgent
-	restored.NodeTestURL = a.config.NodeTestURL
-	restored.NodeTestUDPAddress = a.config.NodeTestUDPAddress
-	restored.NodeTestTimeoutSeconds = a.config.NodeTestTimeoutSeconds
-	restored.AutoApply = a.config.AutoApply
-	restored.DropThresholdPercent = a.config.DropThresholdPercent
-	restored.ManagementToken = a.config.ManagementToken
-	restored.PolicyToken = a.config.PolicyToken
-	restored.Mode = a.config.Mode
-	restored.Generation = a.config.Generation
-	a.config = restored
-	if a.state.AppliedSnapshots != nil {
-		a.state.Snapshots = clone(a.state.AppliedSnapshots)
-	}
-	draft := clonePtr(a.state.Applied)
-	draft.AppliedAt = nil
-	draft.Risky = false
-	draft.RiskReason = ""
-	draft.GeneratedBy = "discard"
-	a.state.Draft = draft
-	a.addEventLocked("warn", fmt.Sprintf("draft discarded; restored applied revision inputs: %s", a.state.Applied.ID))
-	a.advanceConfigGenerationLocked()
-	if err := a.persistConfigAndStateLocked(previousConfig, previousState); err != nil {
-		return err
-	}
-	return nil
-}
-
 func (a *App) StartEngine() error {
 	a.applyMu.Lock()
 	defer a.applyMu.Unlock()
@@ -939,6 +939,7 @@ func (a *App) StartEngine() error {
 	}
 	a.mu.RLock()
 	applied := clonePtr(a.state.Applied)
+	draft := clonePtr(a.state.Draft)
 	config := clone(a.config)
 	if a.state.AppliedConfig != nil {
 		config = clone(*a.state.AppliedConfig)
@@ -946,10 +947,13 @@ func (a *App) StartEngine() error {
 	safeMode := a.state.SafeMode
 	a.mu.RUnlock()
 	if safeMode {
-		return errors.New("Engine is in safe mode; apply a confirmed draft to recover")
+		return errors.New("Engine is in safe mode; confirm the latest synchronization result to recover")
+	}
+	if draft != nil && len(draft.Nodes) > 0 && !draft.Risky && (applied == nil || draft.ConfigHash != applied.ConfigHash) {
+		return a.applyLocked(false, "")
 	}
 	if applied == nil || len(applied.Nodes) == 0 {
-		return errors.New("there is no applied revision")
+		return errors.New("there is no current runtime revision")
 	}
 	compiled, err := a.compiler.Compile(config, applied)
 	if err != nil {
@@ -1035,10 +1039,10 @@ func (a *App) RestartEngine() error {
 	safeMode := a.state.SafeMode
 	a.mu.RUnlock()
 	if safeMode {
-		return errors.New("Engine is in safe mode; apply a confirmed draft to recover")
+		return errors.New("Engine is in safe mode; confirm the latest synchronization result to recover")
 	}
 	if applied == nil || len(applied.Nodes) == 0 {
-		return errors.New("there is no applied revision")
+		return errors.New("there is no current runtime revision")
 	}
 	compiled, err := a.compiler.Compile(config, applied)
 	if err != nil {
@@ -1204,25 +1208,6 @@ func (a *App) refreshDue(ctx context.Context) {
 	}
 }
 
-func (a *App) startApplied() error {
-	a.mu.RLock()
-	applied := clonePtr(a.state.Applied)
-	config := clone(a.config)
-	if a.state.AppliedConfig != nil {
-		config = clone(*a.state.AppliedConfig)
-	}
-	a.mu.RUnlock()
-	if applied == nil || len(applied.Nodes) == 0 {
-		return nil
-	}
-	compiled, err := a.compiler.Compile(config, applied)
-	if err != nil {
-		return err
-	}
-	inbound := revisionInbound(config, applied)
-	return a.engine.Start(applied, compiled, inbound)
-}
-
 func revisionEndpoint(config domain.Config, revision *domain.Revision) (string, uint16, string) {
 	bind, port, advertise := revision.SocksBind, revision.SocksPort, revision.SocksAdvertise
 	if bind == "" {
@@ -1296,7 +1281,7 @@ func (a *App) rebuildDraftLocked(generatedBy string) error {
 		}
 	}
 	a.state.Draft = draft
-	a.addEventLocked("info", fmt.Sprintf("draft rebuilt: %s, nodes=%d", draft.ID, len(draft.Nodes)))
+	a.addEventLocked("info", fmt.Sprintf("synchronization result rebuilt: %s, nodes=%d", draft.ID, len(draft.Nodes)))
 	return nil
 }
 

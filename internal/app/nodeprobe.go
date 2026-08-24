@@ -164,7 +164,7 @@ func nodeTestFailureDetail(stage, scheme string) string {
 	case "gateway":
 		return "无法连接本地 SOCKS5 网关，请先检查网关状态和监听地址"
 	case "authentication":
-		return "节点凭据未被当前网关接受，请确认草稿已经应用"
+		return "节点凭据未被当前网关接受，请确认该节点已经同步到当前运行版本"
 	case "outbound":
 		return "网关认证成功，但 VLESS 出站无法连接 Web 测试目标，请检查节点服务器和网络"
 	case "tls":
