@@ -40,13 +40,20 @@ var carrierGradeNAT = func() *net.IPNet {
 type App struct {
 	mu       sync.RWMutex
 	applyMu  sync.Mutex
-	store    *store.Store
+	store    persistence
 	config   domain.Config
 	state    domain.RuntimeState
 	builder  *revision.Builder
 	compiler *core.Compiler
 	fetcher  *subscription.Fetcher
 	engine   *core.Manager
+}
+
+type persistence interface {
+	Dir() string
+	SaveConfig(domain.Config) error
+	SaveState(*domain.RuntimeState) error
+	SaveConfigAndState(domain.Config, *domain.RuntimeState) error
 }
 
 func (a *App) DataDir() string { return a.store.Dir() }
@@ -72,6 +79,10 @@ func New(dataDir string) (*App, error) {
 	if state.Applied != nil && state.AppliedSnapshots == nil {
 		state.AppliedSnapshots = clone(state.Snapshots)
 	}
+	configGenerationMismatch := config.Generation != state.ConfigGeneration
+	if configGenerationMismatch {
+		state.ConfigGeneration = config.Generation
+	}
 	if !state.LastExitClean {
 		state.ConsecutiveCrash++
 	} else {
@@ -92,11 +103,14 @@ func New(dataDir string) (*App, error) {
 	application.engine = core.NewManager(func(level, message string) {
 		application.AddEvent(level, message)
 	})
-	application.addEventLocked("info", fmt.Sprintf("vless2surge %s started with Embedded sing-box %s", Version, core.CoreVersion))
-	if err := application.store.SaveConfig(config); err != nil {
-		return nil, err
+	if configGenerationMismatch {
+		if err := application.rebuildDraftLocked("config-recovery"); err != nil {
+			return nil, fmt.Errorf("recover config/state generation mismatch: %w", err)
+		}
+		application.addEventLocked("warn", fmt.Sprintf("recovered config/state generation mismatch at generation %d", config.Generation))
 	}
-	if err := application.store.SaveState(&application.state); err != nil {
+	application.addEventLocked("info", fmt.Sprintf("vless2surge %s started with Embedded sing-box %s", Version, core.CoreVersion))
+	if err := application.store.SaveConfigAndState(config, &application.state); err != nil {
 		return nil, err
 	}
 	if state.AutoStart && state.Applied != nil && !state.SafeMode {
@@ -420,17 +434,8 @@ func (a *App) UpdateConfig(config domain.Config) error {
 		a.mu.Unlock()
 		return err
 	}
-	if err := a.store.SaveConfig(a.config); err != nil {
-		a.config, a.state = previousConfig, previousState
-		a.mu.Unlock()
-		return err
-	}
-	err := a.store.SaveState(&a.state)
-	if err != nil {
-		a.config, a.state = previousConfig, previousState
-		_ = a.store.SaveConfig(a.config)
-		_ = a.store.SaveState(&a.state)
-	}
+	a.advanceConfigGenerationLocked()
+	err := a.persistConfigAndStateLocked(previousConfig, previousState)
 	a.mu.Unlock()
 	return err
 }
@@ -464,15 +469,9 @@ func (a *App) AddSubscription(sub domain.Subscription) (domain.Subscription, err
 		a.config, a.state = previousConfig, previousState
 		return domain.Subscription{}, err
 	}
-	if err := a.store.SaveConfig(a.config); err != nil {
-		a.config, a.state = previousConfig, previousState
-		return domain.Subscription{}, err
-	}
 	a.addEventLocked("info", fmt.Sprintf("subscription added: %s", sub.Name))
-	if err := a.store.SaveState(&a.state); err != nil {
-		a.config, a.state = previousConfig, previousState
-		_ = a.store.SaveConfig(a.config)
-		_ = a.store.SaveState(&a.state)
+	a.advanceConfigGenerationLocked()
+	if err := a.persistConfigAndStateLocked(previousConfig, previousState); err != nil {
 		return domain.Subscription{}, err
 	}
 	return sub, nil
@@ -531,14 +530,8 @@ func (a *App) AddManualSubscription(name string, content []byte) (domain.Subscri
 		return domain.Subscription{}, err
 	}
 	a.addEventLocked("info", fmt.Sprintf("manual source imported: %s, usable=%d", name, len(parsed.Nodes)))
-	if err := a.store.SaveConfig(a.config); err != nil {
-		a.config, a.state = previousConfig, previousState
-		return domain.Subscription{}, err
-	}
-	if err := a.store.SaveState(&a.state); err != nil {
-		a.config, a.state = previousConfig, previousState
-		_ = a.store.SaveConfig(a.config)
-		_ = a.store.SaveState(&a.state)
+	a.advanceConfigGenerationLocked()
+	if err := a.persistConfigAndStateLocked(previousConfig, previousState); err != nil {
 		return domain.Subscription{}, err
 	}
 	return sub, nil
@@ -587,14 +580,8 @@ func (a *App) UpdateSubscription(id string, update domain.Subscription) (domain.
 			a.config, a.state = previousConfig, previousState
 			return domain.Subscription{}, err
 		}
-		if err := a.store.SaveConfig(a.config); err != nil {
-			a.config, a.state = previousConfig, previousState
-			return domain.Subscription{}, err
-		}
-		if err := a.store.SaveState(&a.state); err != nil {
-			a.config, a.state = previousConfig, previousState
-			_ = a.store.SaveConfig(a.config)
-			_ = a.store.SaveState(&a.state)
+		a.advanceConfigGenerationLocked()
+		if err := a.persistConfigAndStateLocked(previousConfig, previousState); err != nil {
 			return domain.Subscription{}, err
 		}
 		return update, nil
@@ -626,14 +613,8 @@ func (a *App) DeleteSubscription(id string) error {
 		return err
 	}
 	a.addEventLocked("warn", fmt.Sprintf("subscription deleted: %s", name))
-	if err := a.store.SaveConfig(a.config); err != nil {
-		a.config, a.state = previousConfig, previousState
-		return err
-	}
-	if err := a.store.SaveState(&a.state); err != nil {
-		a.config, a.state = previousConfig, previousState
-		_ = a.store.SaveConfig(a.config)
-		_ = a.store.SaveState(&a.state)
+	a.advanceConfigGenerationLocked()
+	if err := a.persistConfigAndStateLocked(previousConfig, previousState); err != nil {
 		return err
 	}
 	return nil
@@ -644,15 +625,48 @@ func (a *App) ImportProviders(content []byte) ([]domain.Subscription, error) {
 	if err != nil {
 		return nil, err
 	}
+	a.applyMu.Lock()
+	defer a.applyMu.Unlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	seenNames := make(map[string]bool, len(a.config.Subscriptions)+len(providers))
+	seenIDs := make(map[string]bool, len(a.config.Subscriptions)+len(providers))
+	for _, existing := range a.config.Subscriptions {
+		seenNames[strings.ToLower(existing.Name)] = true
+		seenIDs[existing.ID] = true
+	}
 	added := make([]domain.Subscription, 0, len(providers))
 	for _, provider := range providers {
-		created, addErr := a.AddSubscription(provider)
-		if addErr == nil {
-			added = append(added, created)
+		if err := validateSubscription(provider); err != nil {
+			return nil, fmt.Errorf("provider %q: %w", provider.Name, err)
 		}
+		nameKey := strings.ToLower(provider.Name)
+		if seenNames[nameKey] {
+			return nil, fmt.Errorf("provider %q: subscription name already exists", provider.Name)
+		}
+		seenNames[nameKey] = true
+		if provider.ID == "" {
+			provider.ID, err = randomID("sub_", 9)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if seenIDs[provider.ID] {
+			return nil, fmt.Errorf("provider %q: subscription ID already exists", provider.Name)
+		}
+		seenIDs[provider.ID] = true
+		added = append(added, provider)
 	}
-	if len(added) == 0 {
-		return nil, errors.New("no new providers were imported")
+	previousConfig, previousState := clone(a.config), clone(a.state)
+	a.config.Subscriptions = append(a.config.Subscriptions, added...)
+	if err := a.rebuildDraftLocked("provider-import"); err != nil {
+		a.config, a.state = previousConfig, previousState
+		return nil, err
+	}
+	a.advanceConfigGenerationLocked()
+	a.addEventLocked("info", fmt.Sprintf("Clash providers imported: %d", len(added)))
+	if err := a.persistConfigAndStateLocked(previousConfig, previousState); err != nil {
+		return nil, err
 	}
 	return added, nil
 }
@@ -730,14 +744,21 @@ func (a *App) Refresh(ctx context.Context, id string) error {
 		a.state = previousState
 	}
 	autoApply := a.config.AutoApply && a.state.Draft != nil && !a.state.Draft.Risky && engineRunning
+	expectedRevision := ""
+	if autoApply {
+		expectedRevision = a.state.Draft.ID
+	}
 	a.mu.Unlock()
-	a.applyMu.Unlock()
 	if saveErr != nil {
+		a.applyMu.Unlock()
 		return saveErr
 	}
 	if autoApply {
-		return a.Apply(false)
+		err := a.applyLocked(false, expectedRevision, true)
+		a.applyMu.Unlock()
+		return err
 	}
+	a.applyMu.Unlock()
 	return nil
 }
 
@@ -766,10 +787,13 @@ func (a *App) RebuildDraft(generatedBy string) (*domain.Revision, error) {
 	defer a.applyMu.Unlock()
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	previousState := clone(a.state)
 	if err := a.rebuildDraftLocked(generatedBy); err != nil {
+		a.state = previousState
 		return nil, err
 	}
 	if err := a.store.SaveState(&a.state); err != nil {
+		a.state = previousState
 		return nil, err
 	}
 	return clonePtr(a.state.Draft), nil
@@ -778,12 +802,19 @@ func (a *App) RebuildDraft(generatedBy string) (*domain.Revision, error) {
 func (a *App) Apply(force bool) error {
 	a.applyMu.Lock()
 	defer a.applyMu.Unlock()
+	return a.applyLocked(force, "", false)
+}
+
+func (a *App) applyLocked(force bool, expectedRevision string, requireAutoApply bool) error {
 	a.mu.RLock()
 	config := clone(a.config)
 	draft := clonePtr(a.state.Draft)
 	safeMode := a.state.SafeMode
 	previousState := clone(a.state)
 	a.mu.RUnlock()
+	if requireAutoApply && (!config.AutoApply || draft == nil || draft.ID != expectedRevision) {
+		return nil
+	}
 	engineWasRunning := a.engine.Status().State == "running"
 	if draft == nil {
 		return errors.New("there is no draft to apply")
@@ -829,7 +860,7 @@ func (a *App) Apply(force bool) error {
 	}
 	a.mu.Unlock()
 	if err != nil {
-		rollbackErr := a.restoreEngine(config, previousState.Applied, engineWasRunning)
+		rollbackErr := a.restoreEngine(config, previousState, engineWasRunning)
 		if rollbackErr != nil {
 			return fmt.Errorf("persist applied revision: %v; restore previous Engine: %w", err, rollbackErr)
 		}
@@ -838,12 +869,17 @@ func (a *App) Apply(force bool) error {
 	return err
 }
 
-func (a *App) restoreEngine(config domain.Config, previous *domain.Revision, wasRunning bool) error {
+func (a *App) restoreEngine(fallbackConfig domain.Config, previousState domain.RuntimeState, wasRunning bool) error {
 	if !wasRunning {
 		return a.engine.Stop()
 	}
+	previous := previousState.Applied
 	if previous == nil || len(previous.Nodes) == 0 {
 		return a.engine.Stop()
+	}
+	config := fallbackConfig
+	if previousState.AppliedConfig != nil {
+		config = clone(*previousState.AppliedConfig)
 	}
 	compiled, err := a.compiler.Compile(config, previous)
 	if err != nil {
@@ -876,6 +912,7 @@ func (a *App) DiscardDraft() error {
 	restored.ManagementToken = a.config.ManagementToken
 	restored.PolicyToken = a.config.PolicyToken
 	restored.Mode = a.config.Mode
+	restored.Generation = a.config.Generation
 	a.config = restored
 	if a.state.AppliedSnapshots != nil {
 		a.state.Snapshots = clone(a.state.AppliedSnapshots)
@@ -887,14 +924,8 @@ func (a *App) DiscardDraft() error {
 	draft.GeneratedBy = "discard"
 	a.state.Draft = draft
 	a.addEventLocked("warn", fmt.Sprintf("draft discarded; restored applied revision inputs: %s", a.state.Applied.ID))
-	if err := a.store.SaveConfig(a.config); err != nil {
-		a.config, a.state = previousConfig, previousState
-		return err
-	}
-	if err := a.store.SaveState(&a.state); err != nil {
-		a.config, a.state = previousConfig, previousState
-		_ = a.store.SaveConfig(a.config)
-		_ = a.store.SaveState(&a.state)
+	a.advanceConfigGenerationLocked()
+	if err := a.persistConfigAndStateLocked(previousConfig, previousState); err != nil {
 		return err
 	}
 	return nil
@@ -909,6 +940,9 @@ func (a *App) StartEngine() error {
 	a.mu.RLock()
 	applied := clonePtr(a.state.Applied)
 	config := clone(a.config)
+	if a.state.AppliedConfig != nil {
+		config = clone(*a.state.AppliedConfig)
+	}
 	safeMode := a.state.SafeMode
 	a.mu.RUnlock()
 	if safeMode {
@@ -921,30 +955,69 @@ func (a *App) StartEngine() error {
 	if err != nil {
 		return err
 	}
-	inbound := revisionInbound(config, applied)
-	if err := a.engine.Start(applied, compiled, inbound); err != nil {
+	a.mu.Lock()
+	previousState := clone(a.state)
+	a.state.AutoStart = true
+	if err := a.store.SaveState(&a.state); err != nil {
+		a.state = previousState
+		a.mu.Unlock()
 		return err
 	}
-	a.mu.Lock()
-	a.state.AutoStart = true
-	a.addEventLocked("info", "Engine autostart enabled")
-	err = a.store.SaveState(&a.state)
 	a.mu.Unlock()
-	return err
+	inbound := revisionInbound(config, applied)
+	if err := a.engine.Start(applied, compiled, inbound); err != nil {
+		a.mu.Lock()
+		a.state = previousState
+		rollbackErr := a.store.SaveState(&a.state)
+		a.mu.Unlock()
+		if rollbackErr != nil {
+			return fmt.Errorf("start Engine: %v; rollback autostart state: %w", err, rollbackErr)
+		}
+		return err
+	}
+	a.AddEvent("info", "Engine autostart enabled")
+	return nil
 }
 
 func (a *App) StopEngine() error {
 	a.applyMu.Lock()
 	defer a.applyMu.Unlock()
-	if err := a.engine.Stop(); err != nil {
+	status := a.engine.Status()
+	a.mu.Lock()
+	previousState := clone(a.state)
+	config := clone(a.config)
+	if a.state.AppliedConfig != nil {
+		config = clone(*a.state.AppliedConfig)
+	}
+	applied := clonePtr(a.state.Applied)
+	a.state.AutoStart = false
+	if err := a.store.SaveState(&a.state); err != nil {
+		a.state = previousState
+		a.mu.Unlock()
 		return err
 	}
-	a.mu.Lock()
-	a.state.AutoStart = false
-	a.addEventLocked("warn", "Engine stopped by user")
-	err := a.store.SaveState(&a.state)
 	a.mu.Unlock()
-	return err
+	if err := a.engine.Stop(); err != nil {
+		a.mu.Lock()
+		a.state = previousState
+		stateRollbackErr := a.store.SaveState(&a.state)
+		a.mu.Unlock()
+		engineRollbackErr := error(nil)
+		if status.State == "running" && applied != nil {
+			compiled, compileErr := a.compiler.Compile(config, applied)
+			if compileErr != nil {
+				engineRollbackErr = compileErr
+			} else {
+				engineRollbackErr = a.engine.Start(applied, compiled, revisionInbound(config, applied))
+			}
+		}
+		if stateRollbackErr != nil || engineRollbackErr != nil {
+			return fmt.Errorf("stop Engine: %v; rollback state: %v; rollback Engine: %v", err, stateRollbackErr, engineRollbackErr)
+		}
+		return err
+	}
+	a.AddEvent("warn", "Engine stopped by user")
+	return nil
 }
 
 func (a *App) RestartEngine() error {
@@ -956,6 +1029,9 @@ func (a *App) RestartEngine() error {
 	a.mu.RLock()
 	applied := clonePtr(a.state.Applied)
 	config := clone(a.config)
+	if a.state.AppliedConfig != nil {
+		config = clone(*a.state.AppliedConfig)
+	}
 	safeMode := a.state.SafeMode
 	a.mu.RUnlock()
 	if safeMode {
@@ -968,16 +1044,28 @@ func (a *App) RestartEngine() error {
 	if err != nil {
 		return err
 	}
-	if err := a.engine.Apply(applied, compiled, revisionInbound(config, applied)); err != nil {
-		return err
-	}
 	a.mu.Lock()
+	previousState := clone(a.state)
 	a.state.AutoStart = true
 	a.state.LastError = ""
-	a.addEventLocked("info", fmt.Sprintf("Engine restarted with applied revision: %s", applied.ID))
-	err = a.store.SaveState(&a.state)
+	if err := a.store.SaveState(&a.state); err != nil {
+		a.state = previousState
+		a.mu.Unlock()
+		return err
+	}
 	a.mu.Unlock()
-	return err
+	if err := a.engine.Apply(applied, compiled, revisionInbound(config, applied)); err != nil {
+		a.mu.Lock()
+		a.state = previousState
+		rollbackErr := a.store.SaveState(&a.state)
+		a.mu.Unlock()
+		if rollbackErr != nil {
+			return fmt.Errorf("restart Engine: %v; rollback autostart state: %w", err, rollbackErr)
+		}
+		return err
+	}
+	a.AddEvent("info", fmt.Sprintf("Engine restarted with applied revision: %s", applied.ID))
+	return nil
 }
 
 func (a *App) RedactedDraftConfig() ([]byte, error) {
@@ -1108,6 +1196,9 @@ func (a *App) startApplied() error {
 	a.mu.RLock()
 	applied := clonePtr(a.state.Applied)
 	config := clone(a.config)
+	if a.state.AppliedConfig != nil {
+		config = clone(*a.state.AppliedConfig)
+	}
 	a.mu.RUnlock()
 	if applied == nil || len(applied.Nodes) == 0 {
 		return nil
@@ -1152,6 +1243,23 @@ func hydrateRevisionEndpoint(config domain.Config, revision *domain.Revision) {
 func revisionInbound(config domain.Config, revision *domain.Revision) string {
 	bind, port, _ := revisionEndpoint(config, revision)
 	return net.JoinHostPort(bind, fmt.Sprint(port))
+}
+
+func (a *App) advanceConfigGenerationLocked() {
+	a.config.Generation++
+	a.state.ConfigGeneration = a.config.Generation
+}
+
+func (a *App) persistConfigAndStateLocked(previousConfig domain.Config, previousState domain.RuntimeState) error {
+	if err := a.store.SaveConfigAndState(a.config, &a.state); err != nil {
+		a.config, a.state = previousConfig, previousState
+		rollbackErr := a.store.SaveConfigAndState(a.config, &a.state)
+		if rollbackErr != nil {
+			return fmt.Errorf("persist config/state: %v; rollback config/state: %w", err, rollbackErr)
+		}
+		return err
+	}
+	return nil
 }
 
 func (a *App) rebuildDraftLocked(generatedBy string) error {

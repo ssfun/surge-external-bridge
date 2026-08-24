@@ -214,6 +214,8 @@ macOS 使用用户级 LaunchAgent，Linux 默认使用 systemd user service：
 
 也可以在配置台“配置 → 运行与维护”中管理。服务只托管一个 vless2surge 进程，不要求系统安装 sing-box。
 
+为避免配置台当前进程与系统服务争抢同一组 HTTP/SOCKS 端口，从配置台安装时只注册开机自启，当前进程会继续运行，服务在下次用户登录后接管；在终端执行 `service install` 时没有正在提供配置台的同进程，因此会立即启动服务。
+
 安装流程会先把数据目录解析为绝对路径，并以 `0700` 权限创建或收紧。LaunchAgent 和 systemd user service 都使用 `0077` umask；macOS 服务输出保存在私有数据目录，Linux 日志由 systemd journal 承载。
 
 ## Linux 私网网关
@@ -231,7 +233,7 @@ SOCKS、HTTP 和 Policy 终点会拒绝公开 IP 字面量；请使用回环、R
 
 ## 状态与恢复
 
-- `config.json` 与 `state.json` 以 `0600` 权限原子写入。
+- `config.json` 与 `state.json` 以 `0600` 权限写入；涉及两者的变更先提交一个原子事务日志，启动时会完成中断的事务，并用同一配置 generation 检测旧版本遗留的不一致状态。
 - 订阅刷新失败或返回空内容时保留最近成功快照。
 - 节点异常骤降会把草稿标记为高风险，必须显式确认。
 - 候选 Engine 启动失败时恢复上一 applied revision。

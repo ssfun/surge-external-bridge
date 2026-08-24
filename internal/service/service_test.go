@@ -91,3 +91,14 @@ func TestRenderRejectsUnitInjectionInPaths(t *testing.T) {
 		t.Fatal("NUL injection in LaunchAgent path was accepted")
 	}
 }
+
+func TestConfigurationConsoleRegistrationDoesNotStartSecondProcess(t *testing.T) {
+	deferred := strings.Join(systemdEnableArguments(false), " ")
+	immediate := strings.Join(systemdEnableArguments(true), " ")
+	if strings.Contains(deferred, "--now") {
+		t.Fatalf("deferred service registration would start a competing process: %s", deferred)
+	}
+	if !strings.Contains(immediate, "--now") {
+		t.Fatalf("CLI service installation no longer activates the service: %s", immediate)
+	}
+}

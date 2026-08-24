@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -102,5 +103,46 @@ func TestCorruptStateIsNotOverwritten(t *testing.T) {
 	}
 	if string(after) != string(original) {
 		t.Fatal("corrupt state was modified while reporting the load failure")
+	}
+}
+
+func TestInterruptedConfigStateTransactionIsCompletedOnLoad(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "data")
+	persistence := New(directory)
+	config, state, err := persistence.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := persistence.SaveConfigAndState(config, &state); err != nil {
+		t.Fatal(err)
+	}
+	config.Generation = 7
+	config.SocksPort = 17080
+	state.ConfigGeneration = 7
+	state.LastError = "transaction committed"
+	if err := writeJSONAtomic(persistence.transactionPath, transaction{Config: config, State: state}); err != nil {
+		t.Fatal(err)
+	}
+
+	recoveredConfig, recoveredState, err := New(directory).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recoveredConfig.Generation != 7 || recoveredConfig.SocksPort != 17080 || recoveredState.ConfigGeneration != 7 || recoveredState.LastError != "transaction committed" {
+		t.Fatalf("pending transaction was not recovered atomically: config=%+v state=%+v", recoveredConfig, recoveredState)
+	}
+	if _, err := os.Stat(persistence.transactionPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("completed transaction journal was not removed: %v", err)
+	}
+	var mirroredConfig domain.Config
+	var mirroredState domain.RuntimeState
+	if err := readJSON(persistence.configPath, &mirroredConfig); err != nil {
+		t.Fatal(err)
+	}
+	if err := readJSON(persistence.statePath, &mirroredState); err != nil {
+		t.Fatal(err)
+	}
+	if mirroredConfig.Generation != 7 || mirroredState.ConfigGeneration != 7 {
+		t.Fatalf("transaction recovery did not repair mirror files: config=%+v state=%+v", mirroredConfig, mirroredState)
 	}
 }

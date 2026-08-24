@@ -13,17 +13,24 @@ import (
 )
 
 type Store struct {
-	dir        string
-	configPath string
-	statePath  string
-	mu         sync.Mutex
+	dir             string
+	configPath      string
+	statePath       string
+	transactionPath string
+	mu              sync.Mutex
+}
+
+type transaction struct {
+	Config domain.Config       `json:"config"`
+	State  domain.RuntimeState `json:"state"`
 }
 
 func New(dir string) *Store {
 	return &Store{
-		dir:        dir,
-		configPath: filepath.Join(dir, "config.json"),
-		statePath:  filepath.Join(dir, "state.json"),
+		dir:             dir,
+		configPath:      filepath.Join(dir, "config.json"),
+		statePath:       filepath.Join(dir, "state.json"),
+		transactionPath: filepath.Join(dir, ".config-state-transaction.json"),
 	}
 }
 
@@ -39,13 +46,21 @@ func (s *Store) Load() (domain.Config, domain.RuntimeState, error) {
 		return domain.Config{}, domain.RuntimeState{}, fmt.Errorf("secure data directory: %w", err)
 	}
 
-	config := domain.DefaultConfig()
-	if err := readJSON(s.configPath, &config); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return domain.Config{}, domain.RuntimeState{}, fmt.Errorf("load config: %w", err)
-	}
-	state := domain.DefaultRuntimeState()
-	if err := readJSON(s.statePath, &state); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return domain.Config{}, domain.RuntimeState{}, fmt.Errorf("load state: %w", err)
+	config, state := domain.DefaultConfig(), domain.DefaultRuntimeState()
+	recoveringTransaction := false
+	var pending transaction
+	if err := readJSON(s.transactionPath, &pending); err == nil {
+		config, state = pending.Config, pending.State
+		recoveringTransaction = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return domain.Config{}, domain.RuntimeState{}, fmt.Errorf("load interrupted config/state transaction: %w", err)
+	} else {
+		if err := readJSON(s.configPath, &config); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return domain.Config{}, domain.RuntimeState{}, fmt.Errorf("load config: %w", err)
+		}
+		if err := readJSON(s.statePath, &state); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return domain.Config{}, domain.RuntimeState{}, fmt.Errorf("load state: %w", err)
+		}
 	}
 	if err := migrateState(&state); err != nil {
 		return domain.Config{}, domain.RuntimeState{}, err
@@ -55,6 +70,20 @@ func (s *Store) Load() (domain.Config, domain.RuntimeState, error) {
 	}
 	if state.Registry == nil {
 		state.Registry = map[string]domain.Identity{}
+	}
+	if recoveringTransaction {
+		if err := writeJSONAtomic(s.configPath, config); err != nil {
+			return domain.Config{}, domain.RuntimeState{}, fmt.Errorf("recover config transaction: %w", err)
+		}
+		if err := writeJSONAtomic(s.statePath, state); err != nil {
+			return domain.Config{}, domain.RuntimeState{}, fmt.Errorf("recover state transaction: %w", err)
+		}
+		if err := os.Remove(s.transactionPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return domain.Config{}, domain.RuntimeState{}, fmt.Errorf("finish config/state transaction recovery: %w", err)
+		}
+		if err := syncDirectory(s.dir); err != nil {
+			return domain.Config{}, domain.RuntimeState{}, fmt.Errorf("sync recovered config/state transaction: %w", err)
+		}
 	}
 	return config, state, nil
 }
@@ -88,6 +117,26 @@ func (s *Store) SaveState(state *domain.RuntimeState) error {
 	defer s.mu.Unlock()
 	state.UpdatedAt = time.Now().UTC()
 	return writeJSONAtomic(s.statePath, state)
+}
+
+func (s *Store) SaveConfigAndState(config domain.Config, state *domain.RuntimeState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state.UpdatedAt = time.Now().UTC()
+	pending := transaction{Config: config, State: *state}
+	if err := writeJSONAtomic(s.transactionPath, pending); err != nil {
+		return err
+	}
+	if err := writeJSONAtomic(s.configPath, config); err != nil {
+		return err
+	}
+	if err := writeJSONAtomic(s.statePath, state); err != nil {
+		return err
+	}
+	if err := os.Remove(s.transactionPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return syncDirectory(s.dir)
 }
 
 func readJSON(path string, target any) error {
@@ -134,5 +183,17 @@ func writeJSONAtomic(path string, value any) error {
 	if err := os.Rename(tmpPath, path); err != nil {
 		return err
 	}
-	return os.Chmod(path, 0o600)
+	if err := os.Chmod(path, 0o600); err != nil {
+		return err
+	}
+	return syncDirectory(filepath.Dir(path))
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }

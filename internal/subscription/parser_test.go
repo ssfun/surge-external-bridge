@@ -87,7 +87,19 @@ proxies:
 	if result.Dropped[0].Reason != "Surge 原生支持" {
 		t.Fatalf("unexpected drop reason: %s", result.Dropped[0].Reason)
 	}
-	providers, err := ParseClashProviders(content)
+	if providers, err := ParseClashProviders(content); err == nil || providers != nil || !strings.Contains(err.Error(), "z-invalid") {
+		t.Fatalf("mixed valid/invalid providers were partially accepted: providers=%+v err=%v", providers, err)
+	}
+	providers, err := ParseClashProviders([]byte(`proxy-providers:
+  beup:
+    type: http
+    url: https://example.com/sub/token
+    filter: 香港|HK
+    interval: 7200
+    header:
+      User-Agent: [Clash.Meta]
+      Authorization: Bearer secret
+`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,5 +228,16 @@ func TestProvidersAreDeterministicallySorted(t *testing.T) {
 	}
 	if len(providers) != 2 || providers[0].Name != "alpha" || providers[1].Name != "zeta" {
 		t.Fatalf("providers are not sorted: %+v", providers)
+	}
+}
+
+func TestProvidersRejectPartialInvalidInputWithNames(t *testing.T) {
+	providers, err := ParseClashProviders([]byte(`proxy-providers:
+  valid: {type: http, url: https://valid.example/sub}
+  missing-url: {type: http}
+  bad-scheme: {type: http, url: file:///tmp/sub}
+`))
+	if err == nil || providers != nil || !strings.Contains(err.Error(), "missing-url") || !strings.Contains(err.Error(), "bad-scheme") {
+		t.Fatalf("invalid providers were silently skipped: providers=%+v err=%v", providers, err)
 	}
 }

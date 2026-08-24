@@ -5,6 +5,7 @@ import "time"
 const SchemaVersion = 1
 
 type Config struct {
+	Generation             uint64         `json:"generation"`
 	Mode                   string         `json:"mode"`
 	HTTPBind               string         `json:"http_bind"`
 	SocksBind              string         `json:"socks_bind"`
@@ -136,6 +137,7 @@ type Revision struct {
 
 type RuntimeState struct {
 	SchemaVersion    int                 `json:"schema_version"`
+	ConfigGeneration uint64              `json:"config_generation"`
 	Snapshots        map[string]Snapshot `json:"snapshots"`
 	Registry         map[string]Identity `json:"registry"`
 	Draft            *Revision           `json:"draft,omitempty"`

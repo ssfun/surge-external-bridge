@@ -2,10 +2,12 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +16,27 @@ import (
 	"github.com/ssfun/vless2surge/internal/domain"
 	"github.com/ssfun/vless2surge/internal/store"
 )
+
+type failingPersistence struct {
+	persistence
+	failState            bool
+	combinedFailuresLeft int
+}
+
+func (s *failingPersistence) SaveState(state *domain.RuntimeState) error {
+	if s.failState {
+		return errors.New("injected state persistence failure")
+	}
+	return s.persistence.SaveState(state)
+}
+
+func (s *failingPersistence) SaveConfigAndState(config domain.Config, state *domain.RuntimeState) error {
+	if s.combinedFailuresLeft > 0 {
+		s.combinedFailuresLeft--
+		return errors.New("injected config/state transaction failure")
+	}
+	return s.persistence.SaveConfigAndState(config, state)
+}
 
 type mutableFeed struct {
 	mu     sync.RWMutex
@@ -866,6 +889,201 @@ func TestLegacyRevisionEndpointIsHydratedOnce(t *testing.T) {
 	stable := reopened.State().Applied
 	if stable.SocksPort != 11080 || stable.SocksAdvertise != "10.0.0.1" {
 		t.Fatalf("hydrated applied endpoint followed later draft config: %+v", stable)
+	}
+}
+
+func TestImportProvidersIsAtomic(t *testing.T) {
+	application := newTestApp(t)
+	defer application.Close()
+	if _, err := application.AddSubscription(domain.Subscription{Name: "alpha", URL: "https://existing.example/sub", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	beforeConfig := application.Config()
+	beforeState := application.State()
+	_, err := application.ImportProviders([]byte(`proxy-providers:
+  alpha: {type: http, url: https://duplicate.example/sub}
+  beta: {type: http, url: https://new.example/sub}
+`))
+	if err == nil || !strings.Contains(err.Error(), "alpha") {
+		t.Fatalf("duplicate provider did not fail with its name: %v", err)
+	}
+	if after := application.Config(); !reflect.DeepEqual(after, beforeConfig) {
+		t.Fatalf("partial provider import changed config: before=%+v after=%+v", beforeConfig, after)
+	}
+	if after := application.State(); !reflect.DeepEqual(after, beforeState) {
+		t.Fatalf("partial provider import changed state: before=%+v after=%+v", beforeState, after)
+	}
+
+	_, err = application.ImportProviders([]byte(`proxy-providers:
+  beta: {type: http, url: https://new.example/sub}
+  gamma: {type: http, url: https://gamma.example/sub, interval: 1}
+`))
+	if err == nil || !strings.Contains(err.Error(), "gamma") || len(application.Config().Subscriptions) != len(beforeConfig.Subscriptions) {
+		t.Fatalf("invalid provider caused a partial import: err=%v config=%+v", err, application.Config())
+	}
+}
+
+func TestConfigGenerationMismatchRebuildsDraftOnStartup(t *testing.T) {
+	dir := t.TempDir()
+	application := newTestAppAt(t, dir)
+	if _, err := application.AddManualSubscription("Recovery", []byte(links(1))); err != nil {
+		t.Fatal(err)
+	}
+	oldDraft := application.State().Draft
+	if err := application.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	persistence := store.New(dir)
+	config, state, err := persistence.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.SocksPort = freeAppPort(t)
+	config.Generation++
+	if err := persistence.SaveConfig(config); err != nil {
+		t.Fatal(err)
+	}
+	if state.ConfigGeneration == config.Generation {
+		t.Fatal("test fixture did not create a generation mismatch")
+	}
+
+	reopened, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	recovered := reopened.State()
+	if recovered.ConfigGeneration != config.Generation || reopened.Config().Generation != config.Generation {
+		t.Fatalf("generation mismatch was not repaired: config=%+v state=%+v", reopened.Config(), recovered)
+	}
+	if recovered.Draft == nil || recovered.Draft.SocksPort != config.SocksPort || recovered.Draft.ID == oldDraft.ID || recovered.Draft.GeneratedBy != "config-recovery" {
+		t.Fatalf("draft was not rebuilt from the committed config: old=%+v recovered=%+v", oldDraft, recovered.Draft)
+	}
+}
+
+func TestRebuildDraftRestoresMemoryWhenStateSaveFails(t *testing.T) {
+	application := newTestApp(t)
+	defer application.Close()
+	if _, err := application.AddManualSubscription("Rollback", []byte(links(1))); err != nil {
+		t.Fatal(err)
+	}
+	before := application.State()
+	original := application.store
+	application.store = &failingPersistence{persistence: original, failState: true}
+	if _, err := application.RebuildDraft("failure-test"); err == nil {
+		t.Fatal("injected state save failure unexpectedly succeeded")
+	}
+	application.store = original
+	if after := application.State(); !reflect.DeepEqual(after, before) {
+		t.Fatalf("failed rebuild changed in-memory state: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestConfigTransactionFailureRestoresMemoryAndDisk(t *testing.T) {
+	application := newTestApp(t)
+	defer application.Close()
+	if _, err := application.AddManualSubscription("Transaction", []byte(links(1))); err != nil {
+		t.Fatal(err)
+	}
+	beforeConfig := application.Config()
+	beforeState := application.State()
+	original := application.store
+	application.store = &failingPersistence{persistence: original, combinedFailuresLeft: 1}
+
+	update := application.Config()
+	update.SocksPort = freeAppPort(t)
+	if err := application.UpdateConfig(update); err == nil {
+		t.Fatal("injected config/state transaction failure unexpectedly succeeded")
+	}
+	application.store = original
+
+	afterConfig, afterState := application.Config(), application.State()
+	if !reflect.DeepEqual(afterConfig, beforeConfig) {
+		t.Fatalf("failed config transaction changed in-memory config: before=%+v after=%+v", beforeConfig, afterConfig)
+	}
+	if afterState.ConfigGeneration != beforeState.ConfigGeneration || afterState.Draft == nil || beforeState.Draft == nil || afterState.Draft.ID != beforeState.Draft.ID {
+		t.Fatalf("failed config transaction changed in-memory state: before=%+v after=%+v", beforeState, afterState)
+	}
+
+	persistedConfig, persistedState, err := store.New(application.DataDir()).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(persistedConfig, beforeConfig) || persistedState.ConfigGeneration != beforeState.ConfigGeneration || persistedState.Draft == nil || persistedState.Draft.ID != beforeState.Draft.ID {
+		t.Fatalf("failed config transaction was not rolled back on disk: config=%+v state=%+v", persistedConfig, persistedState)
+	}
+}
+
+func TestEngineLifecycleDoesNotChangeRuntimeWhenStateSaveFails(t *testing.T) {
+	application := newTestApp(t)
+	defer application.Close()
+	if _, err := application.AddManualSubscription("Lifecycle", []byte(links(1))); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Apply(false); err != nil {
+		t.Fatal(err)
+	}
+	original := application.store
+	failing := &failingPersistence{persistence: original, failState: true}
+	application.store = failing
+	if err := application.StopEngine(); err == nil {
+		t.Fatal("stop unexpectedly ignored the injected persistence failure")
+	}
+	if status := application.EngineStatus(); status.State != "running" || !application.State().AutoStart {
+		t.Fatalf("failed stop changed runtime or autostart: status=%+v state=%+v", status, application.State())
+	}
+	beforeRestart := application.EngineStatus()
+	if err := application.RestartEngine(); err == nil {
+		t.Fatal("restart unexpectedly ignored the injected persistence failure")
+	}
+	if after := application.EngineStatus(); after.State != "running" || after.StartedAt != beforeRestart.StartedAt || after.Revision != beforeRestart.Revision {
+		t.Fatalf("failed restart changed runtime: before=%+v after=%+v", beforeRestart, after)
+	}
+
+	application.store = original
+	if err := application.StopEngine(); err != nil {
+		t.Fatal(err)
+	}
+	application.store = failing
+	if err := application.StartEngine(); err == nil {
+		t.Fatal("start unexpectedly ignored the injected persistence failure")
+	}
+	if status := application.EngineStatus(); status.State != "stopped" || application.State().AutoStart {
+		t.Fatalf("failed start changed runtime or autostart: status=%+v state=%+v", status, application.State())
+	}
+	application.store = original
+}
+
+func TestAutoApplyRequiresTheExpectedCurrentRevision(t *testing.T) {
+	application := newTestApp(t)
+	defer application.Close()
+	if _, err := application.AddManualSubscription("Expected", []byte(links(1))); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Apply(false); err != nil {
+		t.Fatal(err)
+	}
+	appliedID := application.State().Applied.ID
+	if _, err := application.RotateCredentials(""); err != nil {
+		t.Fatal(err)
+	}
+	currentDraftID := application.State().Draft.ID
+	application.applyMu.Lock()
+	err := application.applyLocked(false, appliedID, true)
+	application.applyMu.Unlock()
+	if err != nil || application.State().Applied.ID != appliedID || currentDraftID == appliedID {
+		t.Fatalf("stale auto-apply expectation changed applied revision: err=%v state=%+v", err, application.State())
+	}
+
+	application.mu.Lock()
+	application.config.AutoApply = false
+	application.mu.Unlock()
+	application.applyMu.Lock()
+	err = application.applyLocked(false, currentDraftID, true)
+	application.applyMu.Unlock()
+	if err != nil || application.State().Applied.ID != appliedID {
+		t.Fatalf("disabled auto-apply changed applied revision: err=%v state=%+v", err, application.State())
 	}
 }
 

@@ -479,7 +479,7 @@ func (s *Server) serviceStatus(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) serviceInstall(w http.ResponseWriter, _ *http.Request) {
-	info, err := serviceManager.Install(s.app.DataDir())
+	info, err := serviceManager.Register(s.app.DataDir())
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return

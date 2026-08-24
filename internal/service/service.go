@@ -51,6 +51,18 @@ func serviceActive() bool {
 }
 
 func Install(dataDir string) (Info, error) {
+	return install(dataDir, true)
+}
+
+// Register installs the user service without starting a second vless2surge
+// process. It is used by the running configuration console, which already owns
+// the configured HTTP and SOCKS ports. The service will start at the next user
+// login; CLI installation can still activate it immediately via Install.
+func Register(dataDir string) (Info, error) {
+	return install(dataDir, false)
+}
+
+func install(dataDir string, activate bool) (Info, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return Info{}, err
@@ -77,7 +89,7 @@ func Install(dataDir string) (Info, error) {
 	if err := os.WriteFile(path, content, 0o600); err != nil {
 		return Info{}, err
 	}
-	if runtime.GOOS == "darwin" {
+	if runtime.GOOS == "darwin" && activate {
 		uid := os.Getuid()
 		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(uid), path).Run()
 		if output, err := exec.Command("launchctl", "bootstrap", "gui/"+strconv.Itoa(uid), path).CombinedOutput(); err != nil {
@@ -87,11 +99,20 @@ func Install(dataDir string) (Info, error) {
 		if output, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
 			return Info{}, fmt.Errorf("systemctl daemon-reload: %w: %s", err, bytes.TrimSpace(output))
 		}
-		if output, err := exec.Command("systemctl", "--user", "enable", "--now", "vless2surge.service").CombinedOutput(); err != nil {
+		arguments := systemdEnableArguments(activate)
+		if output, err := exec.Command("systemctl", arguments...).CombinedOutput(); err != nil {
 			return Info{}, fmt.Errorf("systemctl enable: %w: %s", err, bytes.TrimSpace(output))
 		}
 	}
 	return Status()
+}
+
+func systemdEnableArguments(activate bool) []string {
+	arguments := []string{"--user", "enable"}
+	if activate {
+		arguments = append(arguments, "--now")
+	}
+	return append(arguments, "vless2surge.service")
 }
 
 func prepareDataDir(dataDir string) (string, error) {

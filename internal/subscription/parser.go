@@ -340,10 +340,12 @@ func ParseClashProviders(content []byte) ([]domain.Subscription, error) {
 		return nil, errors.New("no proxy-providers found")
 	}
 	result := make([]domain.Subscription, 0, len(root.Providers))
+	invalid := make([]string, 0)
 	for name, provider := range root.Providers {
 		rawURL := asString(provider["url"])
 		parsedURL, err := url.Parse(rawURL)
 		if err != nil || parsedURL.Host == "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+			invalid = append(invalid, fmt.Sprintf("%s: URL must be HTTP or HTTPS", name))
 			continue
 		}
 		result = append(result, domain.Subscription{
@@ -355,6 +357,10 @@ func ParseClashProviders(content []byte) ([]domain.Subscription, error) {
 			Headers:        firstHeaderMap(provider["headers"], provider["header"]),
 			RefreshSeconds: asInt(provider["interval"]),
 		})
+	}
+	if len(invalid) > 0 {
+		sort.Strings(invalid)
+		return nil, fmt.Errorf("invalid proxy-providers: %s", strings.Join(invalid, "; "))
 	}
 	if len(result) == 0 {
 		return nil, errors.New("proxy-providers contain no HTTP URLs")
