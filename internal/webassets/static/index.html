@@ -15,14 +15,11 @@
         <div><strong>vless2surge</strong><span>EMBEDDED PROTOCOL GATEWAY</span></div>
       </div>
       <nav id="nav">
-        <button class="active" data-view="overview"><b>00</b><span>总览</span></button>
-        <button data-view="subscriptions"><b>01</b><span>订阅</span></button>
-        <button data-view="process"><b>02</b><span>处理</span></button>
-        <button data-view="nodes"><b>03</b><span>节点</span></button>
-        <button data-view="gateway"><b>04</b><span>网关</span></button>
-        <button data-view="config"><b>05</b><span>配置</span><em id="dirty-dot" hidden>Δ</em></button>
-        <button data-view="diagnostics"><b>06</b><span>诊断</span></button>
-        <button data-view="logs"><b>07</b><span>日志</span></button>
+        <button class="active" data-section="overview"><b data-short="总">00</b><span>总览</span></button>
+        <button data-section="nodes"><b data-short="节">01</b><span>节点管理</span></button>
+        <button data-section="gateway"><b data-short="网">02</b><span>网关</span><em id="dirty-dot" hidden>Δ</em></button>
+        <button data-section="config"><b data-short="配">03</b><span>配置</span></button>
+        <button data-section="troubleshoot"><b data-short="障">04</b><span>排障</span></button>
       </nav>
       <div class="side-status">
         <div class="engine-line"><i id="engine-led"></i><span id="engine-label">正在连接…</span></div>
