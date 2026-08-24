@@ -380,13 +380,22 @@ func (s *Server) discardDraft(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "discarded"})
 }
 
-func (s *Server) draftConfig(w http.ResponseWriter, _ *http.Request) {
-	content, err := s.app.RedactedDraftConfig()
+func (s *Server) draftConfig(w http.ResponseWriter, r *http.Request) {
+	full, _ := strconv.ParseBool(r.URL.Query().Get("full"))
+	var content []byte
+	var revision string
+	var err error
+	if full {
+		content, revision, err = s.app.DraftConfig()
+	} else {
+		content, revision, err = s.app.RedactedDraftConfig()
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("X-Vless2Surge-Revision", revision)
 	_, _ = w.Write(content)
 }
 

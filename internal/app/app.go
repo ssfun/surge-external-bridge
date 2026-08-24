@@ -1068,16 +1068,28 @@ func (a *App) RestartEngine() error {
 	return nil
 }
 
-func (a *App) RedactedDraftConfig() ([]byte, error) {
+func (a *App) DraftConfig() ([]byte, string, error) {
 	a.mu.RLock()
 	config := clone(a.config)
 	draft := clonePtr(a.state.Draft)
 	a.mu.RUnlock()
+	revision := ""
+	if draft != nil {
+		revision = draft.ID
+	}
 	compiled, err := a.compiler.Compile(config, draft)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return core.Redacted(compiled), nil
+	return compiled, revision, nil
+}
+
+func (a *App) RedactedDraftConfig() ([]byte, string, error) {
+	compiled, revision, err := a.DraftConfig()
+	if err != nil {
+		return nil, "", err
+	}
+	return core.Redacted(compiled), revision, nil
 }
 
 func (a *App) RotateCredentials(nodeID string) (int, error) {

@@ -62,6 +62,29 @@ func TestManagementAuthenticationAndPublicProjections(t *testing.T) {
 	if !strings.Contains(configPreview.Body.String(), `"password": "***"`) || !strings.Contains(configPreview.Body.String(), `"public_key": "***"`) {
 		t.Fatalf("config preview was not visibly redacted: %s", configPreview.Body.String())
 	}
+	if configPreview.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("redacted config preview is cacheable: %+v", configPreview.Header())
+	}
+	draftRevision := application.State().Draft.ID
+	if configPreview.Header().Get("X-Vless2Surge-Revision") != draftRevision {
+		t.Fatalf("redacted config preview revision = %q, want %q", configPreview.Header().Get("X-Vless2Surge-Revision"), draftRevision)
+	}
+
+	fullConfigPreview := request(handler, http.MethodGet, "/api/draft/config?full=true", managementSecret, "", "")
+	if fullConfigPreview.Code != http.StatusOK {
+		t.Fatalf("full config request failed: %d %s", fullConfigPreview.Code, fullConfigPreview.Body.String())
+	}
+	for _, secret := range []string{uuidSecret, passwordSecret, realitySecret} {
+		if !strings.Contains(fullConfigPreview.Body.String(), secret) {
+			t.Fatalf("full config preview omitted expected secret %q: %s", secret, fullConfigPreview.Body.String())
+		}
+	}
+	if fullConfigPreview.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("full config preview is cacheable: %+v", fullConfigPreview.Header())
+	}
+	if fullConfigPreview.Header().Get("X-Vless2Surge-Revision") != draftRevision {
+		t.Fatalf("full config preview revision = %q, want %q", fullConfigPreview.Header().Get("X-Vless2Surge-Revision"), draftRevision)
+	}
 }
 
 func TestLegacySettingsUpdatePreservesNodeTestDefaults(t *testing.T) {
