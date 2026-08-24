@@ -6,7 +6,8 @@ import (
 	"testing"
 )
 
-const realityLink = "vless://11111111-1111-4111-8111-111111111111@example.com:443?type=ws&security=reality&sni=www.example.com&fp=chrome&alpn=h2%2Chttp%2F1.1&pbk=public-key&sid=abcd&path=%2Fws&host=cdn.example.com#Hong%20Kong"
+const realityPublicKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+const realityLink = "vless://11111111-1111-4111-8111-111111111111@example.com:443?type=ws&security=reality&sni=www.example.com&fp=chrome&alpn=h2%2Chttp%2F1.1&pbk=" + realityPublicKey + "&sid=abcd&path=%2Fws&host=cdn.example.com#Hong%20Kong"
 
 func TestParseVLESSReality(t *testing.T) {
 	result, err := Parse([]byte(realityLink))
@@ -17,8 +18,19 @@ func TestParseVLESSReality(t *testing.T) {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 	node := result.Nodes[0]
-	if node.Name != "Hong Kong" || node.Network != "ws" || node.Security != "reality" || node.RealityPublicKey != "public-key" || node.Path != "/ws" || node.Host != "cdn.example.com" || len(node.ALPN) != 2 || node.ALPN[0] != "h2" || node.ALPN[1] != "http/1.1" {
+	if node.Name != "Hong Kong" || node.Network != "ws" || node.Security != "reality" || node.RealityPublicKey != realityPublicKey || node.Path != "/ws" || node.Host != "cdn.example.com" || len(node.ALPN) != 2 || node.ALPN[0] != "h2" || node.ALPN[1] != "http/1.1" {
 		t.Fatalf("unexpected node: %+v", node)
+	}
+}
+
+func TestRealityDefaultsToRequiredChromeUTLSFingerprint(t *testing.T) {
+	link := "vless://99999999-9999-4999-8999-999999999999@example.com:443?security=reality&pbk=" + realityPublicKey + "#Reality"
+	result, err := Parse([]byte(link))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Nodes) != 1 || result.Nodes[0].Fingerprint != "chrome" {
+		t.Fatalf("Reality node did not receive the required uTLS default: %+v", result)
 	}
 }
 
@@ -58,7 +70,7 @@ proxies:
     client-fingerprint: chrome
     alpn: [h2, http/1.1]
     reality-opts:
-      public-key: public-key
+      public-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
       short-id: abcd
   - name: Native SS
     type: ss
@@ -87,6 +99,28 @@ proxies:
 	}
 }
 
+func TestParseClashHTTPTransportListsAndHostHeader(t *testing.T) {
+	result, err := Parse([]byte(`proxies:
+  - name: HTTP transport
+    type: vless
+    server: edge.example.com
+    port: 443
+    uuid: 11111111-1111-4111-8111-111111111111
+    network: h2
+    tls: true
+    http-opts:
+      path: [/first, /second]
+      headers:
+        HOST: [cdn.example.com]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Nodes) != 1 || result.Nodes[0].Network != "http" || result.Nodes[0].Path != "/first" || result.Nodes[0].Host != "cdn.example.com" {
+		t.Fatalf("Clash HTTP transport options were not normalized: %+v", result)
+	}
+}
+
 func TestRejectUnsupportedSecurity(t *testing.T) {
 	link := "vless://11111111-1111-4111-8111-111111111111@example.com:443?security=unknown#bad"
 	result, err := Parse([]byte(link))
@@ -99,21 +133,44 @@ func TestRejectUnsupportedSecurity(t *testing.T) {
 }
 
 func TestRejectUnsupportedVLESSSemanticsPerNode(t *testing.T) {
-	valid := "vless://22222222-2222-4222-8222-222222222222@example.com:443?encryption=none&flow=xtls-rprx-vision&packetEncoding=xudp#valid"
+	valid := "vless://22222222-2222-4222-8222-222222222222@example.com:443?encryption=none&security=tls&sni=example.com&flow=xtls-rprx-vision&packetEncoding=xudp#valid"
 	invalid := []string{
 		"vless://11111111-1111-4111-8111-111111111111@example.com:443?encryption=aes-128-gcm#encryption",
 		"vless://33333333-3333-4333-8333-333333333333@example.com:443?flow=unknown#flow",
 		"vless://44444444-4444-4444-8444-444444444444@example.com:443?packetEncoding=unknown#packet",
+		"vless://55555555-5555-4555-8555-555555555555@example.com:443?type=ws&security=tls&flow=xtls-rprx-vision#vision-transport",
+		"vless://66666666-6666-4666-8666-666666666666@example.com:443?type=tcp&flow=xtls-rprx-vision#vision-security",
+	}
+	result, err := Parse([]byte(valid + "\n" + strings.Join(invalid, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RawCount != 6 || len(result.Nodes) != 1 || len(result.Dropped) != 5 {
+		t.Fatalf("invalid nodes affected valid peers: %+v", result)
+	}
+	for _, dropped := range result.Dropped {
+		if dropped.Reason == "" {
+			t.Fatalf("invalid node has no explicit reason: %+v", dropped)
+		}
+	}
+}
+
+func TestRejectInvalidRealityAndUTLSSemanticsPerNode(t *testing.T) {
+	valid := "vless://55555555-5555-4555-8555-555555555555@example.com:443?security=reality&fp=chrome&pbk=" + realityPublicKey + "&sid=abcd#valid"
+	invalid := []string{
+		"vless://66666666-6666-4666-8666-666666666666@example.com:443?security=tls&fp=not-a-browser#fingerprint",
+		"vless://77777777-7777-4777-8777-777777777777@example.com:443?security=reality&fp=chrome&pbk=too-short#public-key",
+		"vless://88888888-8888-4888-8888-888888888888@example.com:443?security=reality&fp=chrome&pbk=" + realityPublicKey + "&sid=xyz#short-id",
 	}
 	result, err := Parse([]byte(valid + "\n" + strings.Join(invalid, "\n")))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.RawCount != 4 || len(result.Nodes) != 1 || len(result.Dropped) != 3 {
-		t.Fatalf("invalid nodes affected valid peers: %+v", result)
+		t.Fatalf("invalid crypto semantics affected valid peers: %+v", result)
 	}
 	for _, dropped := range result.Dropped {
-		if !strings.Contains(dropped.Reason, "unsupported VLESS") {
+		if dropped.Reason == "" {
 			t.Fatalf("invalid node has no explicit reason: %+v", dropped)
 		}
 	}

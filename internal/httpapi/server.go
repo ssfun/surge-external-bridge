@@ -66,7 +66,7 @@ func New(application *app.App) (*Server, error) {
 	config := application.Config()
 	server.server = &http.Server{
 		Addr:              config.HTTPBind,
-		Handler:           securityHeaders(mux),
+		Handler:           securityHeaders(server.trustedHost(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
@@ -74,6 +74,34 @@ func New(application *app.App) (*Server, error) {
 		MaxHeaderBytes:    1 << 20,
 	}
 	return server, nil
+}
+
+func (s *Server) trustedHost(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		config := s.app.Config()
+		bindHost, _, err := net.SplitHostPort(config.HTTPBind)
+		if err == nil && config.ManagementToken == "" && isLoopbackHTTPHost(bindHost) && !isLoopbackHTTPHost(requestHostname(r.Host)) {
+			writeError(w, http.StatusMisdirectedRequest, "untrusted Host header for loopback configuration console")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func requestHostname(hostport string) string {
+	if host, _, err := net.SplitHostPort(hostport); err == nil {
+		return host
+	}
+	return strings.Trim(hostport, "[]")
+}
+
+func isLoopbackHTTPHost(host string) bool {
+	host = strings.TrimSuffix(strings.TrimSpace(strings.Trim(host, "[]")), ".")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (s *Server) ListenAndServe() error {
@@ -522,21 +550,24 @@ func (settings publicSettings) apply(config *domain.Config) {
 }
 
 type publicSubscription struct {
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	SourceType     string    `json:"source_type"`
-	URLMasked      string    `json:"url_masked"`
-	Filter         string    `json:"filter,omitempty"`
-	Enabled        bool      `json:"enabled"`
-	HeaderNames    []string  `json:"header_names,omitempty"`
-	RefreshSeconds int       `json:"refresh_seconds,omitempty"`
-	FetchedAt      time.Time `json:"fetched_at,omitempty"`
-	LastAttemptAt  time.Time `json:"last_attempt_at,omitempty"`
-	NextRefreshAt  time.Time `json:"next_refresh_at,omitempty"`
-	RawCount       int       `json:"raw_count"`
-	UsableCount    int       `json:"usable_count"`
-	DroppedCount   int       `json:"dropped_count"`
-	LastError      string    `json:"last_error,omitempty"`
+	ID                  string               `json:"id"`
+	Name                string               `json:"name"`
+	SourceType          string               `json:"source_type"`
+	URLMasked           string               `json:"url_masked"`
+	Filter              string               `json:"filter,omitempty"`
+	Enabled             bool                 `json:"enabled"`
+	HeaderNames         []string             `json:"header_names,omitempty"`
+	RefreshSeconds      int                  `json:"refresh_seconds,omitempty"`
+	FetchedAt           time.Time            `json:"fetched_at,omitempty"`
+	LastAttemptAt       time.Time            `json:"last_attempt_at,omitempty"`
+	NextRefreshAt       time.Time            `json:"next_refresh_at,omitempty"`
+	RawCount            int                  `json:"raw_count"`
+	UsableCount         int                  `json:"usable_count"`
+	DroppedCount        int                  `json:"dropped_count"`
+	LastAttemptRawCount int                  `json:"last_attempt_raw_count,omitempty"`
+	LastAttemptDropped  []domain.DroppedNode `json:"last_attempt_dropped,omitempty"`
+	UsingCache          bool                 `json:"using_cache"`
+	LastError           string               `json:"last_error,omitempty"`
 }
 
 func makePublicSubscription(sub domain.Subscription, snapshot domain.Snapshot, defaultRefreshSeconds int) publicSubscription {
@@ -558,8 +589,16 @@ func makePublicSubscription(sub domain.Subscription, snapshot domain.Snapshot, d
 		HeaderNames:    headerNames,
 		RefreshSeconds: sub.RefreshSeconds, FetchedAt: snapshot.FetchedAt, LastAttemptAt: snapshot.LastAttemptAt,
 		NextRefreshAt: nextRefreshAt(sub, snapshot, defaultRefreshSeconds), RawCount: snapshot.RawCount,
-		UsableCount: len(snapshot.Nodes), DroppedCount: len(snapshot.Dropped), LastError: snapshot.LastError,
+		UsableCount: len(snapshot.Nodes), DroppedCount: len(snapshot.Dropped), LastAttemptRawCount: snapshot.LastAttemptRawCount,
+		LastAttemptDropped: cloneDropped(snapshot.LastAttemptDropped), UsingCache: snapshot.LastError != "" && !snapshot.FetchedAt.IsZero(), LastError: snapshot.LastError,
 	}
+}
+
+func cloneDropped(value []domain.DroppedNode) []domain.DroppedNode {
+	if len(value) == 0 {
+		return nil
+	}
+	return append([]domain.DroppedNode(nil), value...)
 }
 
 func nextRefreshAt(sub domain.Subscription, snapshot domain.Snapshot, defaultRefreshSeconds int) time.Time {

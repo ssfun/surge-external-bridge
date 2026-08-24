@@ -73,6 +73,35 @@ func TestRefreshFailureAndEmptyResponsePreserveSnapshot(t *testing.T) {
 	}
 }
 
+func TestNoUsableRefreshPreservesSnapshotAndRecordsPerNodeReasons(t *testing.T) {
+	feed := &mutableFeed{body: links(2)}
+	server := httptest.NewServer(feed)
+	defer server.Close()
+	application := newTestApp(t)
+	defer application.Close()
+	sub := addTestSubscription(t, application, server.URL)
+	if err := application.Refresh(context.Background(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	before := application.State().Snapshots[sub.ID]
+	feed.set("ss://opaque#Native%20SS\nvless://missing-uuid@example.com:443#Broken", http.StatusOK)
+	if err := application.Refresh(context.Background(), sub.ID); err == nil {
+		t.Fatal("refresh with no usable VLESS nodes unexpectedly succeeded")
+	}
+	after := application.State().Snapshots[sub.ID]
+	if len(after.Nodes) != 2 || !after.FetchedAt.Equal(before.FetchedAt) {
+		t.Fatalf("failed refresh replaced the successful snapshot: before=%+v after=%+v", before, after)
+	}
+	if after.LastAttemptRawCount != 2 || len(after.LastAttemptDropped) != 2 {
+		t.Fatalf("last attempt did not retain per-node reasons: %+v", after)
+	}
+	for _, dropped := range after.LastAttemptDropped {
+		if dropped.SourceID != sub.ID || dropped.SourceName != sub.Name || dropped.Reason == "" {
+			t.Fatalf("last attempt drop is incomplete: %+v", dropped)
+		}
+	}
+}
+
 func TestBuildVersionMarkerMatchesRuntimeVersion(t *testing.T) {
 	if BuildVersionMarker != "vless2surge-version:"+Version {
 		t.Fatalf("inconsistent build metadata: version=%q marker=%q", Version, BuildVersionMarker)
@@ -159,7 +188,7 @@ func TestSourceChangeKeepsSnapshotButMarksItStaleAndImmediatelyDue(t *testing.T)
 		t.Fatal(err)
 	}
 	after := application.State().Snapshots[sub.ID]
-	if updated.URL != sub.URL || len(after.Nodes) != 1 || after.LastError == "" || !after.LastAttemptAt.IsZero() {
+	if updated.URL != sub.URL || len(after.Nodes) != 1 || after.LastError == "" || !after.LastAttemptAt.IsZero() || after.LastAttemptRawCount != 0 || len(after.LastAttemptDropped) != 0 {
 		t.Fatalf("source change did not preserve and mark the prior snapshot: updated=%+v snapshot=%+v", updated, after)
 	}
 	if application.State().Draft == nil || len(application.State().Draft.Nodes) != 1 {
@@ -189,6 +218,41 @@ func TestNoOpRefreshKeepsEffectiveRevisionAndIdentity(t *testing.T) {
 	}
 	if first.Nodes[0].AuthUser != second.Nodes[0].AuthUser || first.Nodes[0].Password != second.Nodes[0].Password {
 		t.Fatalf("no-op refresh changed identity: first=%+v second=%+v", first.Nodes[0], second.Nodes[0])
+	}
+}
+
+func TestRunningEngineAutoAppliesOnlySafeRefreshes(t *testing.T) {
+	feed := &mutableFeed{body: links(3)}
+	server := httptest.NewServer(feed)
+	defer server.Close()
+	application := newTestApp(t)
+	defer application.Close()
+	sub := addTestSubscription(t, application, server.URL)
+	if err := application.Refresh(context.Background(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Apply(false); err != nil {
+		t.Fatal(err)
+	}
+	initial := application.State().Applied.ID
+
+	safe := strings.Replace(links(3), "example.com:4001", "example.net:4001", 1)
+	feed.set(safe, http.StatusOK)
+	if err := application.Refresh(context.Background(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	afterSafe := application.State()
+	if afterSafe.Applied == nil || afterSafe.Applied.ID == initial || afterSafe.Draft.ID != afterSafe.Applied.ID {
+		t.Fatalf("safe refresh was not auto-applied: %+v", afterSafe)
+	}
+
+	feed.set(links(1), http.StatusOK)
+	if err := application.Refresh(context.Background(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	afterRisky := application.State()
+	if afterRisky.Draft == nil || !afterRisky.Draft.Risky || afterRisky.Applied.ID != afterSafe.Applied.ID {
+		t.Fatalf("risky refresh changed the applied runtime fact: before=%+v after=%+v", afterSafe.Applied, afterRisky)
 	}
 }
 
@@ -494,6 +558,42 @@ func TestAdvertisedEndpointsCannotUseWildcardListeners(t *testing.T) {
 	}
 }
 
+func TestPublicLiteralAddressesAreRejectedButPrivateOverlaysAreAllowed(t *testing.T) {
+	config := domain.DefaultConfig()
+	config.Mode = "linux"
+	config.SocksBind = "203.0.113.10"
+	config.SocksAdvertise = "203.0.113.10"
+	if err := ValidateConfig(config); err == nil || !strings.Contains(err.Error(), "public IP") {
+		t.Fatalf("public SOCKS address was accepted: %v", err)
+	}
+	config.SocksBind = "100.100.10.20"
+	config.SocksAdvertise = "100.100.10.20"
+	config.HTTPBind = "100.100.10.20:18080"
+	config.PolicyBaseURL = "http://100.100.10.20:18080"
+	config.ManagementToken = "management-token-long"
+	config.PolicyToken = "policy-token-is-long"
+	if err := ValidateConfig(config); err != nil {
+		t.Fatalf("Tailscale CGNAT address was rejected: %v", err)
+	}
+	config.HTTPBind = "203.0.113.10:18080"
+	if err := ValidateConfig(config); err == nil || !strings.Contains(err.Error(), "HTTP bind") {
+		t.Fatalf("public HTTP address was accepted: %v", err)
+	}
+}
+
+func TestTokenFreeLoopbackConsoleRequiresLoopbackPolicyHost(t *testing.T) {
+	config := domain.DefaultConfig()
+	config.PolicyBaseURL = "http://gateway.example:18080"
+	if err := ValidateConfig(config); err == nil || !strings.Contains(err.Error(), "token-free loopback") {
+		t.Fatalf("token-free loopback console accepted a non-loopback policy host: %v", err)
+	}
+	config.ManagementToken = "management-token-long"
+	config.PolicyToken = "policy-token-is-long"
+	if err := ValidateConfig(config); err != nil {
+		t.Fatalf("protected console rejected an explicit hostname: %v", err)
+	}
+}
+
 func TestLinuxEndpointDiagnosticWarnsAboutLoopbackAdvertise(t *testing.T) {
 	application := newTestApp(t)
 	defer application.Close()
@@ -512,6 +612,54 @@ func TestLinuxEndpointDiagnosticWarnsAboutLoopbackAdvertise(t *testing.T) {
 		}
 	}
 	t.Fatal("endpoint diagnostic is missing")
+}
+
+func TestDiagnosticsProbeRunningSOCKSAuthenticationAndPolicy(t *testing.T) {
+	application := newTestApp(t)
+	defer application.Close()
+	if _, err := application.AddManualSubscription("Diagnostic", []byte("vless://11111111-1111-4111-8111-111111111111@example.com:443?type=tcp#Diagnostic")); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Apply(false); err != nil {
+		t.Fatal(err)
+	}
+	diagnostics := application.Diagnostics()
+	checks := map[string]domain.DiagnosticCheck{}
+	for _, check := range diagnostics.Checks {
+		checks[check.Name] = check
+	}
+	if checks["auth_route"].Status != "ok" {
+		t.Fatalf("SOCKS authentication probe did not pass: %+v", checks["auth_route"])
+	}
+	if checks["policy_path"].Status != "ok" || diagnostics.Revision == "" {
+		t.Fatalf("policy-path consistency was not proven: diagnostics=%+v", diagnostics)
+	}
+}
+
+func TestEventsRedactKnownSecretsAtTheWriteBoundary(t *testing.T) {
+	application := newTestApp(t)
+	defer application.Close()
+	const uuid = "11111111-1111-4111-8111-111111111111"
+	if _, err := application.AddManualSubscription("Secret", []byte("vless://"+uuid+"@example.com:443?type=tcp#Secret")); err != nil {
+		t.Fatal(err)
+	}
+	config := application.Config()
+	config.ManagementToken = "management-secret-long"
+	config.PolicyToken = "policy-secret-is-long"
+	if err := application.UpdateConfig(config); err != nil {
+		t.Fatal(err)
+	}
+	password := application.State().Draft.Nodes[0].Password
+	application.AddEvent("error", "failure "+uuid+" "+password+" "+config.ManagementToken+" "+config.PolicyToken)
+	message := application.State().Events[0].Message
+	for _, secret := range []string{uuid, password, config.ManagementToken, config.PolicyToken} {
+		if strings.Contains(message, secret) {
+			t.Fatalf("event retained secret %q: %s", secret, message)
+		}
+	}
+	if !strings.Contains(message, "***") {
+		t.Fatalf("event redaction was not visible: %s", message)
+	}
 }
 
 func TestSubscriptionHeadersAreValidated(t *testing.T) {

@@ -114,6 +114,14 @@ spctl --assess --type execute --verbose=2 dist/vless2surge-darwin-amd64
 
 没有 Apple Developer ID 时，可以对自己使用的二进制做本地签名。自签名不能建立 Apple 公证记录，也不适合作为面向公众的可信发布方式。
 
+Release 直接下载的裸二进制可能没有可执行权限。先用 `uname -m` 确认架构（Apple Silicon 为 `arm64`，Intel 为 `x86_64`），然后恢复权限；修改权限不会改变文件的 SHA-256：
+
+```bash
+chmod 755 vless2surge-darwin-arm64
+```
+
+建议严格按“校验官方 SHA-256 → 本地签名 → 验证签名 → 必要时移除 quarantine → 运行”的顺序操作。签名会原地修改二进制，因此官方校验和只能在签名前核对。
+
 ### 方法一：ad-hoc 签名
 
 这是单机使用最快的方法，不需要创建证书。先在签名前核对下载文件；以下命令应在同时包含二进制和 `SHA256SUMS` 的目录执行，并只校验当前架构对应的清单条目：
@@ -183,6 +191,14 @@ xattr -d com.apple.quarantine vless2surge-darwin-arm64
 VLESS = select, policy-path=http://127.0.0.1:18080/proxies, update-interval=3600
 ```
 
+macOS 本地模式还必须避免 vless2surge 自身的 VLESS 出站再次被 Surge 代理，否则会形成代理递归。将下面规则放在 Surge `[Rule]` 中其他代理规则之前：
+
+```ini
+PROCESS-NAME,vless2surge,DIRECT
+```
+
+如果你重命名了可执行文件，请把规则中的进程名同步替换为实际文件名。Linux 私网网关不运行在 Surge 所在的 Mac 上，不需要这条本机进程规则。
+
 ## 系统服务
 
 macOS 使用用户级 LaunchAgent，Linux 默认使用 systemd user service：
@@ -207,6 +223,8 @@ macOS 使用用户级 LaunchAgent，Linux 默认使用 systemd user service：
 - Policy Token：保护包含 SOCKS 凭据的 `/proxies`。
 
 两类 Token 必须不同且至少 16 字符；配置台可用浏览器密码学随机源生成 32 字符安全值。配置台会生成带 Policy Token 的 URL。`SOCKS advertise` 和 Policy URL 不得使用 `0.0.0.0` 或 `::`，因为通配地址只能用于监听。SOCKS5 端口本身使用每节点独立身份认证，未知用户会被拒绝。
+
+SOCKS、HTTP 和 Policy 终点会拒绝公开 IP 字面量；请使用回环、RFC1918、Tailscale CGNAT、WireGuard 或解析到可信私网的主机名。无 Management Token 的回环配置台只接受回环 Host 与回环 Policy URL，以降低浏览器 DNS rebinding 风险。
 
 ## 状态与恢复
 

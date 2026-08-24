@@ -139,6 +139,32 @@ func TestSecurityHeadersAndStrictJSONBody(t *testing.T) {
 	}
 }
 
+func TestLoopbackConsoleRejectsDNSRebindingHostWithoutToken(t *testing.T) {
+	application, err := app.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	server, err := New(application)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	request.Host = "attacker.example"
+	response := httptest.NewRecorder()
+	server.server.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusMisdirectedRequest {
+		t.Fatalf("loopback console accepted a rebinding Host: %d %s", response.Code, response.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodGet, "/health", nil)
+	request.Host = "127.0.0.1:18080"
+	response = httptest.NewRecorder()
+	server.server.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("loopback console rejected its normal Host: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestManualPasteEndpointCreatesDraft(t *testing.T) {
 	application, handler := httpFixture(t)
 	defer application.Close()
@@ -237,9 +263,15 @@ func TestPublicSubscriptionIncludesNextRefreshSchedule(t *testing.T) {
 		t.Fatalf("unexpected next refresh: %s", value.NextRefreshAt)
 	}
 	sub.RefreshSeconds = 3600
-	value = makePublicSubscription(sub, domain.Snapshot{LastAttemptAt: attempt}, 21600)
+	value = makePublicSubscription(sub, domain.Snapshot{
+		FetchedAt: attempt.Add(-time.Hour), LastAttemptAt: attempt, LastError: "no usable nodes", LastAttemptRawCount: 2,
+		LastAttemptDropped: []domain.DroppedNode{{Name: "Native", Reason: "Surge 原生支持"}, {Name: "Bad", Reason: "解析错误"}},
+	}, 21600)
 	if !value.NextRefreshAt.Equal(attempt.Add(time.Hour)) {
 		t.Fatalf("per-subscription refresh interval was ignored: %s", value.NextRefreshAt)
+	}
+	if !value.UsingCache || value.LastAttemptRawCount != 2 || len(value.LastAttemptDropped) != 2 {
+		t.Fatalf("failed-attempt observability was not projected: %+v", value)
 	}
 	sub.SourceType = "manual"
 	if value := makePublicSubscription(sub, domain.Snapshot{LastAttemptAt: attempt}, 21600); !value.NextRefreshAt.IsZero() {

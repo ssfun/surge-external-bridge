@@ -7,10 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
+	"os"
+	"os/exec"
 	"reflect"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -27,6 +31,10 @@ var Version = "0.1.0-dev"
 var BuildVersionMarker = "vless2surge-version:0.1.0-dev"
 
 var headerNamePattern = regexp.MustCompile("^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+$")
+var carrierGradeNAT = func() *net.IPNet {
+	_, network, _ := net.ParseCIDR("100.64.0.0/10")
+	return network
+}()
 
 type App struct {
 	mu       sync.RWMutex
@@ -144,13 +152,20 @@ func (a *App) Diagnostics() domain.Diagnostics {
 		result.Checks = append(result.Checks, domain.DiagnosticCheck{Name: name, Status: status, Detail: detail})
 	}
 
-	enabled, cachedFailures := 0, 0
+	enabled, cachedFailures, attempted, raw, usable, dropped := 0, 0, 0, 0, 0, 0
 	for _, sub := range config.Subscriptions {
 		if !sub.Enabled {
 			continue
 		}
 		enabled++
-		if state.Snapshots[sub.ID].LastError != "" {
+		snapshot := state.Snapshots[sub.ID]
+		if !snapshot.LastAttemptAt.IsZero() {
+			attempted++
+		}
+		raw += snapshot.RawCount
+		usable += len(snapshot.Nodes)
+		dropped += len(snapshot.Dropped)
+		if snapshot.LastError != "" {
 			cachedFailures++
 		}
 	}
@@ -160,6 +175,11 @@ func (a *App) Diagnostics() domain.Diagnostics {
 		add("subscriptions", "warn", fmt.Sprintf("%d 个来源使用最近成功快照，%d 个来源已启用", cachedFailures, enabled))
 	} else {
 		add("subscriptions", "ok", fmt.Sprintf("%d 个来源已启用，最近状态正常", enabled))
+	}
+	if enabled == 0 || attempted == 0 {
+		add("parse", "warn", "尚无可核对的订阅解析结果")
+	} else {
+		add("parse", "ok", fmt.Sprintf("最近成功快照原始=%d，可用=%d，逐条丢弃=%d", raw, usable, dropped))
 	}
 
 	endpointDetail := fmt.Sprintf("SOCKS bind=%s advertise=%s port=%d", config.SocksBind, config.SocksAdvertise, config.SocksPort)
@@ -175,17 +195,13 @@ func (a *App) Diagnostics() domain.Diagnostics {
 
 	if state.Draft == nil || len(state.Draft.Nodes) == 0 {
 		add("draft", "error", "没有可编译的 VLESS 草稿")
+	} else if state.Draft.Risky {
+		add("draft", "warn", state.Draft.RiskReason)
 	} else {
-		draft := clonePtr(state.Draft)
-		if _, err := a.compiler.Compile(config, draft); err != nil {
-			add("draft", "error", "Embedded Core 配置校验失败: "+err.Error())
-		} else if draft.Risky {
-			add("draft", "warn", draft.RiskReason)
-		} else {
-			add("draft", "ok", fmt.Sprintf("草稿 %s 已通过 sing-box %s 配置校验，共 %d 个节点", draft.ID, core.CoreVersion, len(draft.Nodes)))
-		}
+		add("draft", "ok", fmt.Sprintf("草稿 %s 包含 %d 个节点和 %d 条丢弃记录", state.Draft.ID, len(state.Draft.Nodes), len(state.Draft.Dropped)))
 	}
 
+	identitiesValid := false
 	if state.Applied == nil || len(state.Applied.Nodes) == 0 {
 		add("applied", "error", "尚未应用可供 Surge 使用的 revision")
 	} else {
@@ -200,10 +216,23 @@ func (a *App) Diagnostics() domain.Diagnostics {
 			users[node.AuthUser] = true
 		}
 		if valid {
+			identitiesValid = true
 			add("applied", "ok", fmt.Sprintf("revision %s 包含 %d 个唯一 SOCKS 身份", state.Applied.ID, len(state.Applied.Nodes)))
 		} else {
 			add("applied", "error", "已应用 revision 的身份映射不完整或重复")
 		}
+	}
+
+	compileTarget := clonePtr(state.Applied)
+	if compileTarget == nil {
+		compileTarget = clonePtr(state.Draft)
+	}
+	if compileTarget == nil || len(compileTarget.Nodes) == 0 {
+		add("core", "error", "没有可供 Embedded Core 校验的 revision")
+	} else if _, err := a.compiler.Compile(config, compileTarget); err != nil {
+		add("core", "error", "Embedded Core 配置校验失败: "+redactDiagnosticError(err.Error(), config, state))
+	} else {
+		add("core", "ok", fmt.Sprintf("revision %s 已通过 sing-box %s 配置校验", compileTarget.ID, core.CoreVersion))
 	}
 
 	switch engine.State {
@@ -216,10 +245,164 @@ func (a *App) Diagnostics() domain.Diagnostics {
 	case "stopped":
 		add("engine", "warn", "Embedded Engine 已停止；配置台仍可用")
 	default:
-		add("engine", "error", fmt.Sprintf("Engine 状态为 %s: %s", engine.State, engine.LastError))
+		add("engine", "error", fmt.Sprintf("Engine 状态为 %s: %s", engine.State, redactDiagnosticError(engine.LastError, config, state)))
 	}
-	add("connectivity", "warn", "配置与身份检查已完成；节点 TCP/UDP 实际连通性需要通过 Surge 测速或业务流量确认")
+
+	authOK := false
+	if engine.State != "running" || state.Applied == nil || len(state.Applied.Nodes) == 0 || !identitiesValid {
+		add("auth_route", "warn", "Engine 未运行或 applied 身份不可用，未执行 SOCKS5 认证探测")
+	} else {
+		node := state.Applied.Nodes[0]
+		wrongPassword := "invalid-diagnostic-password"
+		if node.Password == wrongPassword {
+			wrongPassword += "-2"
+		}
+		knownErr := probeSOCKSAuthentication(engine.Inbound, node.AuthUser, node.Password, true)
+		wrongPasswordErr := probeSOCKSAuthentication(engine.Inbound, node.AuthUser, wrongPassword, false)
+		unknownErr := probeSOCKSAuthentication(engine.Inbound, "v2s_diagnostic_unknown", "invalid-diagnostic-password", false)
+		if knownErr != nil || wrongPasswordErr != nil || unknownErr != nil {
+			detail := "SOCKS5 认证探测失败"
+			if knownErr != nil {
+				detail += ": 已应用用户未通过"
+			}
+			if wrongPasswordErr != nil {
+				detail += ": 错误密码未被明确拒绝"
+			}
+			if unknownErr != nil {
+				detail += ": 未知用户未被明确拒绝"
+			}
+			add("auth_route", "error", detail)
+		} else {
+			authOK = true
+			add("auth_route", "ok", "已应用用户通过 SOCKS5 认证，错误密码和未知用户均被拒绝；auth_user 路由规则已编译")
+		}
+	}
+
+	if authOK {
+		add("outbound", "warn", "身份与 outbound 映射已就绪；真实服务端连通性需显式发起节点测试")
+	} else {
+		add("outbound", "warn", "尚未满足 outbound 连通性测试的本地前置条件")
+	}
+	add("tcp", "warn", "未主动向外部目标发起 TCP 流量；请通过 Surge url-test 或实际请求验证")
+	add("udp", "warn", "SOCKS5 UDP Relay 已编译；服务端 UDP/XUDP 兼容性需通过实际节点验证")
+
+	policy, revisionID, policyErr := a.Proxies()
+	if policyErr != nil || state.Applied == nil || revisionID != state.Applied.ID || strings.TrimSpace(policy) == "" {
+		add("policy_path", "error", "无法从当前 applied revision 生成一致的 Surge policy-path 内容")
+	} else {
+		add("policy_path", "ok", fmt.Sprintf("/proxies 对应 applied revision %s，共 %d 个节点", revisionID, len(state.Applied.Nodes)))
+	}
+
+	surgeStatus, surgeDetail := surgeRuntimeCheck()
+	add("surge", surgeStatus, surgeDetail)
 	return result
+}
+
+func probeSOCKSAuthentication(inbound, username, password string, shouldAccept bool) error {
+	address, err := diagnosticDialAddress(inbound)
+	if err != nil {
+		return err
+	}
+	connection, err := net.DialTimeout("tcp", address, 2*time.Second)
+	if err != nil {
+		return err
+	}
+	defer connection.Close()
+	_ = connection.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := connection.Write([]byte{0x05, 0x01, 0x02}); err != nil {
+		return err
+	}
+	response := make([]byte, 2)
+	if _, err := io.ReadFull(connection, response); err != nil {
+		return err
+	}
+	if response[0] != 0x05 || response[1] != 0x02 {
+		return errors.New("SOCKS5 username/password method was not selected")
+	}
+	if len(username) == 0 || len(username) > 255 || len(password) == 0 || len(password) > 255 {
+		return errors.New("invalid diagnostic SOCKS5 credential length")
+	}
+	payload := []byte{0x01, byte(len(username))}
+	payload = append(payload, username...)
+	payload = append(payload, byte(len(password)))
+	payload = append(payload, password...)
+	if _, err := connection.Write(payload); err != nil {
+		return err
+	}
+	if _, err := io.ReadFull(connection, response); err != nil {
+		return err
+	}
+	accepted := response[0] == 0x01 && response[1] == 0x00
+	if accepted != shouldAccept {
+		return errors.New("unexpected SOCKS5 authentication result")
+	}
+	return nil
+}
+
+func diagnosticDialAddress(inbound string) (string, error) {
+	host, port, err := net.SplitHostPort(inbound)
+	if err != nil {
+		return "", err
+	}
+	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil && ip.IsUnspecified() {
+		if ip.To4() == nil {
+			host = "::1"
+		} else {
+			host = "127.0.0.1"
+		}
+	}
+	return net.JoinHostPort(host, port), nil
+}
+
+func surgeRuntimeCheck() (string, string) {
+	if runtime.GOOS != "darwin" {
+		return "warn", "Linux 网关不假设能访问 Surge 本机运行状态"
+	}
+	executable, err := exec.LookPath("surge-cli")
+	if err != nil {
+		executable = "/Applications/Surge.app/Contents/Applications/surge-cli"
+		if _, statErr := os.Stat(executable); statErr != nil {
+			return "warn", "未找到 surge-cli；跳过可选的 Surge 运行状态检查"
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := exec.CommandContext(ctx, executable, "--raw", "environment").Run(); err != nil {
+		return "warn", "surge-cli 未返回运行状态；请确认 Surge 已启动并允许控制器访问"
+	}
+	return "ok", "surge-cli 已返回当前 Surge 运行环境"
+}
+
+func redactDiagnosticError(message string, config domain.Config, state domain.RuntimeState) string {
+	secrets := []string{config.ManagementToken, config.PolicyToken}
+	for _, sub := range config.Subscriptions {
+		secrets = append(secrets, sub.URL)
+		for _, value := range sub.Headers {
+			secrets = append(secrets, value)
+		}
+	}
+	for _, snapshot := range state.Snapshots {
+		for _, node := range snapshot.Nodes {
+			secrets = append(secrets, node.UUID, node.RealityPublicKey, node.RealityShortID)
+		}
+	}
+	for _, identity := range state.Registry {
+		secrets = append(secrets, identity.Password)
+	}
+	for _, revision := range []*domain.Revision{state.Draft, state.Applied} {
+		if revision == nil {
+			continue
+		}
+		for _, node := range revision.Nodes {
+			secrets = append(secrets, node.UUID, node.RealityPublicKey, node.RealityShortID, node.Password)
+		}
+	}
+	for _, secret := range secrets {
+		if len(secret) >= 4 {
+			message = strings.ReplaceAll(message, secret, "***")
+		}
+	}
+	return message
 }
 
 func (a *App) UpdateConfig(config domain.Config) error {
@@ -333,12 +516,14 @@ func (a *App) AddManualSubscription(name string, content []byte) (domain.Subscri
 	previousConfig, previousState := clone(a.config), clone(a.state)
 	a.config.Subscriptions = append(a.config.Subscriptions, sub)
 	a.state.Snapshots[id] = domain.Snapshot{
-		SubscriptionID: id,
-		FetchedAt:      now,
-		LastAttemptAt:  now,
-		Nodes:          parsed.Nodes,
-		Dropped:        parsed.Dropped,
-		RawCount:       parsed.RawCount,
+		SubscriptionID:      id,
+		FetchedAt:           now,
+		LastAttemptAt:       now,
+		Nodes:               parsed.Nodes,
+		Dropped:             parsed.Dropped,
+		RawCount:            parsed.RawCount,
+		LastAttemptRawCount: parsed.RawCount,
+		LastAttemptDropped:  clone(parsed.Dropped),
 	}
 	if err := a.rebuildDraftLocked("manual-import"); err != nil {
 		a.config, a.state = previousConfig, previousState
@@ -392,6 +577,8 @@ func (a *App) UpdateSubscription(id string, update domain.Subscription) (domain.
 			if snapshot, found := a.state.Snapshots[id]; found && len(snapshot.Nodes) > 0 {
 				snapshot.LastAttemptAt = time.Time{}
 				snapshot.LastError = "订阅来源已变更，当前继续使用变更前的成功快照，等待刷新"
+				snapshot.LastAttemptRawCount = 0
+				snapshot.LastAttemptDropped = nil
 				a.state.Snapshots[id] = snapshot
 			}
 		}
@@ -490,17 +677,12 @@ func (a *App) Refresh(ctx context.Context, id string) error {
 	now := time.Now().UTC()
 	content, err := a.fetcher.Fetch(ctx, *sub, config.UserAgent)
 	if err != nil {
-		a.recordRefreshFailure(id, *sub, config.UserAgent, now, err)
+		a.recordRefreshFailure(id, *sub, config.UserAgent, now, nil, err)
 		return err
 	}
 	parsed, err := subscription.Parse(content)
 	if err != nil {
-		a.recordRefreshFailure(id, *sub, config.UserAgent, now, err)
-		return err
-	}
-	if len(parsed.Nodes) == 0 {
-		err = errors.New("subscription contains no usable VLESS nodes; previous snapshot was kept")
-		a.recordRefreshFailure(id, *sub, config.UserAgent, now, err)
+		a.recordRefreshFailure(id, *sub, config.UserAgent, now, nil, err)
 		return err
 	}
 	for index := range parsed.Nodes {
@@ -510,6 +692,11 @@ func (a *App) Refresh(ctx context.Context, id string) error {
 	for index := range parsed.Dropped {
 		parsed.Dropped[index].SourceID = sub.ID
 		parsed.Dropped[index].SourceName = sub.Name
+	}
+	if len(parsed.Nodes) == 0 {
+		err = errors.New("subscription contains no usable VLESS nodes; previous snapshot was kept")
+		a.recordRefreshFailure(id, *sub, config.UserAgent, now, &parsed, err)
+		return err
 	}
 	a.applyMu.Lock()
 	engineRunning := a.engine.Status().State == "running"
@@ -521,12 +708,14 @@ func (a *App) Refresh(ctx context.Context, id string) error {
 	}
 	previousState := clone(a.state)
 	a.state.Snapshots[id] = domain.Snapshot{
-		SubscriptionID: id,
-		FetchedAt:      now,
-		LastAttemptAt:  now,
-		Nodes:          parsed.Nodes,
-		Dropped:        parsed.Dropped,
-		RawCount:       parsed.RawCount,
+		SubscriptionID:      id,
+		FetchedAt:           now,
+		LastAttemptAt:       now,
+		Nodes:               parsed.Nodes,
+		Dropped:             parsed.Dropped,
+		RawCount:            parsed.RawCount,
+		LastAttemptRawCount: parsed.RawCount,
+		LastAttemptDropped:  clone(parsed.Dropped),
 	}
 	if err := a.rebuildDraftLocked("refresh"); err != nil {
 		a.state = previousState
@@ -954,7 +1143,7 @@ func (a *App) rebuildDraftLocked(generatedBy string) error {
 	return nil
 }
 
-func (a *App) recordRefreshFailure(id string, source domain.Subscription, userAgent string, at time.Time, cause error) {
+func (a *App) recordRefreshFailure(id string, source domain.Subscription, userAgent string, at time.Time, attempt *subscription.ParseResult, cause error) {
 	a.applyMu.Lock()
 	defer a.applyMu.Unlock()
 	a.mu.Lock()
@@ -966,6 +1155,12 @@ func (a *App) recordRefreshFailure(id string, source domain.Subscription, userAg
 	snapshot.SubscriptionID = id
 	snapshot.LastAttemptAt = at
 	snapshot.LastError = cause.Error()
+	snapshot.LastAttemptRawCount = 0
+	snapshot.LastAttemptDropped = nil
+	if attempt != nil {
+		snapshot.LastAttemptRawCount = attempt.RawCount
+		snapshot.LastAttemptDropped = clone(attempt.Dropped)
+	}
 	a.state.Snapshots[id] = snapshot
 	a.addEventLocked("error", "subscription refresh failed: "+cause.Error())
 	_ = a.store.SaveState(&a.state)
@@ -984,6 +1179,7 @@ func (a *App) subscriptionUnchangedLocked(id string, source domain.Subscription,
 }
 
 func (a *App) addEventLocked(level, message string) {
+	message = redactDiagnosticError(message, a.config, a.state)
 	a.state.Events = append([]domain.Event{{Time: time.Now().UTC(), Level: level, Message: message}}, a.state.Events...)
 	if len(a.state.Events) > 200 {
 		a.state.Events = a.state.Events[:200]
@@ -1003,6 +1199,9 @@ func ValidateConfig(config domain.Config) error {
 	if err := validateEndpointHost("socks_advertise", config.SocksAdvertise); err != nil {
 		return err
 	}
+	if isPublicLiteralIP(config.SocksBind) || isPublicLiteralIP(config.SocksAdvertise) {
+		return errors.New("SOCKS bind and advertise cannot use a public IP address; use loopback, LAN, Tailscale, or WireGuard")
+	}
 	if isWildcardHost(config.SocksAdvertise) {
 		return errors.New("socks_advertise must be a client-reachable address, not a wildcard listener")
 	}
@@ -1010,12 +1209,18 @@ func ValidateConfig(config domain.Config) error {
 	if err != nil {
 		return fmt.Errorf("invalid HTTP bind: %w", err)
 	}
+	if isPublicLiteralIP(httpHost) {
+		return errors.New("HTTP bind cannot use a public IP address; use loopback or a trusted private network")
+	}
 	policyURL, err := url.Parse(config.PolicyBaseURL)
 	if err != nil || (policyURL.Scheme != "http" && policyURL.Scheme != "https") || policyURL.Host == "" {
 		return errors.New("policy_base_url must be an absolute HTTP or HTTPS URL")
 	}
 	if isWildcardHost(policyURL.Hostname()) {
 		return errors.New("policy_base_url must use a client-reachable host, not a wildcard listener")
+	}
+	if isPublicLiteralIP(policyURL.Hostname()) {
+		return errors.New("policy_base_url cannot publish a public IP address; use a trusted private network address")
 	}
 	if config.RefreshSeconds < 60 {
 		return errors.New("refresh interval must be at least 60 seconds")
@@ -1039,6 +1244,9 @@ func ValidateConfig(config domain.Config) error {
 	}
 	if config.ManagementToken != "" && config.ManagementToken == config.PolicyToken {
 		return errors.New("management_token and policy_token must be distinct")
+	}
+	if isLoopbackHost(httpHost) && config.ManagementToken == "" && !isLoopbackHost(policyURL.Hostname()) {
+		return errors.New("a token-free loopback configuration console requires a loopback policy_base_url host")
 	}
 	seen := map[string]bool{}
 	for _, sub := range config.Subscriptions {
@@ -1066,6 +1274,14 @@ func isWildcardHost(host string) bool {
 	host = strings.TrimSpace(strings.Trim(host, "[]"))
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsUnspecified()
+}
+
+func isPublicLiteralIP(host string) bool {
+	ip := net.ParseIP(strings.TrimSpace(strings.Trim(host, "[]")))
+	if ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+		return false
+	}
+	return carrierGradeNAT == nil || !carrierGradeNAT.Contains(ip)
 }
 
 func validateEndpointHost(field, host string) error {

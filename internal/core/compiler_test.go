@@ -54,6 +54,20 @@ func TestServerNameDoesNotImplicitlyEnableTLS(t *testing.T) {
 	}
 }
 
+func TestRealityLegacyNodeDefaultsToChromeUTLS(t *testing.T) {
+	revision := &domain.Revision{Nodes: []domain.RuntimeNode{{
+		Node:   domain.Node{Type: "vless", Server: "example.com", Port: 443, UUID: "11111111-1111-4111-8111-111111111111", Network: "tcp", Security: "reality", ServerName: "example.com", RealityPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},
+		NodeID: "reality", DisplayName: "Reality", AuthUser: "user", Password: "password", OutboundTag: "vless-reality",
+	}}}
+	compiled, err := NewCompiler().Compile(domain.DefaultConfig(), revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(compiled), `"fingerprint": "chrome"`) {
+		t.Fatalf("Reality config omitted the required uTLS default: %s", compiled)
+	}
+}
+
 func TestAuthUserRoutesToDistinctVLESSOutbound(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok") }))
 	defer target.Close()
@@ -464,6 +478,13 @@ func TestCompilerRejectsDuplicateIdentityAndNonVLESS(t *testing.T) {
 	duplicate.OutboundTag = "vless-two"
 	if _, err := NewCompiler().Compile(domain.DefaultConfig(), &domain.Revision{Nodes: []domain.RuntimeNode{base, duplicate}}); err == nil {
 		t.Fatal("duplicate auth_user was accepted")
+	}
+	vision := base
+	vision.Network = "ws"
+	vision.Security = "tls"
+	vision.Flow = "xtls-rprx-vision"
+	if _, err := NewCompiler().Compile(domain.DefaultConfig(), &domain.Revision{Nodes: []domain.RuntimeNode{vision}}); err == nil {
+		t.Fatal("Vision over a non-TCP transport was accepted")
 	}
 	base.Type = "trojan"
 	if _, err := NewCompiler().Compile(domain.DefaultConfig(), &domain.Revision{Nodes: []domain.RuntimeNode{base}}); err == nil {

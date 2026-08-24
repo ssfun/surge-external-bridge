@@ -138,6 +138,14 @@ func compileVLESS(node domain.RuntimeNode) (map[string]any, error) {
 	if node.Server == "" || node.Port == 0 || node.UUID == "" {
 		return nil, errors.New("missing server, port, or UUID")
 	}
+	if node.Flow == "xtls-rprx-vision" {
+		if node.Network != "" && !strings.EqualFold(node.Network, "tcp") {
+			return nil, errors.New("xtls-rprx-vision requires the TCP transport")
+		}
+		if !strings.EqualFold(node.Security, "tls") && !strings.EqualFold(node.Security, "reality") {
+			return nil, errors.New("xtls-rprx-vision requires TLS or Reality")
+		}
+	}
 	outbound := map[string]any{
 		"type":        "vless",
 		"tag":         node.OutboundTag,
@@ -158,8 +166,12 @@ func compileVLESS(node domain.RuntimeNode) (map[string]any, error) {
 			"server_name": firstNonEmpty(node.ServerName, node.Server),
 			"insecure":    node.Insecure,
 		}
-		if node.Fingerprint != "" {
-			tls["utls"] = map[string]any{"enabled": true, "fingerprint": node.Fingerprint}
+		fingerprint := node.Fingerprint
+		if security == "reality" && fingerprint == "" {
+			fingerprint = "chrome"
+		}
+		if fingerprint != "" {
+			tls["utls"] = map[string]any{"enabled": true, "fingerprint": fingerprint}
 		}
 		if len(node.ALPN) > 0 {
 			tls["alpn"] = node.ALPN

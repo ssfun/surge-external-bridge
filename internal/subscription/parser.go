@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -138,18 +139,21 @@ func parseVLESSURL(raw string) (domain.Node, error) {
 		Network:          network,
 		Security:         security,
 		ServerName:       first(q, "sni", "serverName"),
-		Fingerprint:      first(q, "fp", "fingerprint"),
+		Fingerprint:      strings.ToLower(strings.TrimSpace(first(q, "fp", "fingerprint"))),
 		ALPN:             splitCommaList(q.Get("alpn")),
-		RealityPublicKey: first(q, "pbk", "publicKey"),
-		RealityShortID:   first(q, "sid", "shortId"),
+		RealityPublicKey: strings.TrimSpace(first(q, "pbk", "publicKey")),
+		RealityShortID:   strings.ToLower(strings.TrimSpace(first(q, "sid", "shortId"))),
 		Path:             q.Get("path"),
 		Host:             q.Get("host"),
 		ServiceName:      first(q, "serviceName", "service_name"),
 		Insecure:         parseBool(first(q, "allowInsecure", "insecure", "skip-cert-verify")),
 		PacketEncoding:   packetEncoding,
 	}
-	if node.Security == "reality" && node.RealityPublicKey == "" {
-		return domain.Node{}, errors.New("Reality node is missing public key")
+	if node.Security == "reality" && node.Fingerprint == "" {
+		node.Fingerprint = "chrome"
+	}
+	if err := validateNodeSemantics(node); err != nil {
+		return domain.Node{}, err
 	}
 	return node, nil
 }
@@ -214,16 +218,17 @@ func clashVLESS(proxy map[string]any) (domain.Node, error) {
 	host := asString(proxy["host"])
 	path := asString(proxy["path"])
 	if network == "ws" {
-		path = firstString(asString(ws["path"]), path)
+		path = firstString(firstText(ws["path"]), path)
 		headers := asMap(ws["headers"])
-		host = firstString(asString(headers["Host"]), asString(headers["host"]), host)
+		host = firstString(mapTextFold(headers, "host"), host)
 	}
 	if network == "http" {
-		path = firstString(asString(httpOpts["path"]), path)
+		path = firstString(firstText(httpOpts["path"]), path)
+		host = firstString(mapTextFold(asMap(httpOpts["headers"]), "host"), firstText(httpOpts["host"]), host)
 	}
 	if network == "httpupgrade" {
-		path = firstString(asString(httpUpgrade["path"]), path)
-		host = firstString(asString(httpUpgrade["host"]), host)
+		path = firstString(firstText(httpUpgrade["path"]), path)
+		host = firstString(firstText(httpUpgrade["host"]), mapTextFold(asMap(httpUpgrade["headers"]), "host"), host)
 	}
 	flow := strings.ToLower(strings.TrimSpace(asString(proxy["flow"])))
 	if !supportedFlow(flow) {
@@ -243,20 +248,85 @@ func clashVLESS(proxy map[string]any) (domain.Node, error) {
 		Network:          network,
 		Security:         security,
 		ServerName:       firstString(asString(proxy["servername"]), asString(proxy["sni"])),
-		Fingerprint:      firstString(asString(proxy["client-fingerprint"]), asString(proxy["fingerprint"]), "chrome"),
+		Fingerprint:      strings.ToLower(strings.TrimSpace(firstString(asString(proxy["client-fingerprint"]), asString(proxy["fingerprint"]), "chrome"))),
 		ALPN:             asStringSlice(proxy["alpn"]),
-		RealityPublicKey: firstString(asString(reality["public-key"]), asString(reality["public_key"])),
-		RealityShortID:   firstString(asString(reality["short-id"]), asString(reality["short_id"])),
+		RealityPublicKey: strings.TrimSpace(firstString(asString(reality["public-key"]), asString(reality["public_key"]))),
+		RealityShortID:   strings.ToLower(strings.TrimSpace(firstString(asString(reality["short-id"]), asString(reality["short_id"])))),
 		Path:             path,
 		Host:             host,
 		ServiceName:      firstString(asString(grpc["grpc-service-name"]), asString(grpc["service-name"]), asString(proxy["serviceName"])),
 		Insecure:         asBool(proxy["skip-cert-verify"]),
 		PacketEncoding:   packetEncoding,
 	}
-	if node.Security == "reality" && node.RealityPublicKey == "" {
-		return domain.Node{}, errors.New("Reality node is missing public key")
+	if err := validateNodeSemantics(node); err != nil {
+		return domain.Node{}, err
 	}
 	return node, nil
+}
+
+func validateNodeSemantics(node domain.Node) error {
+	if node.Flow == "xtls-rprx-vision" {
+		if node.Network != "tcp" {
+			return errors.New("xtls-rprx-vision requires the TCP transport")
+		}
+		if node.Security != "tls" && node.Security != "reality" {
+			return errors.New("xtls-rprx-vision requires TLS or Reality")
+		}
+	}
+	if node.Fingerprint != "" && !supportedUTLSFingerprint(node.Fingerprint) {
+		return fmt.Errorf("unsupported uTLS fingerprint %q", node.Fingerprint)
+	}
+	for _, protocol := range node.ALPN {
+		if len(protocol) == 0 || len(protocol) > 255 || containsControl(protocol) {
+			return errors.New("invalid VLESS ALPN value")
+		}
+	}
+	for _, value := range []string{node.ServerName, node.Path, node.Host, node.ServiceName} {
+		if containsControl(value) {
+			return errors.New("VLESS transport fields cannot contain control characters")
+		}
+	}
+	if node.Security != "reality" {
+		return nil
+	}
+	if node.RealityPublicKey == "" {
+		return errors.New("Reality node is missing public key")
+	}
+	decoded, ok := decodeRealityPublicKey(node.RealityPublicKey)
+	if !ok || len(decoded) != 32 {
+		return errors.New("Reality public key must be a 32-byte unpadded URL-safe Base64 value")
+	}
+	if node.RealityShortID != "" {
+		if len(node.RealityShortID) > 16 || len(node.RealityShortID)%2 != 0 {
+			return errors.New("Reality short ID must contain an even number of at most 16 hexadecimal characters")
+		}
+		if _, err := hex.DecodeString(node.RealityShortID); err != nil {
+			return errors.New("Reality short ID must be hexadecimal")
+		}
+	}
+	return nil
+}
+
+func supportedUTLSFingerprint(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "chrome", "chrome_psk", "chrome_psk_shuffle", "chrome_padding_psk_shuffle", "chrome_pq", "chrome_pq_psk",
+		"firefox", "edge", "safari", "360", "qq", "ios", "android", "random", "randomized":
+		return true
+	default:
+		return false
+	}
+}
+
+func decodeRealityPublicKey(value string) ([]byte, bool) {
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	if err == nil {
+		return decoded, true
+	}
+	return nil, false
+}
+
+func containsControl(value string) bool {
+	return strings.IndexFunc(value, func(character rune) bool { return character < 0x20 || character == 0x7f }) >= 0
 }
 
 func ParseClashProviders(content []byte) ([]domain.Subscription, error) {
@@ -323,6 +393,31 @@ func firstString(values ...string) string {
 	for _, value := range values {
 		if value != "" {
 			return value
+		}
+	}
+	return ""
+}
+
+func firstText(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case []string:
+		return firstString(typed...)
+	case []any:
+		for _, item := range typed {
+			if text := strings.TrimSpace(asString(item)); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+func mapTextFold(values map[string]any, key string) string {
+	for name, value := range values {
+		if strings.EqualFold(name, key) {
+			return firstText(value)
 		}
 	}
 	return ""

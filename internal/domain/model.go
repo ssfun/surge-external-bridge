@@ -102,13 +102,15 @@ type RuntimeNode struct {
 }
 
 type Snapshot struct {
-	SubscriptionID string        `json:"subscription_id"`
-	FetchedAt      time.Time     `json:"fetched_at"`
-	Nodes          []Node        `json:"nodes"`
-	Dropped        []DroppedNode `json:"dropped,omitempty"`
-	RawCount       int           `json:"raw_count"`
-	LastError      string        `json:"last_error,omitempty"`
-	LastAttemptAt  time.Time     `json:"last_attempt_at"`
+	SubscriptionID      string        `json:"subscription_id"`
+	FetchedAt           time.Time     `json:"fetched_at"`
+	Nodes               []Node        `json:"nodes"`
+	Dropped             []DroppedNode `json:"dropped,omitempty"`
+	RawCount            int           `json:"raw_count"`
+	LastError           string        `json:"last_error,omitempty"`
+	LastAttemptAt       time.Time     `json:"last_attempt_at"`
+	LastAttemptRawCount int           `json:"last_attempt_raw_count,omitempty"`
+	LastAttemptDropped  []DroppedNode `json:"last_attempt_dropped,omitempty"`
 }
 
 type Revision struct {
