@@ -517,30 +517,34 @@ func (s *Server) authorize(next http.HandlerFunc) http.HandlerFunc {
 }
 
 type publicSettings struct {
-	Mode                 string   `json:"mode"`
-	HTTPBind             string   `json:"http_bind"`
-	SocksBind            string   `json:"socks_bind"`
-	SocksPort            uint16   `json:"socks_port"`
-	SocksAdvertise       string   `json:"socks_advertise"`
-	PolicyBaseURL        string   `json:"policy_base_url"`
-	RefreshSeconds       int      `json:"refresh_seconds"`
-	UserAgent            string   `json:"user_agent"`
-	IncludeTypes         []string `json:"include_types"`
-	ExcludeName          string   `json:"exclude_name"`
-	PrefixSubscription   bool     `json:"prefix_subscription"`
-	AutoApply            bool     `json:"auto_apply"`
-	DropThresholdPercent int      `json:"drop_threshold_percent"`
-	ManagementProtected  bool     `json:"management_protected"`
-	PolicyProtected      bool     `json:"policy_protected"`
-	ManagementToken      *string  `json:"management_token,omitempty"`
-	PolicyToken          *string  `json:"policy_token,omitempty"`
+	Mode                   string   `json:"mode"`
+	HTTPBind               string   `json:"http_bind"`
+	SocksBind              string   `json:"socks_bind"`
+	SocksPort              uint16   `json:"socks_port"`
+	SocksAdvertise         string   `json:"socks_advertise"`
+	PolicyBaseURL          string   `json:"policy_base_url"`
+	RefreshSeconds         int      `json:"refresh_seconds"`
+	UserAgent              string   `json:"user_agent"`
+	NodeTestURL            *string  `json:"node_test_url"`
+	NodeTestUDPAddress     *string  `json:"node_test_udp_address"`
+	NodeTestTimeoutSeconds *int     `json:"node_test_timeout_seconds"`
+	IncludeTypes           []string `json:"include_types"`
+	ExcludeName            string   `json:"exclude_name"`
+	PrefixSubscription     bool     `json:"prefix_subscription"`
+	AutoApply              bool     `json:"auto_apply"`
+	DropThresholdPercent   int      `json:"drop_threshold_percent"`
+	ManagementProtected    bool     `json:"management_protected"`
+	PolicyProtected        bool     `json:"policy_protected"`
+	ManagementToken        *string  `json:"management_token,omitempty"`
+	PolicyToken            *string  `json:"policy_token,omitempty"`
 }
 
 func publicSettingsFrom(config domain.Config) publicSettings {
 	return publicSettings{
 		Mode: config.Mode, HTTPBind: config.HTTPBind, SocksBind: config.SocksBind, SocksPort: config.SocksPort,
 		SocksAdvertise: config.SocksAdvertise, PolicyBaseURL: config.PolicyBaseURL, RefreshSeconds: config.RefreshSeconds,
-		UserAgent: config.UserAgent, IncludeTypes: config.IncludeTypes, ExcludeName: config.ExcludeName,
+		UserAgent: config.UserAgent, NodeTestURL: &config.NodeTestURL, NodeTestUDPAddress: &config.NodeTestUDPAddress,
+		NodeTestTimeoutSeconds: &config.NodeTestTimeoutSeconds, IncludeTypes: config.IncludeTypes, ExcludeName: config.ExcludeName,
 		PrefixSubscription: config.PrefixSubscription, AutoApply: config.AutoApply,
 		DropThresholdPercent: config.DropThresholdPercent, ManagementProtected: config.ManagementToken != "", PolicyProtected: config.PolicyToken != "",
 	}
@@ -555,6 +559,15 @@ func (settings publicSettings) apply(config *domain.Config) {
 	config.PolicyBaseURL = settings.PolicyBaseURL
 	config.RefreshSeconds = settings.RefreshSeconds
 	config.UserAgent = settings.UserAgent
+	if settings.NodeTestURL != nil {
+		config.NodeTestURL = *settings.NodeTestURL
+	}
+	if settings.NodeTestUDPAddress != nil {
+		config.NodeTestUDPAddress = *settings.NodeTestUDPAddress
+	}
+	if settings.NodeTestTimeoutSeconds != nil {
+		config.NodeTestTimeoutSeconds = *settings.NodeTestTimeoutSeconds
+	}
 	config.IncludeTypes = settings.IncludeTypes
 	config.ExcludeName = settings.ExcludeName
 	config.PrefixSubscription = settings.PrefixSubscription
@@ -732,7 +745,7 @@ func publicRevisionValue(revision *domain.Revision) any {
 		nodes = append(nodes, publicNode{
 			NodeID: node.NodeID, DisplayName: node.DisplayName, Type: node.Type, Network: node.Network,
 			Security: node.Security, Flow: node.Flow, AuthUser: node.AuthUser, SourceName: node.SourceName,
-			TCPCapable: true, UDPCapable: true, UDPStatus: "SOCKS5 UDP Relay 已启用，服务端兼容性待实测",
+			TCPCapable: true, UDPCapable: true, UDPStatus: "支持通过节点测试验证 UDP Relay 与服务端出站",
 		})
 	}
 	return publicRevision{ID: revision.ID, CreatedAt: revision.CreatedAt, Nodes: nodes, Dropped: revision.Dropped, Risky: revision.Risky, RiskReason: revision.RiskReason, AppliedAt: revision.AppliedAt}

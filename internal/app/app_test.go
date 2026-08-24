@@ -415,6 +415,9 @@ func TestDiscardDraftRestoresAppliedInputsAndKeepsControlSettings(t *testing.T) 
 	config.ManagementToken = "new-management-token"
 	config.PolicyToken = "new-policy-token"
 	config.UserAgent = "new-agent"
+	config.NodeTestURL = "http://connectivity.example/generate_204"
+	config.NodeTestUDPAddress = "9.9.9.9:53"
+	config.NodeTestTimeoutSeconds = 9
 	if err := application.UpdateConfig(config); err != nil {
 		t.Fatal(err)
 	}
@@ -438,8 +441,30 @@ func TestDiscardDraftRestoresAppliedInputsAndKeepsControlSettings(t *testing.T) 
 	if _, found := state.Snapshots[second.ID]; found || len(state.Snapshots[first.ID].Nodes) != 1 {
 		t.Fatalf("discard did not restore applied snapshots: %+v", state.Snapshots)
 	}
-	if restoredConfig.ManagementToken != "new-management-token" || restoredConfig.PolicyToken != "new-policy-token" || restoredConfig.UserAgent != "new-agent" {
+	if restoredConfig.ManagementToken != "new-management-token" || restoredConfig.PolicyToken != "new-policy-token" || restoredConfig.UserAgent != "new-agent" || restoredConfig.NodeTestURL != "http://connectivity.example/generate_204" || restoredConfig.NodeTestUDPAddress != "9.9.9.9:53" || restoredConfig.NodeTestTimeoutSeconds != 9 {
 		t.Fatalf("discard rolled back immediate control settings: %+v", restoredConfig)
+	}
+}
+
+func TestNodeTestSettingsAreValidated(t *testing.T) {
+	config := domain.DefaultConfig()
+	config.NodeTestURL = "ftp://example.com/file"
+	if err := ValidateConfig(config); err == nil || !strings.Contains(err.Error(), "node_test_url") {
+		t.Fatalf("non-HTTP node test target was accepted: %v", err)
+	}
+	config = domain.DefaultConfig()
+	config.NodeTestUDPAddress = "1.1.1.1"
+	if err := ValidateConfig(config); err == nil || !strings.Contains(err.Error(), "node_test_udp_address") {
+		t.Fatalf("UDP target without a port was accepted: %v", err)
+	}
+	config = domain.DefaultConfig()
+	config.NodeTestTimeoutSeconds = 0
+	if err := ValidateConfig(config); err == nil || !strings.Contains(err.Error(), "node_test_timeout_seconds") {
+		t.Fatalf("zero node test timeout was accepted: %v", err)
+	}
+	config.NodeTestTimeoutSeconds = 121
+	if err := ValidateConfig(config); err == nil || !strings.Contains(err.Error(), "node_test_timeout_seconds") {
+		t.Fatalf("excessive node test timeout was accepted: %v", err)
 	}
 }
 

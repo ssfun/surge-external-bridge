@@ -5,39 +5,45 @@ import "time"
 const SchemaVersion = 1
 
 type Config struct {
-	Mode                 string         `json:"mode"`
-	HTTPBind             string         `json:"http_bind"`
-	SocksBind            string         `json:"socks_bind"`
-	SocksPort            uint16         `json:"socks_port"`
-	SocksAdvertise       string         `json:"socks_advertise"`
-	PolicyBaseURL        string         `json:"policy_base_url"`
-	RefreshSeconds       int            `json:"refresh_seconds"`
-	UserAgent            string         `json:"user_agent"`
-	IncludeTypes         []string       `json:"include_types"`
-	ExcludeName          string         `json:"exclude_name"`
-	PrefixSubscription   bool           `json:"prefix_subscription"`
-	AutoApply            bool           `json:"auto_apply"`
-	DropThresholdPercent int            `json:"drop_threshold_percent"`
-	ManagementToken      string         `json:"management_token,omitempty"`
-	PolicyToken          string         `json:"policy_token,omitempty"`
-	Subscriptions        []Subscription `json:"subscriptions"`
+	Mode                   string         `json:"mode"`
+	HTTPBind               string         `json:"http_bind"`
+	SocksBind              string         `json:"socks_bind"`
+	SocksPort              uint16         `json:"socks_port"`
+	SocksAdvertise         string         `json:"socks_advertise"`
+	PolicyBaseURL          string         `json:"policy_base_url"`
+	RefreshSeconds         int            `json:"refresh_seconds"`
+	UserAgent              string         `json:"user_agent"`
+	NodeTestURL            string         `json:"node_test_url"`
+	NodeTestUDPAddress     string         `json:"node_test_udp_address"`
+	NodeTestTimeoutSeconds int            `json:"node_test_timeout_seconds"`
+	IncludeTypes           []string       `json:"include_types"`
+	ExcludeName            string         `json:"exclude_name"`
+	PrefixSubscription     bool           `json:"prefix_subscription"`
+	AutoApply              bool           `json:"auto_apply"`
+	DropThresholdPercent   int            `json:"drop_threshold_percent"`
+	ManagementToken        string         `json:"management_token,omitempty"`
+	PolicyToken            string         `json:"policy_token,omitempty"`
+	Subscriptions          []Subscription `json:"subscriptions"`
 }
 
 func DefaultConfig() Config {
 	return Config{
-		Mode:                 "local",
-		HTTPBind:             "127.0.0.1:18080",
-		SocksBind:            "127.0.0.1",
-		SocksPort:            1080,
-		SocksAdvertise:       "127.0.0.1",
-		PolicyBaseURL:        "http://127.0.0.1:18080",
-		RefreshSeconds:       21600,
-		UserAgent:            "clash.meta",
-		IncludeTypes:         []string{"vless"},
-		ExcludeName:          "剩余流量|套餐到期|距离下次重置|过期时间|到期时间|Traffic|Expire",
-		PrefixSubscription:   true,
-		AutoApply:            true,
-		DropThresholdPercent: 50,
+		Mode:                   "local",
+		HTTPBind:               "127.0.0.1:18080",
+		SocksBind:              "127.0.0.1",
+		SocksPort:              1080,
+		SocksAdvertise:         "127.0.0.1",
+		PolicyBaseURL:          "http://127.0.0.1:18080",
+		RefreshSeconds:         21600,
+		UserAgent:              "clash.meta",
+		NodeTestURL:            "https://www.gstatic.com/generate_204",
+		NodeTestUDPAddress:     "1.1.1.1:53",
+		NodeTestTimeoutSeconds: 15,
+		IncludeTypes:           []string{"vless"},
+		ExcludeName:            "剩余流量|套餐到期|距离下次重置|过期时间|到期时间|Traffic|Expire",
+		PrefixSubscription:     true,
+		AutoApply:              true,
+		DropThresholdPercent:   50,
 	}
 }
 
@@ -186,12 +192,21 @@ type Diagnostics struct {
 }
 
 type NodeTestResult struct {
-	NodeID    string    `json:"node_id"`
-	Name      string    `json:"name"`
-	Success   bool      `json:"success"`
-	Stage     string    `json:"stage"`
-	Detail    string    `json:"detail"`
-	Target    string    `json:"target"`
-	LatencyMS int64     `json:"latency_ms"`
-	TestedAt  time.Time `json:"tested_at"`
+	NodeID    string            `json:"node_id"`
+	Name      string            `json:"name"`
+	Success   bool              `json:"success"`
+	Stage     string            `json:"stage"`
+	Detail    string            `json:"detail"`
+	Target    string            `json:"target"`
+	LatencyMS int64             `json:"latency_ms"`
+	TestedAt  time.Time         `json:"tested_at"`
+	UDP       NodeUDPTestResult `json:"udp"`
+}
+
+type NodeUDPTestResult struct {
+	Success   bool   `json:"success"`
+	Stage     string `json:"stage"`
+	Detail    string `json:"detail"`
+	Target    string `json:"target"`
+	LatencyMS int64  `json:"latency_ms"`
 }

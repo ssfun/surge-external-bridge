@@ -21,6 +21,7 @@ Surge SOCKS 节点 C ── 用户 C ─┘
 - 所有节点共用一个 SOCKS5 数据端口，但拥有独立随机用户名和密码。
 - 配置台、订阅调度、`/proxies` 与 Embedded Core 位于同一进程。
 - `/proxies` 只发布已经成功应用的 revision；未应用草稿不会提前影响 Surge。
+- 节点页支持单个或四路并发批量测试，同时验证 Web/TCP 与真实 SOCKS5 UDP DNS 链路；测试目标和单节点超时可配置。
 
 ## 下载与自动构建
 
@@ -181,7 +182,7 @@ xattr -d com.apple.quarantine vless2surge-darwin-arm64
 1. 添加订阅 URL、导入 Clash `proxy-providers`，或粘贴 VLESS/Base64/Clash `proxies` 内容。
 2. 刷新订阅并检查保留、丢弃节点及原因。
 3. 校验并应用第一份配置版本。
-4. 在“节点”页面发起实测；测试会经过当前本地网关，并区分认证、VLESS 出站、TLS 和 HTTP 阶段。
+4. 在“节点”页面发起单个或批量实测；测试会经过当前本地网关，分别显示 TCP、UDP 延迟和具体失败阶段。Web 目标、UDP DNS 服务器与超时可在“配置 → 节点测试”中修改。
 5. 复制总览中的 Surge `policy-path` URL，在 Surge 中加入策略组并测速。
 
 配置台将“网关”“配置”“诊断”“日志”拆分为独立页面。网关页面负责启动、重启和停止 Embedded Engine；部署地址、访问保护与系统服务在“配置”页面管理。

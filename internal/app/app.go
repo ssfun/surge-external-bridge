@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -284,7 +285,7 @@ func (a *App) Diagnostics() domain.Diagnostics {
 		add("outbound", "warn", "尚未满足 outbound 连通性测试的本地前置条件")
 	}
 	add("tcp", "warn", "未主动向外部目标发起 TCP 流量；请通过 Surge url-test 或实际请求验证")
-	add("udp", "warn", "SOCKS5 UDP Relay 已编译；服务端 UDP/XUDP 兼容性需通过实际节点验证")
+	add("udp", "warn", "SOCKS5 UDP Relay 已编译；节点页可对每个已应用节点执行真实 UDP DNS 测试")
 
 	policy, revisionID, policyErr := a.Proxies()
 	if policyErr != nil || state.Applied == nil || revisionID != state.Applied.ID || strings.TrimSpace(policy) == "" {
@@ -867,6 +868,9 @@ func (a *App) DiscardDraft() error {
 	restored.PolicyBaseURL = a.config.PolicyBaseURL
 	restored.RefreshSeconds = a.config.RefreshSeconds
 	restored.UserAgent = a.config.UserAgent
+	restored.NodeTestURL = a.config.NodeTestURL
+	restored.NodeTestUDPAddress = a.config.NodeTestUDPAddress
+	restored.NodeTestTimeoutSeconds = a.config.NodeTestTimeoutSeconds
 	restored.AutoApply = a.config.AutoApply
 	restored.DropThresholdPercent = a.config.DropThresholdPercent
 	restored.ManagementToken = a.config.ManagementToken
@@ -1254,6 +1258,24 @@ func ValidateConfig(config domain.Config) error {
 	}
 	if isPublicLiteralIP(policyURL.Hostname()) {
 		return errors.New("policy_base_url cannot publish a public IP address; use a trusted private network address")
+	}
+	testURL, err := url.Parse(config.NodeTestURL)
+	if err != nil || (testURL.Scheme != "http" && testURL.Scheme != "https") || testURL.Host == "" || testURL.User != nil || testURL.Fragment != "" {
+		return errors.New("node_test_url must be an absolute HTTP or HTTPS URL without credentials or a fragment")
+	}
+	udpHost, udpPortText, err := net.SplitHostPort(config.NodeTestUDPAddress)
+	if err != nil {
+		return fmt.Errorf("invalid node_test_udp_address: %w", err)
+	}
+	if err := validateEndpointHost("node_test_udp_address", udpHost); err != nil {
+		return err
+	}
+	udpPort, err := strconv.Atoi(udpPortText)
+	if err != nil || udpPort < 1 || udpPort > 65535 {
+		return errors.New("node_test_udp_address port must be between 1 and 65535")
+	}
+	if config.NodeTestTimeoutSeconds < 1 || config.NodeTestTimeoutSeconds > 120 {
+		return errors.New("node_test_timeout_seconds must be between 1 and 120")
 	}
 	if config.RefreshSeconds < 60 {
 		return errors.New("refresh interval must be at least 60 seconds")

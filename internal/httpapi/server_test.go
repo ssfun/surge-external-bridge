@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -37,6 +38,9 @@ func TestManagementAuthenticationAndPublicProjections(t *testing.T) {
 		t.Fatalf("sensitive management response is cacheable: %+v", settings.Header())
 	}
 	assertDoesNotContain(t, settings.Body.String(), managementSecret, policySecret, passwordSecret, uuidSecret, realitySecret)
+	if !strings.Contains(settings.Body.String(), `"node_test_url":"https://www.gstatic.com/generate_204"`) || !strings.Contains(settings.Body.String(), `"node_test_udp_address":"1.1.1.1:53"`) || !strings.Contains(settings.Body.String(), `"node_test_timeout_seconds":15`) {
+		t.Fatalf("node test settings are missing from the public settings projection: %s", settings.Body.String())
+	}
 
 	subscriptions := request(handler, http.MethodGet, "/api/subscriptions", managementSecret, "", "")
 	if subscriptions.Code != http.StatusOK {
@@ -57,6 +61,23 @@ func TestManagementAuthenticationAndPublicProjections(t *testing.T) {
 	assertDoesNotContain(t, configPreview.Body.String(), uuidSecret, passwordSecret, realitySecret)
 	if !strings.Contains(configPreview.Body.String(), `"password": "***"`) || !strings.Contains(configPreview.Body.String(), `"public_key": "***"`) {
 		t.Fatalf("config preview was not visibly redacted: %s", configPreview.Body.String())
+	}
+}
+
+func TestLegacySettingsUpdatePreservesNodeTestDefaults(t *testing.T) {
+	application, handler := httpFixture(t)
+	defer application.Close()
+	current := application.Config()
+	payload := fmt.Sprintf(`{"mode":%q,"http_bind":%q,"socks_bind":%q,"socks_port":%d,"socks_advertise":%q,"policy_base_url":%q,"refresh_seconds":%d,"user_agent":%q,"include_types":["vless"],"exclude_name":%q,"prefix_subscription":true,"auto_apply":true,"drop_threshold_percent":50}`,
+		current.Mode, current.HTTPBind, current.SocksBind, current.SocksPort, current.SocksAdvertise, current.PolicyBaseURL, current.RefreshSeconds, "legacy-client", current.ExcludeName)
+	response := request(handler, http.MethodPut, "/api/settings", managementSecret, "http://vless2surge.local", payload)
+	if response.Code != http.StatusOK {
+		t.Fatalf("legacy settings update failed: %d %s", response.Code, response.Body.String())
+	}
+	updated := application.Config()
+	defaults := domain.DefaultConfig()
+	if updated.UserAgent != "legacy-client" || updated.NodeTestURL != defaults.NodeTestURL || updated.NodeTestUDPAddress != defaults.NodeTestUDPAddress || updated.NodeTestTimeoutSeconds != defaults.NodeTestTimeoutSeconds {
+		t.Fatalf("legacy update changed node test defaults: %+v", updated)
 	}
 }
 
@@ -303,7 +324,7 @@ func TestPublicRevisionSeparatesTCPAndUDPCapability(t *testing.T) {
 		t.Fatalf("unexpected public revision: %#v", value)
 	}
 	node := revision.Nodes[0]
-	if !node.TCPCapable || !node.UDPCapable || !strings.Contains(node.UDPStatus, "待实测") {
+	if !node.TCPCapable || !node.UDPCapable || strings.Contains(node.UDPStatus, "待实测") || !strings.Contains(node.UDPStatus, "节点测试") {
 		t.Fatalf("TCP/UDP capability is not explicit: %+v", node)
 	}
 }
