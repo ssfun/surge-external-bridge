@@ -1,0 +1,203 @@
+# vless2surge
+
+[![CI](https://github.com/ssfun/vless2surge/actions/workflows/ci.yml/badge.svg)](https://github.com/ssfun/vless2surge/actions/workflows/ci.yml)
+
+vless2surge 是面向 Surge 的单文件、单进程 VLESS 协议网关。它把固定版本的上游 sing-box Core 编译进自身，通过一个 SOCKS5 端口和节点级用户名路由，让 Surge 把订阅中的每个 VLESS 节点作为独立策略选择、测速和故障转移。
+
+当前源码固定的 Core 版本以 `go.mod` 为准；每个 GitHub Release 的精确 sing-box 版本记录在随附的 `BUILDINFO.txt`。
+
+当前 macOS 发行基线为 macOS 13.0 或更高版本；Linux arm64/amd64 发行物采用静态链接。
+
+## 工作方式
+
+```text
+Surge SOCKS 节点 A ── 用户 A ─┐
+Surge SOCKS 节点 B ── 用户 B ─┼─> vless2surge:1080 ─> auth_user ─> VLESS outbound
+Surge SOCKS 节点 C ── 用户 C ─┘
+```
+
+- Surge 继续负责系统代理、TUN、规则和策略组。
+- vless2surge 不创建 TUN，不修改系统代理。
+- 所有节点共用一个 SOCKS5 数据端口，但拥有独立随机用户名和密码。
+- 配置台、订阅调度、`/proxies` 与 Embedded Core 位于同一进程。
+- `/proxies` 只发布已经成功应用的 revision；未应用草稿不会提前影响 Surge。
+
+## 下载与自动构建
+
+正式构建由 [GitHub Actions](https://github.com/ssfun/vless2surge/actions) 完成：
+
+- 推送到 `main` 或提交 Pull Request 时，CI 自动执行测试、race、vet 和四平台 QA 构建；
+- 推送 `v*` tag 时，Release 工作流验证源码已固定 sing-box 最新正式版，然后自动发布 GitHub Release；
+- 也可以在 Actions 中手动运行 Release 工作流并输入版本号。工作流会读取 sing-box `releases/latest`，把最新正式 Core 精确写入 `go.mod/go.sum` 并提交到 `main`，再创建 tag、测试、构建和发布；
+- 每个 Release 包含 macOS/Linux 的 arm64、amd64 四个二进制，以及项目 `LICENSE`、`SHA256SUMS`、`BUILDINFO.txt` 和完整第三方许可清单。
+
+发布页：[github.com/ssfun/vless2surge/releases](https://github.com/ssfun/vless2surge/releases)。
+
+## 本地构建
+
+源码最低要求 Go 1.24.7，官方构建固定使用 `.go-version` 中的 Go 1.27.0。前端为内嵌静态资源，不需要 Node.js 才能构建。Reality/uTLS 依赖 `with_utls`，gRPC 使用上游标准实现的 `with_grpc`；后者避免 gRPC-lite 在当前 Core 中的并发问题。Makefile 会强制启用并在发行审计中验证两个标签，不要用缺少标签的裸 `go build` 替代正式构建。
+
+```bash
+make build
+./vless2surge version
+```
+
+构建四个平台的单文件产物：
+
+```bash
+make dist VERSION=0.1.0
+```
+
+输出：
+
+- `dist/vless2surge-darwin-arm64`
+- `dist/vless2surge-darwin-amd64`
+- `dist/vless2surge-linux-arm64`
+- `dist/vless2surge-linux-amd64`
+
+生成带校验和、构建信息和完整第三方许可清单的本地发行目录：
+
+```bash
+make release VERSION=0.1.0
+```
+
+额外输出 `dist/SHA256SUMS`、`dist/BUILDINFO.txt` 和 `dist/THIRD_PARTY_NOTICES.txt`。生成器会硬校验产品版本、目标架构、构建标签、Core 版本、macOS 13.0 最低版本标记和 Linux 静态链接，并收集 Go 工具链及全部链接模块的许可声明。
+
+## macOS 签名与公证
+
+GitHub Actions 默认发布未签名的命令行二进制。如需提供经过 Apple Developer ID 签名和公证的版本，应在发布前准备 `Developer ID Application` 证书、对应 Team ID 和 App 专用密码。
+
+先构建但暂不生成最终校验和：
+
+```bash
+make dist VERSION=0.1.0
+```
+
+对两个架构分别签名并验证：
+
+```bash
+codesign --force --options runtime --timestamp \
+  --sign "Developer ID Application: Your Name (TEAMID)" \
+  dist/vless2surge-darwin-arm64
+codesign --force --options runtime --timestamp \
+  --sign "Developer ID Application: Your Name (TEAMID)" \
+  dist/vless2surge-darwin-amd64
+codesign --verify --strict --verbose=2 dist/vless2surge-darwin-arm64
+codesign --verify --strict --verbose=2 dist/vless2surge-darwin-amd64
+```
+
+签名后再生成与最终二进制匹配的构建清单和校验和：
+
+```bash
+make release-metadata VERSION=0.1.0
+```
+
+首次使用 `notarytool` 时保存公证凭据，然后把每个签名二进制单独打包并提交：
+
+```bash
+xcrun notarytool store-credentials vless2surge-notary \
+  --apple-id "you@example.com" \
+  --team-id "TEAMID" \
+  --password "APP-SPECIFIC-PASSWORD"
+
+ditto -c -k --keepParent dist/vless2surge-darwin-arm64 dist/vless2surge-darwin-arm64.zip
+ditto -c -k --keepParent dist/vless2surge-darwin-amd64 dist/vless2surge-darwin-amd64.zip
+xcrun notarytool submit dist/vless2surge-darwin-arm64.zip --keychain-profile vless2surge-notary --wait
+xcrun notarytool submit dist/vless2surge-darwin-amd64.zip --keychain-profile vless2surge-notary --wait
+spctl --assess --type execute --verbose=2 dist/vless2surge-darwin-arm64
+spctl --assess --type execute --verbose=2 dist/vless2surge-darwin-amd64
+```
+
+普通命令行二进制不能像 `.app`、`.pkg` 或 `.dmg` 那样 stapling 公证票据，因此应分发已经通过公证的 ZIP；Gatekeeper 会在线验证公证记录。不要在生成 `SHA256SUMS` 后再次修改或签名二进制。
+
+## 首次运行
+
+```bash
+./vless2surge serve
+```
+
+默认端点：
+
+- 配置台：`http://127.0.0.1:18080`
+- SOCKS5：`127.0.0.1:1080`
+- 数据目录：`~/.vless2surge`
+
+打开配置台后：
+
+1. 添加订阅 URL、导入 Clash `proxy-providers`，或粘贴 VLESS/Base64/Clash `proxies` 内容。
+2. 刷新订阅并检查保留、丢弃节点及原因。
+3. 校验并应用第一份 revision。
+4. 复制总览中的 Surge `policy-path` URL。
+5. 在 Surge 中加入策略组并测速。
+
+示例：
+
+```ini
+[Proxy Group]
+VLESS = select, policy-path=http://127.0.0.1:18080/proxies, update-interval=3600
+```
+
+## 系统服务
+
+macOS 使用用户级 LaunchAgent，Linux 默认使用 systemd user service：
+
+```bash
+./vless2surge service status
+./vless2surge service install
+./vless2surge service uninstall
+```
+
+也可以在配置台“网关 → 参数”中管理。服务只托管一个 vless2surge 进程，不要求系统安装 sing-box。
+
+安装流程会先把数据目录解析为绝对路径，并以 `0700` 权限创建或收紧。LaunchAgent 和 systemd user service 都使用 `0077` umask；macOS 服务输出保存在私有数据目录，Linux 日志由 systemd journal 承载。
+
+## Linux 私网网关
+
+推荐通过 Tailscale、WireGuard 或可信局域网连接，不要把 SOCKS5 或配置台裸露在公网。
+
+当 HTTP 监听地址不是回环地址时，必须同时设置：
+
+- Management Token：保护配置台 API；
+- Policy Token：保护包含 SOCKS 凭据的 `/proxies`。
+
+两类 Token 必须不同且至少 16 字符；配置台可用浏览器密码学随机源生成 32 字符安全值。配置台会生成带 Policy Token 的 URL。`SOCKS advertise` 和 Policy URL 不得使用 `0.0.0.0` 或 `::`，因为通配地址只能用于监听。SOCKS5 端口本身使用每节点独立身份认证，未知用户会被拒绝。
+
+## 状态与恢复
+
+- `config.json` 与 `state.json` 以 `0600` 权限原子写入。
+- 订阅刷新失败或返回空内容时保留最近成功快照。
+- 节点异常骤降会把草稿标记为高风险，必须显式确认。
+- 候选 Engine 启动失败时恢复上一 applied revision。
+- 连续三次非正常退出后进入安全模式，只启动配置台。
+- 节点凭据轮换只生成草稿，应用成功后才发布给 Surge。
+
+## 验证
+
+```bash
+make test
+make test-race
+make vet
+node --check internal/webassets/static/app.js
+make surge-check
+```
+
+`make surge-check` 需要 macOS 已安装 Surge，只校验生成节点的 Surge 配置语法，不修改当前 Surge 配置。
+
+测试包含真实回环链路：
+
+- SOCKS5 用户认证到不同 VLESS outbound；
+- TLS+uTLS+ALPN、Reality+Vision+uTLS 的完整握手；
+- WebSocket、gRPC、HTTP 和 HTTP Upgrade 传输；
+- SOCKS5 UDP Relay 经 VLESS XUDP 到 UDP 目标；
+- 未知用户拒绝；
+- 150 个 Reality/Vision 身份与 outbound 共用一个 SOCKS5 inbound；
+- 候选端口失败后的旧 revision 回滚；
+- 订阅缓存、风险应用、重启恢复和 applied-only `/proxies`；
+- 混合订阅不静默丢弃、Clash provider 请求头/间隔、来源变更的快照保底；
+- 管理 Token、Policy Token、ETag、同源保护和敏感字段脱敏。
+
+## 安全与许可证
+
+订阅 URL、VLESS UUID、Reality 参数、SOCKS 密码和管理 Token 都属于敏感信息。不要公开数据目录、配置预览或 `/proxies` URL。
+
+项目根目录 [`LICENSE`](LICENSE) 采用与 sing-box 一致的 GNU GPL v3 或更高版本条款，并保留额外的名称/关联表述限制。`LICENSES/sing-box.txt` 保存当前 Core 的上游许可原文。公开分发内嵌 Core 的二进制时必须保留上游声明，并提供对应源代码与可追溯构建信息。

@@ -1,0 +1,6 @@
+/dist/
+/doc/
+/vless2surge
+/.cache/
+/.vless2surge/
+.DS_Store

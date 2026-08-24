@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Test, race and vet
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .go-version
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: make check
+      - run: make test-race
+
+  build:
+    name: Four-platform build
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .go-version
+          cache: true
+      - name: Build audited QA artifacts
+        run: make release VERSION=0.0.0-ci.${{ github.run_number }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vless2surge-ci-${{ github.run_number }}
+          path: |
+            dist/vless2surge-darwin-arm64
+            dist/vless2surge-darwin-amd64
+            dist/vless2surge-linux-arm64
+            dist/vless2surge-linux-amd64
+            dist/SHA256SUMS
+            dist/BUILDINFO.txt
+            dist/THIRD_PARTY_NOTICES.txt
+            LICENSE
+          if-no-files-found: error
+          retention-days: 14

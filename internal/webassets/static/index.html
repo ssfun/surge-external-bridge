@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>vless2surge · 配置台</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="mark"><i></i><i></i><i></i><i></i></div>
+        <div><strong>vless2surge</strong><span>EMBEDDED PROTOCOL GATEWAY</span></div>
+      </div>
+      <nav id="nav">
+        <button class="active" data-view="overview"><b>00</b><span>总览</span></button>
+        <button data-view="subscriptions"><b>01</b><span>订阅</span></button>
+        <button data-view="process"><b>02</b><span>处理</span></button>
+        <button data-view="nodes"><b>03</b><span>节点</span></button>
+        <button data-view="gateway"><b>04</b><span>网关</span><em id="dirty-dot" hidden>Δ</em></button>
+      </nav>
+      <div class="side-status">
+        <div class="engine-line"><i id="engine-led"></i><span id="engine-label">正在连接…</span></div>
+        <code id="side-endpoint">—</code>
+        <small id="side-revision">revision —</small>
+      </div>
+    </aside>
+    <main>
+      <div id="app" aria-live="polite"><div class="loading">正在连接配置台…</div></div>
+    </main>
+  </div>
+  <div id="apply-bar" class="apply-bar" hidden>
+    <div><strong>有未应用更改</strong><span id="apply-summary"></span></div>
+    <button class="button" id="view-diff">查看节点</button>
+    <button class="button danger" id="discard-draft">放弃草稿</button>
+    <button class="button primary" id="apply-now">校验并应用</button>
+  </div>
+  <div id="modal-root"></div>
+  <div id="toasts"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>
