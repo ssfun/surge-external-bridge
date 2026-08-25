@@ -7,10 +7,22 @@ BINARY ?= SurgeEB
 LDFLAGS = -s -w -X github.com/ssfun/surge-external-bridge/internal/gateway.Version=$(VERSION) -X github.com/ssfun/surge-external-bridge/internal/gateway.BuildVersionMarker=surgeeb-version:$(VERSION)
 SURGE_CLI ?= /Applications/Surge.app/Contents/Applications/surge-cli
 
-.PHONY: build test test-race vet check dist release release-metadata surge-check clean
+.PHONY: build frontend frontend-build frontend-test frontend-verify-generated test test-race vet check dist release release-metadata surge-check clean
 
 build:
 	CGO_ENABLED=0 $(GO) build -tags '$(BUILD_TAGS)' -trimpath -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/surgeeb
+
+frontend: frontend-test frontend-build
+
+frontend-test:
+	npm ci --prefix frontend
+	npm test --prefix frontend
+
+frontend-build:
+	npm run build --prefix frontend
+
+frontend-verify-generated:
+	bash scripts/validation/frontend-generated.sh
 
 test:
 	$(GO) test -tags '$(BUILD_TAGS)' ./...
@@ -21,7 +33,7 @@ test-race:
 vet:
 	$(GO) vet -tags '$(BUILD_TAGS)' ./...
 
-check: test vet
+check: frontend-test frontend-verify-generated test vet
 	node --check internal/webassets/static/app.js
 
 dist:
