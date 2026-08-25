@@ -9,7 +9,7 @@ export default defineConfig({
   },
   build: {
     outDir: process.env.FRONTEND_OUT_DIR || '../internal/webassets/static',
-    emptyOutDir: true,
+    emptyOutDir: false,
     cssCodeSplit: false,
     rollupOptions: {
       output: {
