@@ -2,170 +2,53 @@
 
 [![CI](https://github.com/ssfun/vless2surge/actions/workflows/ci.yml/badge.svg)](https://github.com/ssfun/vless2surge/actions/workflows/ci.yml)
 
-vless2surge 是面向 Surge 的单文件、单进程 VLESS 协议网关。它把固定版本的上游 sing-box Core 编译进自身，通过一个 SOCKS5 端口和节点级用户名路由，让 Surge 把订阅中的每个 VLESS 节点作为独立策略选择、测速和故障转移。
-
-当前源码固定的 Core 版本以 `go.mod` 为准；每个 GitHub Release 的精确 sing-box 版本记录在随附的 `BUILDINFO.txt`。
-
-当前 macOS 发行基线为 macOS 13.0 或更高版本；Linux arm64/amd64 发行物采用静态链接。
-
-## 工作方式
+vless2surge 是面向 Surge 的单文件、单进程 Mihomo Provider 网关。它把固定版本的 Mihomo Core 嵌入可执行文件，让 Mihomo 直接负责订阅获取、协议解析、最近成功缓存、健康状态和节点热更新；产品只在其上提供一层确定性的 Surge SOCKS5 身份投影与安全管理门面。
 
 ```text
-Surge SOCKS 节点 A ── 用户 A ─┐
-Surge SOCKS 节点 B ── 用户 B ─┼─> vless2surge:1080 ─> auth_user ─> VLESS outbound
-Surge SOCKS 节点 C ── 用户 C ─┘
+HTTP / File / Inline Provider
+             │
+             ▼
+      Embedded Mihomo ── 私有 Unix Controller
+             │                  │
+       Provider Proxies         └─ vless2surge allowlist API / UI
+             │
+       原子 Projection Snapshot
+             │
+Surge 节点凭据 ──> 单一认证 SOCKS5 TCP/UDP ──> v2s-router ──> 指定 Provider Proxy
 ```
 
-- Surge 继续负责系统代理、TUN、规则和策略组。
-- vless2surge 不创建 TUN，不修改系统代理。
-- 所有节点共用一个 SOCKS5 数据端口，但拥有独立随机用户名和密码。
-- 配置台、订阅调度、`/proxies` 与 Embedded Core 位于同一进程。
-- `/proxies` 只发布“当前运行”版本；内部候选 revision 仅用于原子校验与失败回滚，不会提前影响 Surge。
-- 安全更新会在网关运行时自动原子同步；网关停止时保存的安全更新会在下次启动时同步。
-- 节点骤降等风险更新保留“当前运行”，在配置台显示为“更新待确认”。
-- 节点页支持单个或四路并发批量测试，同时验证 Web/TCP 与真实 SOCKS5 UDP DNS 链路；测试目标和单节点超时可配置。
+核心原则：
 
-## 下载与自动构建
+- Mihomo Provider 是订阅与节点的唯一事实来源；vless2surge 不保存第二份节点快照。
+- Provider 内容刷新调用 Mihomo 原生 `Update`，失败时继续使用最近成功内容。
+- Provider 定时与手动刷新串行调用 Mihomo 原生 `Update`；Provider 定义变化通过进程内受控 `ApplyConfig` 只替换 Provider/Proxy 拓扑，不重建私有 Controller 或产品进程。
+- 没有 Draft/Applied revision、节点骤降审批、订阅转换器或随机身份注册表。
+- Authenticator、Router、节点 API 和 `/proxies` 共用同一个不可变原子 Snapshot。
+- 未知、错误或已过期身份严格拒绝，绝不回落到 DIRECT。
+- Surge 继续独占系统代理、TUN、规则和策略组；vless2surge 永不接管系统网络。
 
-正式构建由 [GitHub Actions](https://github.com/ssfun/vless2surge/actions) 完成：
+## Surge 工作方式
 
-- 推送到 `main` 或提交 Pull Request 时，CI 自动执行测试、race、vet 和四平台 QA 构建；
-- 推送 `v*` tag 时，Release 工作流验证源码已固定 sing-box 最新正式版，然后自动发布 GitHub Release；
-- 也可以在 Actions 中手动运行 Release 工作流并输入版本号。工作流会读取 sing-box `releases/latest`，把最新正式 Core 精确写入 `go.mod/go.sum` 并提交到 `main`，再创建 tag、测试、构建和发布；
-- 每个 Release 包含 macOS/Linux 的 arm64、amd64 四个二进制，以及项目 `LICENSE`、`SHA256SUMS`、`BUILDINFO.txt` 和完整第三方许可清单。
+每个节点获得由以下输入计算的稳定凭据：
 
-发布页：[github.com/ssfun/vless2surge/releases](https://github.com/ssfun/vless2surge/releases)。
-
-## 本地构建
-
-源码最低要求 Go 1.24.7，官方构建固定使用 `.go-version` 中的 Go 1.27.0。前端为内嵌静态资源，不需要 Node.js 才能构建。Reality/uTLS 依赖 `with_utls`，gRPC 使用上游标准实现的 `with_grpc`；后者避免 gRPC-lite 在当前 Core 中的并发问题。Makefile 会强制启用并在发行审计中验证两个标签，不要用缺少标签的裸 `go build` 替代正式构建。
-
-```bash
-make build
-./vless2surge version
+```text
+provider_stable_id + NUL + mihomo_proxy_name
+  └─ HMAC-SHA256(持久化 32-byte Projection Master Key)
 ```
 
-构建四个平台的单文件产物：
+节点参数变化但名称不变时凭据保持稳定；Provider 或节点删除后，对应身份立即失效。所有节点共享一个 SOCKS5 端口，TCP 和 UDP 都通过认证用户路由到 `v2s-router`。UDP 使用产品自管的 RFC 1929 SOCKS5 listener，把已认证 `UDP ASSOCIATE` 控制连接与 UDP 源端点绑定；无绑定、过期或歧义的数据包直接丢弃。
 
-```bash
-make dist VERSION=0.1.0
+Surge 示例：
+
+```ini
+[Proxy Group]
+VLESS = select, policy-path=http://127.0.0.1:18080/proxies, update-interval=3600
+
+[Rule]
+PROCESS-NAME,vless2surge,DIRECT
 ```
 
-输出：
-
-- `dist/vless2surge-darwin-arm64`
-- `dist/vless2surge-darwin-amd64`
-- `dist/vless2surge-linux-arm64`
-- `dist/vless2surge-linux-amd64`
-
-生成带校验和、构建信息和完整第三方许可清单的本地发行目录：
-
-```bash
-make release VERSION=0.1.0
-```
-
-额外输出 `dist/SHA256SUMS`、`dist/BUILDINFO.txt` 和 `dist/THIRD_PARTY_NOTICES.txt`。生成器会硬校验产品版本、目标架构、构建标签、Core 版本、macOS 13.0 最低版本标记和 Linux 静态链接，并收集 Go 工具链及全部链接模块的许可声明。
-
-## macOS Developer ID 签名与公证
-
-GitHub Actions 默认发布未签名的命令行二进制。如需提供经过 Apple Developer ID 签名和公证的版本，应在发布前准备 `Developer ID Application` 证书、对应 Team ID 和 App 专用密码。
-
-先构建但暂不生成最终校验和：
-
-```bash
-make dist VERSION=0.1.0
-```
-
-对两个架构分别签名并验证：
-
-```bash
-codesign --force --options runtime --timestamp \
-  --sign "Developer ID Application: Your Name (TEAMID)" \
-  dist/vless2surge-darwin-arm64
-codesign --force --options runtime --timestamp \
-  --sign "Developer ID Application: Your Name (TEAMID)" \
-  dist/vless2surge-darwin-amd64
-codesign --verify --strict --verbose=2 dist/vless2surge-darwin-arm64
-codesign --verify --strict --verbose=2 dist/vless2surge-darwin-amd64
-```
-
-签名后再生成与最终二进制匹配的构建清单和校验和：
-
-```bash
-make release-metadata VERSION=0.1.0
-```
-
-首次使用 `notarytool` 时保存公证凭据，然后把每个签名二进制单独打包并提交：
-
-```bash
-xcrun notarytool store-credentials vless2surge-notary \
-  --apple-id "you@example.com" \
-  --team-id "TEAMID" \
-  --password "APP-SPECIFIC-PASSWORD"
-
-ditto -c -k --keepParent dist/vless2surge-darwin-arm64 dist/vless2surge-darwin-arm64.zip
-ditto -c -k --keepParent dist/vless2surge-darwin-amd64 dist/vless2surge-darwin-amd64.zip
-xcrun notarytool submit dist/vless2surge-darwin-arm64.zip --keychain-profile vless2surge-notary --wait
-xcrun notarytool submit dist/vless2surge-darwin-amd64.zip --keychain-profile vless2surge-notary --wait
-spctl --assess --type execute --verbose=2 dist/vless2surge-darwin-arm64
-spctl --assess --type execute --verbose=2 dist/vless2surge-darwin-amd64
-```
-
-普通命令行二进制不能像 `.app`、`.pkg` 或 `.dmg` 那样 stapling 公证票据，因此应分发已经通过公证的 ZIP；Gatekeeper 会在线验证公证记录。不要在生成 `SHA256SUMS` 后再次修改或签名二进制。
-
-## macOS 本地自签名
-
-没有 Apple Developer ID 时，可以对自己使用的二进制做本地签名。自签名不能建立 Apple 公证记录，也不适合作为面向公众的可信发布方式。
-
-Release 直接下载的裸二进制可能没有可执行权限。先用 `uname -m` 确认架构（Apple Silicon 为 `arm64`，Intel 为 `x86_64`），然后恢复权限；修改权限不会改变文件的 SHA-256：
-
-```bash
-chmod 755 vless2surge-darwin-arm64
-```
-
-建议严格按“校验官方 SHA-256 → 本地签名 → 验证签名 → 必要时移除 quarantine → 运行”的顺序操作。签名会原地修改二进制，因此官方校验和只能在签名前核对。
-
-### 方法一：ad-hoc 签名
-
-这是单机使用最快的方法，不需要创建证书。先在签名前核对下载文件；以下命令应在同时包含二进制和 `SHA256SUMS` 的目录执行，并只校验当前架构对应的清单条目：
-
-```bash
-grep 'vless2surge-darwin-arm64$' SHA256SUMS | shasum -a 256 -c -
-codesign --force --options runtime --timestamp=none --sign - vless2surge-darwin-arm64
-codesign --verify --strict --verbose=2 vless2surge-darwin-arm64
-codesign --display --verbose=4 vless2surge-darwin-arm64
-```
-
-Intel Mac 将文件名替换为 `vless2surge-darwin-amd64`。ad-hoc 签名只表明文件签名后没有再被修改，没有可供其他设备信任的签名身份。
-
-### 方法二：钥匙串自建 Code Signing 证书
-
-1. 打开“钥匙串访问”；
-2. 选择“钥匙串访问 → 证书助理 → 创建证书”；
-3. 名称可设为 `vless2surge Local`，身份类型选择“自签名根”，证书类型选择“代码签名”；
-4. 创建后打开证书的“信任”设置，仅在自己的登录钥匙串中设为信任；
-5. 用 `security find-identity -v -p codesigning` 确认签名身份可用。
-
-然后签名并验证：
-
-```bash
-codesign --force --options runtime --timestamp=none \
-  --sign "vless2surge Local" \
-  vless2surge-darwin-arm64
-codesign --verify --strict --verbose=2 vless2surge-darwin-arm64
-codesign --display --verbose=4 vless2surge-darwin-arm64
-```
-
-如需在自己的另一台 Mac 使用，需要安全导出并导入证书及私钥，并在那台 Mac 上单独信任该证书。不要公开分享自签名私钥。
-
-浏览器下载的文件可能带有 quarantine 属性。只有在 SHA-256 已经与 Release 清单一致、且你确认文件来自本项目后，才可以移除该文件的 quarantine 标记：
-
-```bash
-xattr -p com.apple.quarantine vless2surge-darwin-arm64
-xattr -d com.apple.quarantine vless2surge-darwin-arm64
-```
-
-签名会改变二进制内容，因此签名前的 `SHA256SUMS` 在签名后失效。若要保存本地签名版本，应重新计算并单独保存校验和，不得用它覆盖官方 Release 的校验清单。
+`PROCESS-NAME` 规则必须放在其他代理规则之前，避免本机网关出站再次进入 Surge 形成递归。如果重命名二进制，请同步修改进程名。Linux 私网网关不在 Surge 所在 Mac 上运行时不需要此规则。
 
 ## 首次运行
 
@@ -176,37 +59,87 @@ xattr -d com.apple.quarantine vless2surge-darwin-arm64
 默认端点：
 
 - 配置台：`http://127.0.0.1:18080`
-- SOCKS5：`127.0.0.1:1080`
+- 认证 SOCKS5 TCP/UDP：`127.0.0.1:1080`
 - 数据目录：`~/.vless2surge`
 
-打开配置台后：
+首次使用只需：
 
-1. 添加订阅 URL、导入 Clash `proxy-providers`，或粘贴 VLESS/Base64/Clash `proxies` 内容。
-2. 刷新订阅并检查保留、丢弃节点及原因。
-3. 确认并同步第一份配置版本，启动网关。
-4. 在“节点”页面发起单个或批量实测；测试会经过当前本地网关，分别显示 TCP、UDP 延迟和具体失败阶段。Web 目标、UDP DNS 服务器与超时可在“配置 → 节点测试”中修改。
-5. 复制总览中的 Surge `policy-path` URL，在 Surge 中加入策略组并测速。
+1. 在 Providers 页添加 HTTP 订阅、私有 File Provider 或 Inline payload。
+2. 等待 Mihomo 原生初始化；有效缓存或远端成功内容会立即进入 Projection。
+3. 在节点页检查 Mihomo 延迟，按需运行真实 SOCKS TCP/UDP 端到端诊断；UDP 默认测试 `8.8.8.8:53`。该诊断由 vless2surge 自身发起，只验证项目内核链路，不经过 Surge。
+4. 从总览复制 Policy Path 配置到 Surge。
 
-配置台以“最新同步”“当前运行”和“更新待确认”呈现版本状态。网关页面负责启动、重启和停止；部署地址、访问保护与系统服务在“配置”页面管理。
+后续成功刷新自动生效，不需要“应用”或重启。上游请求或解析失败时，Mihomo 保留最近成功 Provider 内容。
 
-示例：
+## 配置台
 
-```ini
-[Proxy Group]
-VLESS = select, policy-path=http://127.0.0.1:18080/proxies, update-interval=3600
+配置台提供：
+
+- 总览：产品/Core 版本、Provider/节点/连接数、实时流量、累计流量、内存和最近错误。
+- Providers：增删改、启停、手动刷新、全量健康检查、最近状态、订阅流量与投影视图筛选。
+- 节点：协议能力、Mihomo 存活与延迟历史、Provider 过滤、单节点健康检查、TCP/UDP 诊断和 Surge 行复制。
+- 连接：实时目标、网络、节点/Provider 链、规则、流量、关闭单个或二次确认关闭全部。
+- 日志：Mihomo 结构化实时日志与产品事件；URL 查询、Header、UUID、密码、Token 和本地路径二次脱敏。
+- 设置：本地/Linux 私网模式、HTTP/SOCKS 地址、Token、诊断目标、Projection Key 全量轮换和用户级系统服务。
+
+浏览器只访问产品 allowlist。允许的 Mihomo 能力包括版本、只读配置、Provider/节点健康、连接、流量、内存和结构化日志。`PUT/PATCH /configs`、restart、upgrade、debug 和未来未列入清单的 Controller 路由均不暴露。
+
+## 不接管系统的硬约束
+
+产品生成配置固定满足：
+
+```yaml
+port: 0
+socks-port: 0
+mixed-port: 0
+redir-port: 0
+tproxy-port: 0
+tun:
+  enable: false
+  auto-route: false
+  auto-redirect: false
+dns:
+  enable: false
+  listen: ""
+listeners: []
 ```
 
-macOS 本地模式还必须避免 vless2surge 自身的 VLESS 出站再次被 Surge 代理，否则会形成代理递归。将下面规则放在 Surge `[Rule]` 中其他代理规则之前：
+同时禁用 iptables、NTP 系统时间写入、named listeners、tunnels、HTTP/Mixed/Redir/TProxy、DNS listener 和系统代理操作。配置在 `ApplyConfig` 前与运行后各验证一次；私有 Controller 使用数据目录内权限为 `0600` 的 Unix Socket。唯一代理入口是 Projection 与 Router 就绪后才开放的产品自管认证 SOCKS5 listener。
 
-```ini
-PROCESS-NAME,vless2surge,DIRECT
+## 本地与 Linux 私网边界
+
+本地模式默认只允许回环 HTTP、SOCKS、发布地址和 Policy URL。无 Management Token 时，配置台拒绝非回环 Host，降低 DNS rebinding 风险。
+
+Linux 私网模式要求：
+
+- Management Token 与 Policy Token 不同且都至少 16 字符；
+- HTTP 写操作执行 Token、同源、方法和请求体大小检查；
+- SOCKS 每个节点强制认证；
+- SOCKS advertise 和 Policy URL 不能使用 `0.0.0.0` 或 `::`，且必须是回环、私网、Tailscale CGNAT、链路本地地址，或单标签私有 DNS、`.local`、`.lan`、`.internal`、`.home.arpa`、Tailscale `.ts.net` 主机名；任意公网域名不会被自动信任；
+- 不支持把管理台、Policy 或 SOCKS 裸露到公网。
+
+`/proxies` 含 SOCKS 凭据，固定返回 `Cache-Control: no-store`，支持 ETag 和独立 Policy Token。配置台不会在普通 API 中回显 Token、Header 值、SOCKS 密码、Controller Secret 或本地 Provider 路径；敏感复制必须显式确认。
+
+## 持久化与迁移
+
+数据目录中的权威状态只有产品部署设置、Token、Provider 定义、投影规则和两个持久密钥：
+
+```text
+~/.vless2surge/
+├── gateway.json          # 0600，schema 2
+├── projection.key        # 0600，确定性身份主密钥
+├── controller.key        # 0600，内部 Controller Secret 来源
+├── mihomo/               # 0700，Provider 最近成功缓存与 Unix Socket
+└── migration-v1-readonly/
+    ├── config.json       # v0.1.x 只读备份（如存在）
+    └── state.json
 ```
 
-如果你重命名了可执行文件，请把规则中的进程名同步替换为实际文件名。Linux 私网网关不运行在 Surge 所在的 Mac 上，不需要这条本机进程规则。
+首次读取 v0.1.x 数据时，URL 订阅会迁移为 HTTP Providers；旧节点 Snapshot、Draft/Applied revision、随机 SOCKS 身份和手工解析结果不会进入新状态。旧文件先复制到 `migration-v1-readonly`，再原子写入 `gateway.json`。
+
+Projection、健康状态、实时连接、流量、内存、日志和 ETag 都可从 Mihomo Provider 与主密钥重建，不是备份权威数据。
 
 ## 系统服务
-
-macOS 使用用户级 LaunchAgent，Linux 默认使用 systemd user service：
 
 ```bash
 ./vless2surge service status
@@ -214,63 +147,69 @@ macOS 使用用户级 LaunchAgent，Linux 默认使用 systemd user service：
 ./vless2surge service uninstall
 ```
 
-也可以在配置台“配置 → 运行与维护”中管理。服务只托管一个 vless2surge 进程，不要求系统安装 sing-box。
+macOS 使用用户级 LaunchAgent，Linux 使用 systemd user service。配置台注册服务时不会立即启动第二个进程，避免与当前 HTTP/SOCKS listener 争抢端口；服务在下次登录时接管。CLI `service install` 会立即启用。两者都使用 `0077` umask，不安装或管理外部 Mihomo，也不修改系统代理或网络栈。
 
-为避免配置台当前进程与系统服务争抢同一组 HTTP/SOCKS 端口，从配置台安装时只注册开机自启，当前进程会继续运行，服务在下次用户登录后接管；在终端执行 `service install` 时没有正在提供配置台的同进程，因此会立即启动服务。
+## 本地构建与验证
 
-安装流程会先把数据目录解析为绝对路径，并以 `0700` 权限创建或收紧。LaunchAgent 和 systemd user service 都使用 `0077` umask；macOS 服务输出保存在私有数据目录，Linux 日志由 systemd journal 承载。
-
-## Linux 私网网关
-
-推荐通过 Tailscale、WireGuard 或可信局域网连接，不要把 SOCKS5 或配置台裸露在公网。
-
-当 HTTP 监听地址不是回环地址时，必须同时设置：
-
-- Management Token：保护配置台 API；
-- Policy Token：保护包含 SOCKS 凭据的 `/proxies`。
-
-两类 Token 必须不同且至少 16 字符；配置台可用浏览器密码学随机源生成 32 字符安全值。配置台会生成带 Policy Token 的 URL。`SOCKS advertise` 和 Policy URL 不得使用 `0.0.0.0` 或 `::`，因为通配地址只能用于监听。SOCKS5 端口本身使用每节点独立身份认证，未知用户会被拒绝。
-
-SOCKS、HTTP 和 Policy 终点会拒绝公开 IP 字面量；请使用回环、RFC1918、Tailscale CGNAT、WireGuard 或解析到可信私网的主机名。无 Management Token 的回环配置台只接受回环 Host 与回环 Policy URL，以降低浏览器 DNS rebinding 风险。
-
-## 状态与恢复
-
-- `config.json` 与 `state.json` 以 `0600` 权限写入；涉及两者的变更先提交一个原子事务日志，启动时会完成中断的事务，并用同一配置 generation 检测旧版本遗留的不一致状态。
-- 订阅刷新失败或返回空内容时保留最近成功快照。
-- 节点异常骤降会把候选更新标记为高风险，保持当前运行并等待显式确认。
-- 安全的订阅、来源、筛选、连接参数和凭据更新会在运行中的网关上原子同步；同步失败时自动恢复上一运行版本。
-- 网关停止期间保存的安全更新会在下次启动时同步；风险更新仍启动上一已确认版本。
-- 候选网关启动失败时恢复上一运行 revision。
-- 连续三次非正常退出后进入安全模式，只启动配置台。
-- 节点凭据轮换会在网关运行时立即安全同步；网关停止时则在下次启动时生效。
-
-## 验证
+源码最低要求 Go 1.24.7；官方构建使用 [`.go-version`](.go-version) 固定的工具链。Mihomo 精确版本以 [`go.mod`](go.mod) 为准，前端是内嵌静态资源。
 
 ```bash
-make test
+make build
+./vless2surge version
+make check
 make test-race
-make vet
-node --check internal/webassets/static/app.js
 make surge-check
 ```
 
-`make surge-check` 需要 macOS 已安装 Surge，只校验生成节点的 Surge 配置语法，不修改当前 Surge 配置。
+`make surge-check` 使用 `/Applications/Surge.app/Contents/Applications/surge-cli` 校验与 `/proxies` 相同的关键字认证语法，以及节点参与 `select`、`url-test` 和 `fallback` 的配置矩阵；它不修改当前 Surge 配置。
 
-测试包含真实回环链路：
+四平台静态发行物：
 
-- SOCKS5 用户认证到不同 VLESS outbound；
-- TLS+uTLS+ALPN、Reality+Vision+uTLS 的完整握手；
-- WebSocket、gRPC、HTTP 和 HTTP Upgrade 传输；
-- SOCKS5 UDP Relay 经 VLESS XUDP 到 UDP 目标；
-- 未知用户拒绝；
-- 150 个 Reality/Vision 身份与 outbound 共用一个 SOCKS5 inbound；
-- 候选端口失败后的旧 revision 回滚；
-- 订阅缓存、风险确认、安全自动同步、重启恢复和 current-runtime-only `/proxies`；
-- 混合订阅不静默丢弃、Clash provider 请求头/间隔、来源变更的快照保底；
-- 管理 Token、Policy Token、ETag、同源保护和敏感字段脱敏。
+```bash
+make release VERSION=0.2.0
+```
 
-## 安全与许可证
+生成：
 
-订阅 URL、VLESS UUID、Reality 参数、SOCKS 密码和管理 Token 都属于敏感信息。不要公开数据目录、配置预览或 `/proxies` URL。
+- `dist/vless2surge-darwin-arm64`
+- `dist/vless2surge-darwin-amd64`
+- `dist/vless2surge-linux-arm64`
+- `dist/vless2surge-linux-amd64`
+- `dist/SHA256SUMS`
+- `dist/BUILDINFO.txt`
+- `dist/THIRD_PARTY_NOTICES.txt`
 
-项目根目录 [`LICENSE`](LICENSE) 采用与 sing-box 一致的 GNU GPL v3 或更高版本条款，并保留额外的名称/关联表述限制。`LICENSES/sing-box.txt` 保存当前 Core 的上游许可原文。公开分发内嵌 Core 的二进制时必须保留上游声明，并提供对应源代码与可追溯构建信息。
+发行生成器硬校验产品版本标记、目标架构、`CGO_ENABLED=0`、未被 replace 的 Mihomo 精确模块版本、上游 Git tag 与完整提交哈希、macOS 13.0 最低版本和 Linux 静态链接，并收集所有实际链接模块的许可证。`BUILDINFO.txt` 同时记录 Mihomo 上游 URL、tag、提交、模块校验和与 `go.mod` 校验和。
+
+CI 在 `main` 和 Pull Request 上执行测试、race、vet、前端语法检查与四平台发行审计。Release 工作流只读取并验证仓库 `go.mod` 已固定的 Mihomo 版本，然后构建和发布；发布流程不会修改或提交依赖。Core 升级必须作为独立、可评审的源码变更完成，并重新执行 Provider、API、身份路由、TCP/UDP 和无 TUN 回归。
+
+## macOS 签名与公证
+
+GitHub Actions 默认发布未签名命令行二进制。持有 Developer ID 时，应先 `make dist`，再签名两个 macOS 架构，最后生成与签名后文件匹配的元数据：
+
+```bash
+codesign --force --options runtime --timestamp \
+  --sign "Developer ID Application: Your Name (TEAMID)" \
+  dist/vless2surge-darwin-arm64
+codesign --force --options runtime --timestamp \
+  --sign "Developer ID Application: Your Name (TEAMID)" \
+  dist/vless2surge-darwin-amd64
+codesign --verify --strict --verbose=2 dist/vless2surge-darwin-arm64
+codesign --verify --strict --verbose=2 dist/vless2surge-darwin-amd64
+make release-metadata VERSION=0.2.0
+```
+
+随后用 `xcrun notarytool submit <signed-zip> --keychain-profile <profile> --wait` 分别提交签名后的 ZIP。普通裸命令行文件不能 stapling，应分发已通过公证的 ZIP；不要在生成 `SHA256SUMS` 后再次签名或修改二进制。
+
+仅供自己使用时可在核对官方 SHA-256 后做 ad-hoc 签名：
+
+```bash
+codesign --force --options runtime --timestamp=none --sign - vless2surge-darwin-arm64
+codesign --verify --strict --verbose=2 vless2surge-darwin-arm64
+```
+
+ad-hoc 签名不建立发布者身份或 Apple 公证记录。签名会改变文件内容，因此官方校验和只适用于签名前下载的原始发行物。
+
+## 许可
+
+项目代码按根目录 [`LICENSE`](LICENSE) 发布。Embedded Mihomo 为 GPL-3.0，固定版本的上游许可原文保存在 [`LICENSES/mihomo.txt`](LICENSES/mihomo.txt)。[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 说明源码与发行物的许可追踪边界。

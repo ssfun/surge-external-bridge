@@ -1,5 +1,6 @@
 /dist/
-/doc/
+/doc/*
+!/doc/PRODUCT.md
 /vless2surge
 /.cache/
 /.vless2surge/

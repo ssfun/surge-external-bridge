@@ -1,0 +1,32 @@
+{
+  "log": { "level": "error" },
+  "inbounds": [
+    {
+      "type": "vless",
+      "tag": "vless-reality-vision",
+      "listen": "127.0.0.1",
+      "listen_port": 65503,
+      "users": [
+        {
+          "uuid": "33333333-3333-4333-8333-333333333333",
+          "flow": "xtls-rprx-vision"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "www.cloudflare.com",
+        "reality": {
+          "enabled": true,
+          "handshake": {
+            "server": "www.cloudflare.com",
+            "server_port": 443
+          },
+          "private_key": "iI5qUNXUMtyupHOp--NEYiTEn12fyGWSlgD_xRD1oFw",
+          "short_id": ["0123456789abcdef"]
+        }
+      }
+    }
+  ],
+  "outbounds": [{ "type": "direct", "tag": "direct" }],
+  "route": { "final": "direct" }
+}

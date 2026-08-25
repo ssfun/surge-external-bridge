@@ -11,9 +11,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ssfun/vless2surge/internal/app"
-	"github.com/ssfun/vless2surge/internal/core"
-	"github.com/ssfun/vless2surge/internal/httpapi"
+	"github.com/ssfun/vless2surge/internal/gateway"
+	"github.com/ssfun/vless2surge/internal/management"
+	core "github.com/ssfun/vless2surge/internal/mihomo"
 	serviceManager "github.com/ssfun/vless2surge/internal/service"
 )
 
@@ -32,7 +32,7 @@ func run(args []string) error {
 	case "serve":
 		return serve(args[1:])
 	case "version", "--version", "-v":
-		fmt.Printf("vless2surge %s (Embedded sing-box %s)\n", app.Version, core.CoreVersion)
+		fmt.Printf("vless2surge %s (Embedded Mihomo %s)\n", gateway.Version, core.CoreVersion)
 		return nil
 	case "service":
 		return serviceCommand(args[1:])
@@ -50,25 +50,25 @@ func serve(args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if err := core.ValidateBuildFeatures(); err != nil {
-		return err
-	}
-	application, err := app.New(*dataDir)
+	// Provider caches contain upstream node credentials. Install a process-wide
+	// private umask before any product or Mihomo state can be created, including
+	// interactive runs outside the service definitions that already use 0077.
+	syscall.Umask(0o077)
+	application, err := gateway.New(*dataDir)
 	if err != nil {
 		return err
 	}
 	defer application.Close()
-	server, err := httpapi.New(application)
+	server, err := management.New(application)
 	if err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	go application.RunScheduler(ctx)
 	errCh := make(chan error, 1)
 	go func() { errCh <- server.ListenAndServe() }()
 	config := application.Config()
-	fmt.Printf("vless2surge %s · Embedded sing-box %s\n", app.Version, core.CoreVersion)
+	fmt.Printf("vless2surge %s · Embedded Mihomo %s\n", gateway.Version, core.CoreVersion)
 	fmt.Printf("configuration console: http://%s\n", config.HTTPBind)
 	select {
 	case <-ctx.Done():

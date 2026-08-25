@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,7 +22,7 @@ import (
 )
 
 const (
-	singBoxModule   = "github.com/sagernet/sing-box"
+	mihomoModule    = "github.com/metacubex/mihomo"
 	minimumMacOS    = "13.0"
 	lcBuildVersion  = uint32(0x32)
 	macOSPlatformID = uint32(1)
@@ -51,10 +52,25 @@ type listedPackage struct {
 	Module *module
 }
 
+type moduleOrigin struct {
+	VCS  string
+	URL  string
+	Hash string
+	Ref  string
+}
+
+type moduleDownload struct {
+	Path     string
+	Version  string
+	Sum      string
+	GoModSum string
+	Origin   *moduleOrigin
+}
+
 func main() {
 	dist := flag.String("dist", "dist", "directory containing release binaries")
-	coreVersion := flag.String("core-version", "", "expected sing-box module version")
-	buildTags := flag.String("build-tags", "with_utls,with_grpc", "required Go build tags")
+	coreVersion := flag.String("core-version", "", "expected Mihomo module version")
+	buildTags := flag.String("build-tags", "", "required Go build tags")
 	version := flag.String("version", "", "expected vless2surge release version")
 	flag.Parse()
 	if err := generate(*dist, *coreVersion, *buildTags, *version); err != nil {
@@ -68,13 +84,17 @@ func generate(dist, expectedCore, requiredTags, version string) error {
 		return errors.New("release version is required")
 	}
 	if strings.TrimSpace(expectedCore) == "" {
-		return errors.New("sing-box Core version is required")
+		return errors.New("Mihomo Core version is required")
 	}
 	dist, err := filepath.Abs(dist)
 	if err != nil {
 		return err
 	}
-	checksums, buildDetails, err := inspectBinaries(dist, expectedCore, requiredTags, version)
+	coreSource, err := resolveCoreSource(expectedCore)
+	if err != nil {
+		return err
+	}
+	checksums, buildDetails, err := inspectBinaries(dist, expectedCore, requiredTags, version, coreSource)
 	if err != nil {
 		return err
 	}
@@ -95,12 +115,18 @@ func generate(dist, expectedCore, requiredTags, version string) error {
 	return writeAtomic(filepath.Join(dist, "THIRD_PARTY_NOTICES.txt"), notices, 0o644)
 }
 
-func inspectBinaries(dist, expectedCore, requiredTags, version string) ([]byte, []byte, error) {
+func inspectBinaries(dist, expectedCore, requiredTags, version string, coreSource moduleDownload) ([]byte, []byte, error) {
 	var sums bytes.Buffer
 	var details bytes.Buffer
 	details.WriteString("vless2surge release build information\n")
 	details.WriteString("Generated from Go build metadata embedded in each binary.\n\n")
-	fmt.Fprintf(&details, "release version: %s\n\n", version)
+	fmt.Fprintf(&details, "release version: %s\n", version)
+	fmt.Fprintf(&details, "Mihomo module: %s %s\n", coreSource.Path, coreSource.Version)
+	fmt.Fprintf(&details, "Mihomo source: %s\n", coreSource.Origin.URL)
+	fmt.Fprintf(&details, "Mihomo source ref: %s\n", coreSource.Origin.Ref)
+	fmt.Fprintf(&details, "Mihomo source commit: %s\n", coreSource.Origin.Hash)
+	fmt.Fprintf(&details, "Mihomo module sum: %s\n", coreSource.Sum)
+	fmt.Fprintf(&details, "Mihomo go.mod sum: %s\n\n", coreSource.GoModSum)
 	for _, expected := range releaseTargets {
 		path := filepath.Join(dist, expected.Filename)
 		data, err := os.ReadFile(path)
@@ -131,13 +157,16 @@ func inspectBinaries(dist, expectedCore, requiredTags, version string) ([]byte, 
 		}
 		coreVersion := ""
 		for _, dependency := range info.Deps {
-			if dependency.Path == singBoxModule {
+			if dependency.Path == mihomoModule {
+				if dependency.Replace != nil {
+					return nil, nil, fmt.Errorf("%s embeds a replaced Mihomo module", expected.Filename)
+				}
 				coreVersion = dependency.Version
 				break
 			}
 		}
 		if coreVersion != expectedCore {
-			return nil, nil, fmt.Errorf("%s embeds sing-box %q, expected %q", expected.Filename, coreVersion, expectedCore)
+			return nil, nil, fmt.Errorf("%s embeds Mihomo %q, expected %q", expected.Filename, coreVersion, expectedCore)
 		}
 		sum := sha256.Sum256(data)
 		fmt.Fprintf(&sums, "%s  %s\n", hex.EncodeToString(sum[:]), expected.Filename)
@@ -146,7 +175,7 @@ func inspectBinaries(dist, expectedCore, requiredTags, version string) ([]byte, 
 		fmt.Fprintf(&details, "  go: %s\n", info.GoVersion)
 		fmt.Fprintf(&details, "  cgo: disabled\n")
 		fmt.Fprintf(&details, "  build tags: %s\n", settings["-tags"])
-		fmt.Fprintf(&details, "  embedded core: %s %s\n", singBoxModule, coreVersion)
+		fmt.Fprintf(&details, "  embedded core: %s %s\n", mihomoModule, coreVersion)
 		if expected.GOOS == "darwin" {
 			minOS, sdk, err := machoBuildVersions(path)
 			if err != nil {
@@ -168,6 +197,60 @@ func inspectBinaries(dist, expectedCore, requiredTags, version string) ([]byte, 
 	return sums.Bytes(), details.Bytes(), nil
 }
 
+func resolveCoreSource(expectedVersion string) (moduleDownload, error) {
+	command := exec.Command("go", "mod", "download", "-json", mihomoModule+"@"+expectedVersion)
+	output, err := command.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return moduleDownload{}, fmt.Errorf("resolve Mihomo source: %w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return moduleDownload{}, fmt.Errorf("resolve Mihomo source: %w", err)
+	}
+	var download moduleDownload
+	if err := json.Unmarshal(output, &download); err != nil {
+		return moduleDownload{}, fmt.Errorf("decode Mihomo source metadata: %w", err)
+	}
+	if err := validateCoreSource(download, expectedVersion); err != nil {
+		return moduleDownload{}, err
+	}
+	return download, nil
+}
+
+func validateCoreSource(download moduleDownload, expectedVersion string) error {
+	if download.Path != mihomoModule || download.Version != expectedVersion {
+		return fmt.Errorf("Mihomo source metadata is %s@%s, expected %s@%s", download.Path, download.Version, mihomoModule, expectedVersion)
+	}
+	if download.Sum == "" || download.GoModSum == "" {
+		return errors.New("Mihomo source metadata is missing module checksums")
+	}
+	if download.Origin == nil {
+		return errors.New("Mihomo source metadata is missing VCS origin")
+	}
+	if download.Origin.VCS != "git" || download.Origin.URL != "https://github.com/metacubex/mihomo" {
+		return fmt.Errorf("unexpected Mihomo source origin: %s %s", download.Origin.VCS, download.Origin.URL)
+	}
+	if download.Origin.Ref != "refs/tags/"+expectedVersion {
+		return fmt.Errorf("Mihomo source ref is %q, expected refs/tags/%s", download.Origin.Ref, expectedVersion)
+	}
+	if !isLowerHexCommit(download.Origin.Hash) {
+		return fmt.Errorf("Mihomo source commit is not a full lowercase Git hash: %q", download.Origin.Hash)
+	}
+	return nil
+}
+
+func isLowerHexCommit(value string) bool {
+	if len(value) != 40 {
+		return false
+	}
+	for _, character := range value {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func machoBuildVersions(path string) (string, string, error) {
 	file, err := macho.Open(path)
 	if err != nil {
@@ -186,7 +269,6 @@ func machoBuildVersions(path string) (string, string, error) {
 	}
 	return "", "", errors.New("LC_BUILD_VERSION is missing")
 }
-
 func formatMachOVersion(version uint32) string {
 	major := version >> 16
 	minor := (version >> 8) & 0xff
@@ -280,8 +362,8 @@ func renderNotices(modules []module) ([]byte, error) {
 	var output bytes.Buffer
 	output.WriteString("vless2surge third-party notices\n")
 	output.WriteString("Targets: darwin/arm64, darwin/amd64, linux/arm64, linux/amd64\n")
-	output.WriteString("This inventory contains the Go toolchain license and the license and notice files found at each linked Go module root.\n")
-	output.WriteString("vless2surge is independent from the sing-box project and does not imply association or endorsement.\n\n")
+	output.WriteString("This inventory contains the Go toolchain license and the license and notice files supplied by each linked Go module.\n")
+	output.WriteString("vless2surge is independent from the Mihomo project and does not imply association or endorsement.\n\n")
 	toolchainFiles, err := goToolchainLicenseFiles(runtime.GOROOT())
 	if err != nil {
 		return nil, err
@@ -298,12 +380,12 @@ func renderNotices(modules []module) ([]byte, error) {
 		output.WriteString("\n\n")
 	}
 	for _, item := range modules {
-		files, err := licenseFiles(item.Dir)
+		files, err := moduleLicenseFiles(item.Dir)
 		if err != nil {
 			return nil, fmt.Errorf("licenses for %s@%s: %w", item.Path, item.Version, err)
 		}
 		if len(files) == 0 {
-			return nil, fmt.Errorf("module %s@%s has no root license or notice file", item.Path, item.Version)
+			return nil, fmt.Errorf("module %s@%s has no license or notice file", item.Path, item.Version)
 		}
 		for _, filename := range files {
 			content, err := os.ReadFile(filepath.Join(item.Dir, filename))
@@ -369,13 +451,41 @@ func licenseFiles(directory string) ([]string, error) {
 		if !entry.Type().IsRegular() {
 			continue
 		}
-		name := strings.ToLower(entry.Name())
-		if strings.HasPrefix(name, "license") || strings.HasPrefix(name, "copying") || strings.HasPrefix(name, "notice") || strings.HasPrefix(name, "patents") {
+		if isLicenseFilename(entry.Name()) {
 			result = append(result, entry.Name())
 		}
 	}
 	sort.Strings(result)
 	return result, nil
+}
+
+func moduleLicenseFiles(directory string) ([]string, error) {
+	root, err := licenseFiles(directory)
+	if err != nil || len(root) > 0 {
+		return root, err
+	}
+	var result []string
+	err = filepath.WalkDir(directory, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == directory || entry.IsDir() || !entry.Type().IsRegular() || !isLicenseFilename(entry.Name()) {
+			return nil
+		}
+		relative, err := filepath.Rel(directory, path)
+		if err != nil {
+			return err
+		}
+		result = append(result, relative)
+		return nil
+	})
+	sort.Strings(result)
+	return result, err
+}
+
+func isLicenseFilename(filename string) bool {
+	name := strings.ToLower(filename)
+	return strings.HasPrefix(name, "license") || strings.HasPrefix(name, "copying") || strings.HasPrefix(name, "notice") || strings.HasPrefix(name, "patents")
 }
 
 func writeAtomic(path string, content []byte, mode os.FileMode) error {

@@ -1,9 +1,9 @@
 GO ?= go
-VERSION ?= 0.1.0-dev
-CORE_VERSION ?= $(shell $(GO) list -m -f '{{.Version}}' github.com/sagernet/sing-box)
-BUILD_TAGS ?= with_utls,with_grpc
+VERSION ?= 0.2.0-dev
+CORE_VERSION ?= $(shell $(GO) list -m -f '{{.Version}}' github.com/metacubex/mihomo)
+BUILD_TAGS ?=
 DIST_DIR ?= dist
-LDFLAGS = -s -w -X github.com/ssfun/vless2surge/internal/app.Version=$(VERSION) -X github.com/ssfun/vless2surge/internal/app.BuildVersionMarker=vless2surge-version:$(VERSION)
+LDFLAGS = -s -w -X github.com/ssfun/vless2surge/internal/gateway.Version=$(VERSION) -X github.com/ssfun/vless2surge/internal/gateway.BuildVersionMarker=vless2surge-version:$(VERSION)
 SURGE_CLI ?= /Applications/Surge.app/Contents/Applications/surge-cli
 
 .PHONY: build test test-race vet check dist release release-metadata surge-check clean

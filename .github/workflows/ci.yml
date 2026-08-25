@@ -55,5 +55,6 @@ jobs:
             dist/BUILDINFO.txt
             dist/THIRD_PARTY_NOTICES.txt
             LICENSE
+            LICENSES/mihomo.txt
           if-no-files-found: error
           retention-days: 14

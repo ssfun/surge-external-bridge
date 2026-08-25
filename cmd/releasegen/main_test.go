@@ -33,6 +33,31 @@ func TestLicenseFilesAreDeterministicAndExcludeUnrelatedFiles(t *testing.T) {
 	}
 }
 
+func TestModuleLicenseFilesFallsBackToNestedLicenses(t *testing.T) {
+	directory := t.TempDir()
+	for path, content := range map[string]string{
+		"crypto/LICENSE": "crypto license",
+		"poly/COPYING":   "poly license",
+		"README.md":      "readme",
+	} {
+		fullPath := filepath.Join(directory, path)
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fullPath, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files, err := moduleLicenseFiles(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join("crypto", "LICENSE"), filepath.Join("poly", "COPYING")}
+	if !reflect.DeepEqual(files, want) {
+		t.Fatalf("module license files = %v, want %v", files, want)
+	}
+}
+
 func TestWriteAtomicReplacesContent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "output.txt")
 	if err := writeAtomic(path, []byte("first"), 0o644); err != nil {
@@ -79,6 +104,62 @@ func TestGenerateRequiresExplicitReleaseVersion(t *testing.T) {
 func TestGenerateRequiresExplicitCoreVersion(t *testing.T) {
 	if err := generate(t.TempDir(), "", "with_utls,with_grpc", "0.1.0"); err == nil || !strings.Contains(err.Error(), "Core version is required") {
 		t.Fatalf("release generation accepted an empty Core version: %v", err)
+	}
+}
+
+func TestValidateCoreSource(t *testing.T) {
+	valid := moduleDownload{
+		Path:     mihomoModule,
+		Version:  "v1.19.30",
+		Sum:      "h1:module",
+		GoModSum: "h1:gomod",
+		Origin: &moduleOrigin{
+			VCS:  "git",
+			URL:  "https://github.com/metacubex/mihomo",
+			Hash: strings.Repeat("a", 40),
+			Ref:  "refs/tags/v1.19.30",
+		},
+	}
+	if err := validateCoreSource(valid, "v1.19.30"); err != nil {
+		t.Fatalf("valid Core source was rejected: %v", err)
+	}
+
+	tests := map[string]moduleDownload{
+		"wrong version": func() moduleDownload { value := valid; value.Version = "v1.19.29"; return value }(),
+		"missing sums":  func() moduleDownload { value := valid; value.Sum = ""; return value }(),
+		"missing origin": func() moduleDownload {
+			value := valid
+			value.Origin = nil
+			return value
+		}(),
+		"wrong origin": func() moduleDownload {
+			value := valid
+			origin := *valid.Origin
+			origin.URL = "https://example.invalid/mihomo"
+			value.Origin = &origin
+			return value
+		}(),
+		"wrong ref": func() moduleDownload {
+			value := valid
+			origin := *valid.Origin
+			origin.Ref = "refs/heads/main"
+			value.Origin = &origin
+			return value
+		}(),
+		"short hash": func() moduleDownload {
+			value := valid
+			origin := *valid.Origin
+			origin.Hash = "abc123"
+			value.Origin = &origin
+			return value
+		}(),
+	}
+	for name, download := range tests {
+		t.Run(name, func(t *testing.T) {
+			if err := validateCoreSource(download, "v1.19.30"); err == nil {
+				t.Fatal("invalid Core source was accepted")
+			}
+		})
 	}
 }
 

@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Release version without the leading v, for example 0.1.0
+        description: Release version without the leading v, for example 0.2.0
         required: true
         type: string
 
@@ -37,7 +37,7 @@ jobs:
         with:
           node-version: 22
 
-      - name: Resolve release and latest stable Core versions
+      - name: Resolve release and pinned Core versions
         id: versions
         shell: bash
         run: |
@@ -53,62 +53,32 @@ jobs:
             echo "Invalid release version: $version" >&2
             exit 1
           fi
-          release_json="$(gh api repos/SagerNet/sing-box/releases/latest)"
-          core_version="$(jq -r '.tag_name' <<<"$release_json")"
-          if [[ "$(jq -r '.draft or .prerelease' <<<"$release_json")" != "false" || ! "$core_version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "GitHub latest release is not a stable sing-box version: $core_version" >&2
+          core_version="$(go list -m -f '{{.Version}}' github.com/metacubex/mihomo)"
+          if [[ ! "$core_version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "go.mod does not pin a stable Mihomo version: $core_version" >&2
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "core_version=$core_version" >> "$GITHUB_OUTPUT"
-          echo "Release $tag will embed sing-box $core_version"
+          echo "Release $tag will embed Mihomo $core_version"
 
-      - name: Pin latest stable sing-box Core
-        if: github.event_name == 'workflow_dispatch'
+      - name: Verify immutable Core pin and source
         shell: bash
         run: |
           set -euo pipefail
-          go get "github.com/sagernet/sing-box@${{ steps.versions.outputs.core_version }}"
-          go mod tidy
-          actual="$(go list -m -f '{{.Version}}' github.com/sagernet/sing-box)"
+          actual="$(go list -m -f '{{.Version}}' github.com/metacubex/mihomo)"
           test "$actual" = "${{ steps.versions.outputs.core_version }}"
-
-      - name: Require tag builds to use latest stable Core
-        if: github.event_name != 'workflow_dispatch'
-        shell: bash
-        run: |
-          set -euo pipefail
-          actual="$(go list -m -f '{{.Version}}' github.com/sagernet/sing-box)"
-          if [[ "$actual" != "${{ steps.versions.outputs.core_version }}" ]]; then
-            echo "Tag pins $actual but latest stable sing-box is ${{ steps.versions.outputs.core_version }}." >&2
-            echo "Run the Release workflow manually so it can update and commit the Core pin before tagging." >&2
-            exit 1
-          fi
+          origin="$(go mod download -json "github.com/metacubex/mihomo@$actual")"
+          test "$(jq -r '.Origin.VCS' <<<"$origin")" = "git"
+          test "$(jq -r '.Origin.URL' <<<"$origin")" = "https://github.com/metacubex/mihomo"
+          test "$(jq -r '.Origin.Ref' <<<"$origin")" = "refs/tags/$actual"
+          [[ "$(jq -r '.Origin.Hash' <<<"$origin")" =~ ^[0-9a-f]{40}$ ]]
 
       - name: Verify source and Core
         run: |
           make check CORE_VERSION=${{ steps.versions.outputs.core_version }}
           make test-race CORE_VERSION=${{ steps.versions.outputs.core_version }}
-
-      - name: Commit Core pin and create tag
-        if: github.event_name == 'workflow_dispatch'
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          if [[ -n "$(git status --porcelain -- go.mod go.sum)" ]]; then
-            git add go.mod go.sum
-            git commit -m "chore: update sing-box Core to ${{ steps.versions.outputs.core_version }}"
-            git push origin HEAD:main
-          fi
-          if git rev-parse "${{ steps.versions.outputs.tag }}" >/dev/null 2>&1; then
-            echo "Tag ${{ steps.versions.outputs.tag }} already exists" >&2
-            exit 1
-          fi
-          git tag "${{ steps.versions.outputs.tag }}"
-          git push origin "${{ steps.versions.outputs.tag }}"
 
       - name: Build audited release artifacts
         run: make release VERSION=${{ steps.versions.outputs.version }} CORE_VERSION=${{ steps.versions.outputs.core_version }}
@@ -125,7 +95,20 @@ jobs:
             dist/BUILDINFO.txt
             dist/THIRD_PARTY_NOTICES.txt
             LICENSE
+            LICENSES/mihomo.txt
           if-no-files-found: error
+
+      - name: Create verified tag
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git rev-parse "${{ steps.versions.outputs.tag }}" >/dev/null 2>&1; then
+            echo "Tag ${{ steps.versions.outputs.tag }} already exists" >&2
+            exit 1
+          fi
+          git tag "${{ steps.versions.outputs.tag }}"
+          git push origin "${{ steps.versions.outputs.tag }}"
 
       - name: Publish GitHub Release
         shell: bash
@@ -141,6 +124,7 @@ jobs:
             dist/BUILDINFO.txt
             dist/THIRD_PARTY_NOTICES.txt
             LICENSE
+            LICENSES/mihomo.txt
           )
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "${files[@]}" --clobber
@@ -148,5 +132,5 @@ jobs:
             gh release create "$tag" "${files[@]}" \
               --title "vless2surge ${{ steps.versions.outputs.version }}" \
               --generate-notes \
-              --notes "Embedded sing-box Core: ${{ steps.versions.outputs.core_version }}"
+              --notes "Embedded Mihomo Core: ${{ steps.versions.outputs.core_version }}"
           fi

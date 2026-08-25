@@ -1,0 +1,1 @@
+vless://33333333-3333-4333-8333-333333333333@127.0.0.1:65503?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.cloudflare.com&fp=chrome&pbk=Zi2fCzGWpX8WrKlQSQ9ub3YMam4-EnNx2XzaVKMqnVg&sid=0123456789abcdef&type=tcp&packetEncoding=xudp#Local%20Reality%20Vision

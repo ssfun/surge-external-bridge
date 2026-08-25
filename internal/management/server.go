@@ -1,0 +1,746 @@
+package management
+
+import (
+	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"net"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/ssfun/vless2surge/internal/gateway"
+	M "github.com/ssfun/vless2surge/internal/mihomo"
+	serviceManager "github.com/ssfun/vless2surge/internal/service"
+	"github.com/ssfun/vless2surge/internal/webassets"
+)
+
+func coreProviderKey(id string) (string, error) { return M.ProviderKey(id) }
+
+const maxRequestBody = 8 << 20
+
+type Server struct {
+	app          *gateway.App
+	server       *http.Server
+	core         *controllerFacade
+	listenerMu   sync.Mutex
+	listener     net.Listener
+	fatal        chan error
+	shutdown     chan struct{}
+	shutdownOnce sync.Once
+}
+
+func New(application *gateway.App) (*Server, error) {
+	staticFS, err := fs.Sub(webassets.Static, "static")
+	if err != nil {
+		return nil, err
+	}
+	controllerSocket, controllerSecret := application.ControllerAccess()
+	server := &Server{app: application, core: newControllerFacade(controllerSocket, controllerSecret), fatal: make(chan error, 1), shutdown: make(chan struct{})}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", server.health)
+	mux.HandleFunc("GET /proxies", server.proxies)
+	mux.HandleFunc("GET /api/overview", server.authorize(server.overview))
+	mux.HandleFunc("GET /api/providers", server.authorize(server.providers))
+	mux.HandleFunc("POST /api/providers", server.authorize(server.addProvider))
+	mux.HandleFunc("PUT /api/providers/{id}", server.authorize(server.updateProvider))
+	mux.HandleFunc("DELETE /api/providers/{id}", server.authorize(server.deleteProvider))
+	mux.HandleFunc("POST /api/providers/{id}/refresh", server.authorize(server.refreshProvider))
+	mux.HandleFunc("POST /api/providers/{id}/healthcheck", server.authorize(server.healthCheckProvider))
+	mux.HandleFunc("GET /api/providers/{id}/runtime", server.authorize(server.providerRuntime))
+	mux.HandleFunc("GET /api/providers/{id}/secrets", server.authorize(server.providerSecrets))
+	mux.HandleFunc("GET /api/nodes", server.authorize(server.nodes))
+	mux.HandleFunc("GET /api/nodes/{id}/runtime", server.authorize(server.nodeRuntime))
+	mux.HandleFunc("POST /api/nodes/{id}/healthcheck", server.authorize(server.nodeHealthCheck))
+	mux.HandleFunc("POST /api/nodes/{id}/diagnose", server.authorize(server.nodeDiagnose))
+	mux.HandleFunc("GET /api/nodes/{id}/surge-line", server.authorize(server.nodeSurgeLine))
+	mux.HandleFunc("GET /api/events", server.authorize(server.events))
+	mux.HandleFunc("GET /api/settings", server.authorize(server.settings))
+	mux.HandleFunc("PUT /api/settings", server.authorize(server.updateSettings))
+	mux.HandleFunc("POST /api/settings/rotate-projection-key", server.authorize(server.rotateProjectionKey))
+	mux.HandleFunc("GET /api/service", server.authorize(server.serviceStatus))
+	mux.HandleFunc("POST /api/service/install", server.authorize(server.serviceInstall))
+	mux.HandleFunc("DELETE /api/service", server.authorize(server.serviceUninstall))
+	mux.HandleFunc("GET /api/mihomo/version", server.authorize(server.coreJSONRoute("/version")))
+	mux.HandleFunc("GET /api/mihomo/configs", server.authorize(server.coreJSONRoute("/configs")))
+	mux.HandleFunc("GET /api/mihomo/connections", server.authorize(server.coreConnections))
+	mux.HandleFunc("DELETE /api/mihomo/connections/{id}", server.authorize(server.closeConnection))
+	mux.HandleFunc("DELETE /api/mihomo/connections", server.authorize(server.closeAllConnections))
+	mux.HandleFunc("GET /api/mihomo/traffic", server.authorize(server.coreRoute("/traffic")))
+	mux.HandleFunc("GET /api/mihomo/memory", server.authorize(server.coreRoute("/memory")))
+	mux.HandleFunc("GET /api/mihomo/logs", server.authorize(server.coreLogs))
+	for _, pattern := range []string{
+		"PUT /api/mihomo/configs", "PATCH /api/mihomo/configs", "POST /api/mihomo/restart",
+		"POST /api/mihomo/upgrade", "POST /api/mihomo/upgrade/ui", "GET /api/mihomo/debug/{rest...}",
+		"POST /api/mihomo/debug/{rest...}",
+	} {
+		mux.HandleFunc(pattern, func(w http.ResponseWriter, _ *http.Request) {
+			writeError(w, http.StatusNotFound, "该 Mihomo 能力不在产品允许列表中")
+		})
+	}
+	mux.Handle("/", http.FileServer(http.FS(staticFS)))
+	server.server = &http.Server{
+		Addr: application.Config().HTTPBind, Handler: securityHeaders(server.trustedHost(mux)),
+		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
+		WriteTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 1 << 20,
+	}
+	return server, nil
+}
+
+func (s *Server) ListenAndServe() error {
+	listener, err := net.Listen("tcp", s.server.Addr)
+	if err != nil {
+		return err
+	}
+	s.listenerMu.Lock()
+	s.listener = listener
+	s.listenerMu.Unlock()
+	s.serve(listener)
+	select {
+	case err := <-s.fatal:
+		return err
+	case <-s.shutdown:
+		return nil
+	}
+}
+
+func (s *Server) serve(listener net.Listener) {
+	go func() {
+		err := s.server.Serve(listener)
+		if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+			select {
+			case s.fatal <- err:
+			default:
+			}
+		}
+	}()
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	err := s.server.Shutdown(ctx)
+	s.shutdownOnce.Do(func() { close(s.shutdown) })
+	return err
+}
+
+func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
+	status := s.app.Status()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": status.State == "running", "version": gateway.Version,
+		"core_version": status.CoreVersion, "state": status.State,
+		"projection_count": status.ProjectionCount, "has_error": status.LastError != "",
+	})
+}
+
+func (s *Server) proxies(w http.ResponseWriter, r *http.Request) {
+	config := s.app.Config()
+	if config.PolicyToken != "" && !constantEqual(r.URL.Query().Get("token"), config.PolicyToken) {
+		writeError(w, http.StatusUnauthorized, "invalid Policy Token")
+		return
+	}
+	content, revision, err := s.app.Proxies()
+	if err != nil {
+		w.Header().Set("Cache-Control", "no-store")
+		writeError(w, http.StatusServiceUnavailable, s.publicError(err))
+		return
+	}
+	etag := `"` + revision + `"`
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("ETag", etag)
+	w.Header().Set("X-Vless2Surge-Projection", revision)
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = io.WriteString(w, content)
+}
+
+func (s *Server) overview(w http.ResponseWriter, _ *http.Request) {
+	config := s.app.Config()
+	status := s.app.Status()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"version": gateway.Version, "core_version": status.CoreVersion, "gateway": status,
+		"provider_count": len(config.Providers), "projection_count": status.ProjectionCount,
+		"policy_url": policyURL(config), "process_rule": "PROCESS-NAME,vless2surge,DIRECT",
+		"socks_advertise":  net.JoinHostPort(config.SocksAdvertise, fmt.Sprint(config.SocksPort)),
+		"migration_notice": s.app.MigrationNotice(),
+	})
+}
+
+type publicProvider struct {
+	StableID           string     `json:"stable_id"`
+	Name               string     `json:"name"`
+	Type               string     `json:"type"`
+	URL                string     `json:"url,omitempty"`
+	FilePath           string     `json:"file_path,omitempty"`
+	Enabled            bool       `json:"enabled"`
+	HeaderNames        []string   `json:"header_names,omitempty"`
+	RefreshSeconds     int        `json:"refresh_seconds"`
+	SizeLimit          int64      `json:"size_limit"`
+	DownloadProxy      string     `json:"download_proxy,omitempty"`
+	IncludeName        string     `json:"include_name,omitempty"`
+	ExcludeName        string     `json:"exclude_name,omitempty"`
+	HealthCheck        bool       `json:"health_check"`
+	HealthCheckURL     string     `json:"health_check_url,omitempty"`
+	HealthCheckSeconds int        `json:"health_check_seconds,omitempty"`
+	HealthCheckTimeout int        `json:"health_check_timeout,omitempty"`
+	HealthCheckLazy    bool       `json:"health_check_lazy"`
+	ExpectedStatus     string     `json:"expected_status,omitempty"`
+	NextRefreshAt      *time.Time `json:"next_refresh_at,omitempty"`
+	LastError          string     `json:"last_error,omitempty"`
+}
+
+func makePublicProvider(provider gateway.Provider) publicProvider {
+	names := make([]string, 0, len(provider.Headers))
+	for name := range provider.Headers {
+		names = append(names, name)
+	}
+	return publicProvider{
+		StableID: provider.StableID, Name: provider.Name, Type: provider.Type, URL: redactURL(provider.URL),
+		FilePath: "", Enabled: provider.Enabled, HeaderNames: names, RefreshSeconds: provider.RefreshSeconds,
+		SizeLimit: provider.SizeLimit, IncludeName: provider.IncludeName, ExcludeName: provider.ExcludeName,
+		DownloadProxy: provider.DownloadProxy,
+		HealthCheck:   provider.HealthCheck, HealthCheckURL: redactURL(provider.HealthCheckURL),
+		HealthCheckSeconds: provider.HealthCheckSeconds, HealthCheckTimeout: provider.HealthCheckTimeout,
+		HealthCheckLazy: provider.HealthCheckLazy, ExpectedStatus: provider.ExpectedStatus,
+	}
+}
+
+func (s *Server) providers(w http.ResponseWriter, _ *http.Request) {
+	providers := s.app.Providers()
+	result := make([]publicProvider, 0, len(providers))
+	for _, provider := range providers {
+		item := makePublicProvider(provider)
+		nextRefresh, lastError := s.app.ProviderRuntimeState(provider.StableID)
+		if !nextRefresh.IsZero() {
+			item.NextRefreshAt = &nextRefresh
+		}
+		item.LastError = lastError
+		result = append(result, item)
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) addProvider(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "cross-origin mutation is not allowed")
+		return
+	}
+	var provider gateway.Provider
+	if err := readJSON(w, r, &provider); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	created, err := s.app.AddProvider(provider)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, s.publicError(err))
+		return
+	}
+	writeJSON(w, http.StatusCreated, makePublicProvider(created))
+}
+
+func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "cross-origin mutation is not allowed")
+		return
+	}
+	var provider gateway.Provider
+	if err := readJSON(w, r, &provider); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	updated, err := s.app.UpdateProvider(r.PathValue("id"), provider)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, s.publicError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, makePublicProvider(updated))
+}
+
+func (s *Server) deleteProvider(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "cross-origin mutation is not allowed")
+		return
+	}
+	if err := s.app.DeleteProvider(r.PathValue("id")); err != nil {
+		writeError(w, http.StatusBadRequest, s.publicError(err))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) refreshProvider(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "cross-origin mutation is not allowed")
+		return
+	}
+	if err := s.app.RefreshProvider(r.PathValue("id")); err != nil {
+		writeError(w, http.StatusBadGateway, s.publicError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) healthCheckProvider(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "cross-origin mutation is not allowed")
+		return
+	}
+	if err := s.app.HealthCheckProvider(r.PathValue("id")); err != nil {
+		writeError(w, http.StatusBadGateway, s.publicError(err))
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true})
+}
+
+func (s *Server) nodes(w http.ResponseWriter, _ *http.Request) {
+	entries := s.app.Snapshot().Entries()
+	result := make([]map[string]any, 0, len(entries))
+	for _, entry := range entries {
+		runtime := map[string]any{}
+		if encoded, err := json.Marshal(entry.Proxy); err == nil {
+			_ = json.Unmarshal(encoded, &runtime)
+		}
+		result = append(result, map[string]any{
+			"id": entry.PublicID, "name": entry.DisplayName, "proxy_name": entry.ProxyName,
+			"provider_id": entry.ProviderID, "provider_name": entry.ProviderName,
+			"type": entry.Proxy.Type().String(), "udp": entry.SupportUDP, "uot": entry.SupportUOT,
+			"tfo": entry.Info.TFO, "mptcp": entry.Info.MPTCP, "smux": entry.Info.SMUX, "xudp": entry.Info.XUDP,
+			"alive": runtime["alive"], "history": runtime["history"], "extra": runtime["extra"],
+		})
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) providerRuntime(w http.ResponseWriter, r *http.Request) {
+	provider, ok := s.app.Provider(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "Provider not found")
+		return
+	}
+	key, err := coreProviderKey(provider.StableID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid Provider identity")
+		return
+	}
+	s.serveControllerJSON(w, r, "/providers/proxies/"+url.PathEscape(key), nil)
+}
+
+func (s *Server) providerSecrets(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("X-Vless2Surge-Confirm") != "reveal-provider-secrets" {
+		writeError(w, http.StatusPreconditionFailed, "查看订阅敏感字段需要显式确认")
+		return
+	}
+	provider, ok := s.app.Provider(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "Provider not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"url": provider.URL, "headers": provider.Headers})
+}
+
+func (s *Server) nodeRuntime(w http.ResponseWriter, r *http.Request) {
+	entry, ok := s.app.Node(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "Node not found")
+		return
+	}
+	key, err := coreProviderKey(entry.ProviderID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid Provider identity")
+		return
+	}
+	path := "/providers/proxies/" + url.PathEscape(key) + "/" + url.PathEscape(entry.ProxyName)
+	s.serveControllerJSON(w, r, path, nil)
+}
+
+func (s *Server) nodeHealthCheck(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "cross-origin mutation is not allowed")
+		return
+	}
+	entry, ok := s.app.Node(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "Node not found")
+		return
+	}
+	key, err := coreProviderKey(entry.ProviderID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid Provider identity")
+		return
+	}
+	config := s.app.Config()
+	query := url.Values{
+		"url": {config.NodeTestURL}, "timeout": {fmt.Sprint(config.NodeTestTimeout * 1000)}, "expected": {"200-399"},
+	}
+	path := "/providers/proxies/" + url.PathEscape(key) + "/" + url.PathEscape(entry.ProxyName) + "/healthcheck"
+	// The product API deliberately exposes this as a same-origin POST because it
+	// starts an active probe. Mihomo v1.19.30 exposes the corresponding
+	// operation as GET, so do not forward the public method unchanged.
+	upstreamRequest := r.Clone(r.Context())
+	upstreamRequest.Method = http.MethodGet
+	s.serveControllerJSON(w, upstreamRequest, path, query)
+}
+
+func (s *Server) nodeSurgeLine(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("X-Vless2Surge-Confirm") != "reveal-node-credential" {
+		writeError(w, http.StatusPreconditionFailed, "copying a node credential requires explicit confirmation")
+		return
+	}
+	line, err := s.app.SurgeLine(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, s.publicError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"line": line})
+}
+
+func (s *Server) nodeDiagnose(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "cross-origin mutation is not allowed")
+		return
+	}
+	result, err := s.app.TestNode(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, s.publicError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) events(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.app.Events())
+}
+
+type publicSettings struct {
+	gateway.Settings
+	ManagementTokenConfigured bool   `json:"management_token_configured"`
+	PolicyTokenConfigured     bool   `json:"policy_token_configured"`
+	Version                   string `json:"version"`
+	CoreVersion               string `json:"core_version"`
+	GatewayState              string `json:"gateway_state"`
+	ProjectionHash            string `json:"projection_hash,omitempty"`
+	ProjectionCount           int    `json:"projection_count"`
+	DataDirectoryProtected    bool   `json:"data_directory_protected"`
+	ConfigurationProtected    bool   `json:"configuration_protected"`
+	MasterKeyProtected        bool   `json:"master_key_protected"`
+	ControllerKeyProtected    bool   `json:"controller_key_protected"`
+	RecoveryRequired          bool   `json:"recovery_required"`
+}
+
+func (s *Server) settings(w http.ResponseWriter, _ *http.Request) {
+	settings := s.app.Config().Settings()
+	managementConfigured, policyConfigured := settings.ManagementToken != "", settings.PolicyToken != ""
+	settings.ManagementToken, settings.PolicyToken = "", ""
+	status := s.app.Status()
+	security := s.app.SecurityStatus()
+	writeJSON(w, http.StatusOK, publicSettings{
+		Settings: settings, ManagementTokenConfigured: managementConfigured, PolicyTokenConfigured: policyConfigured,
+		Version: gateway.Version, CoreVersion: status.CoreVersion, GatewayState: status.State,
+		ProjectionHash: status.ProjectionHash, ProjectionCount: status.ProjectionCount,
+		DataDirectoryProtected: security.DataDirectoryProtected, ConfigurationProtected: security.ConfigurationProtected,
+		MasterKeyProtected: security.MasterKeyProtected, ControllerKeyProtected: security.ControllerKeyProtected,
+		RecoveryRequired: security.RecoveryRequired,
+	})
+}
+
+type settingsRequest struct {
+	Mode            string   `json:"mode"`
+	HTTPBind        string   `json:"http_bind"`
+	SocksBind       string   `json:"socks_bind"`
+	SocksPort       uint16   `json:"socks_port"`
+	SocksAdvertise  string   `json:"socks_advertise"`
+	PolicyBaseURL   string   `json:"policy_base_url"`
+	ManagementToken *string  `json:"management_token"`
+	PolicyToken     *string  `json:"policy_token"`
+	PrefixProvider  bool     `json:"prefix_provider"`
+	ProjectionTypes []string `json:"projection_types"`
+	NodeTestURL     string   `json:"node_test_url"`
+	NodeTestUDP     string   `json:"node_test_udp_address"`
+	NodeTestTimeout int      `json:"node_test_timeout_seconds"`
+}
+
+func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "cross-origin mutation is not allowed")
+		return
+	}
+	var request settingsRequest
+	if err := readJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	current := s.app.Config().Settings()
+	next := gateway.Settings{
+		Mode: request.Mode, HTTPBind: request.HTTPBind, SocksBind: request.SocksBind, SocksPort: request.SocksPort,
+		SocksAdvertise: request.SocksAdvertise, PolicyBaseURL: request.PolicyBaseURL,
+		ManagementToken: current.ManagementToken, PolicyToken: current.PolicyToken,
+		PrefixProvider: request.PrefixProvider, ProjectionTypes: request.ProjectionTypes,
+		NodeTestURL: request.NodeTestURL, NodeTestUDP: request.NodeTestUDP, NodeTestTimeout: request.NodeTestTimeout,
+	}
+	if request.ManagementToken != nil {
+		next.ManagementToken = *request.ManagementToken
+	}
+	if request.PolicyToken != nil {
+		next.PolicyToken = *request.PolicyToken
+	}
+	prepared, err := s.prepareHTTPRebind(next.HTTPBind)
+	if err != nil {
+		writeError(w, http.StatusConflict, "new HTTP listener is unavailable: "+s.publicError(err))
+		return
+	}
+	if err := s.app.UpdateSettings(next); err != nil {
+		if prepared != nil {
+			_ = prepared.Close()
+		}
+		writeError(w, http.StatusBadRequest, s.publicError(err))
+		return
+	}
+	if prepared != nil {
+		s.activateHTTPRebind(prepared)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "reconnect": prepared != nil, "http_bind": next.HTTPBind})
+}
+
+func (s *Server) rotateProjectionKey(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) || r.Header.Get("X-Vless2Surge-Confirm") != "rotate-projection-key" {
+		writeError(w, http.StatusPreconditionFailed, "projection key rotation requires explicit confirmation")
+		return
+	}
+	if err := s.app.RotateProjectionKey(); err != nil {
+		writeError(w, http.StatusInternalServerError, s.publicError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "credentials_rotated": true})
+}
+
+func (s *Server) serviceStatus(w http.ResponseWriter, _ *http.Request) {
+	status, err := serviceManager.Status()
+	if err != nil {
+		writeError(w, http.StatusNotImplemented, s.publicError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, makePublicServiceInfo(status))
+}
+
+type publicServiceInfo struct {
+	Platform  string `json:"platform"`
+	Installed bool   `json:"installed"`
+	Active    bool   `json:"active"`
+	Scope     string `json:"scope"`
+}
+
+func makePublicServiceInfo(info serviceManager.Info) publicServiceInfo {
+	return publicServiceInfo{Platform: info.Platform, Installed: info.Installed, Active: info.Active, Scope: info.Scope}
+}
+
+func (s *Server) serviceInstall(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) || r.Header.Get("X-Vless2Surge-Confirm") != "install-user-service" {
+		writeError(w, http.StatusPreconditionFailed, "service installation requires explicit confirmation")
+		return
+	}
+	status, err := serviceManager.Register(s.app.DataDir())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, s.publicError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, makePublicServiceInfo(status))
+}
+
+func (s *Server) serviceUninstall(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) || r.Header.Get("X-Vless2Surge-Confirm") != "uninstall-user-service" {
+		writeError(w, http.StatusPreconditionFailed, "service removal requires explicit confirmation")
+		return
+	}
+	status, err := serviceManager.Uninstall()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, s.publicError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, makePublicServiceInfo(status))
+}
+
+func (s *Server) prepareHTTPRebind(address string) (net.Listener, error) {
+	s.listenerMu.Lock()
+	defer s.listenerMu.Unlock()
+	if s.listener == nil || s.listener.Addr().String() == address {
+		return nil, nil
+	}
+	return net.Listen("tcp", address)
+}
+
+func (s *Server) publicError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return redactText(err.Error(), s.app.Config(), s.app.DataDir())
+}
+
+func (s *Server) activateHTTPRebind(next net.Listener) {
+	s.listenerMu.Lock()
+	previous := s.listener
+	s.listener = next
+	s.listenerMu.Unlock()
+	s.serve(next)
+	if previous != nil {
+		_ = previous.Close()
+	}
+}
+
+func (s *Server) authorize(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := s.app.Config().ManagementToken
+		if token != "" {
+			provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			expectedCookie := managementCookieValue(token)
+			cookie, _ := r.Cookie("v2s_management")
+			cookieValue := ""
+			if cookie != nil {
+				cookieValue = cookie.Value
+			}
+			if !constantEqual(provided, token) && !constantEqual(cookieValue, expectedCookie) {
+				writeError(w, http.StatusUnauthorized, "invalid Management Token")
+				return
+			}
+			if constantEqual(provided, token) {
+				http.SetCookie(w, &http.Cookie{
+					Name: "v2s_management", Value: expectedCookie, Path: "/api/", HttpOnly: true,
+					SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil, MaxAge: 86400,
+				})
+			}
+		}
+		next(w, r)
+	}
+}
+
+func managementCookieValue(token string) string {
+	digest := sha256.Sum256([]byte("vless2surge-management-session\x00" + token))
+	return base64.RawURLEncoding.EncodeToString(digest[:])
+}
+
+func (s *Server) trustedHost(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		config := s.app.Config()
+		bindHost, _, _ := net.SplitHostPort(config.HTTPBind)
+		if config.Mode == "local" && isLoopback(bindHost) && !isLoopback(requestHost(r.Host)) {
+			writeError(w, http.StatusMisdirectedRequest, "untrusted Host header")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'")
+		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/proxies" {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func sameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return err == nil && strings.EqualFold(parsed.Scheme, scheme) && strings.EqualFold(parsed.Host, r.Host)
+}
+
+func readJSON(w http.ResponseWriter, r *http.Request, value any) error {
+	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errors.New("request must contain one JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	code := "REQUEST_FAILED"
+	switch status {
+	case http.StatusBadRequest:
+		code = "INVALID_REQUEST"
+	case http.StatusUnauthorized:
+		code = "UNAUTHORIZED"
+	case http.StatusForbidden:
+		code = "FORBIDDEN"
+	case http.StatusNotFound:
+		code = "NOT_FOUND"
+	case http.StatusConflict, http.StatusPreconditionFailed:
+		code = "CONFIRMATION_REQUIRED"
+	case http.StatusTooManyRequests:
+		code = "STREAM_LIMIT_REACHED"
+	case http.StatusBadGateway, http.StatusServiceUnavailable:
+		code = "MIHOMO_UNAVAILABLE"
+	}
+	writeJSON(w, status, map[string]string{"code": code, "error": message})
+}
+func constantEqual(a, b string) bool {
+	return len(a) == len(b) && subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+func requestHost(value string) string {
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		return host
+	}
+	return strings.Trim(value, "[]")
+}
+func isLoopback(host string) bool {
+	if strings.EqualFold(strings.TrimSuffix(host, "."), "localhost") {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
+func policyURL(config gateway.Config) string {
+	base := strings.TrimRight(config.PolicyBaseURL, "/") + "/proxies"
+	if config.PolicyToken == "" {
+		return base
+	}
+	return base + "?token=" + url.QueryEscape(config.PolicyToken)
+}
+
+func redactURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	parsed.User = nil
+	redacted := parsed.Scheme + "://" + parsed.Host
+	if parsed.EscapedPath() != "" && parsed.EscapedPath() != "/" {
+		redacted += "/…"
+	}
+	return redacted
+}
