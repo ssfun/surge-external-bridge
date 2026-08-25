@@ -2,9 +2,7 @@
 
 [![CI](https://github.com/ssfun/surge-external-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/ssfun/surge-external-bridge/actions/workflows/ci.yml)
 
-Surge External Bridge 是面向 Surge 的单文件、单进程 Mihomo Provider 协议桥。它把固定版本的 Mihomo Core 嵌入 `SurgeEB`，让 Mihomo 直接负责订阅获取、协议解析、最近成功缓存、健康状态与节点热更新；产品只在其上提供一层确定性的 Surge SOCKS5 身份投影与安全管理门面。
-
-它不再限定 VLESS。只要固定版本的 Mihomo Provider 能解析并建立连接，节点即可进入同一套 Surge 投影，包括 Trojan、Hysteria、TUIC、WireGuard 等 Surge 不原生支持的协议。
+Surge External Bridge 是面向 Surge 的单文件、单进程、单端口 Mihomo Provider 协议桥。它把 Mihomo Core 嵌入 `SurgeEB`，让 Mihomo 直接负责订阅获取、协议解析；产品只在其上提供一层确定性的 Surge SOCKS5 身份投影与安全管理门面，让 Surge 可以使用 VLESS 等 Surge 不原生支持的协议。
 
 ```text
 HTTP / File / Inline Provider
@@ -21,13 +19,9 @@ Surge 节点凭据 ──> 单一认证 SOCKS5 TCP/UDP ──> surgeeb-router �
 
 核心原则：
 
-- Mihomo Provider 是订阅与节点的唯一事实来源；产品不保存第二份节点快照。
-- Provider 内容刷新调用 Mihomo 原生 `Update`，失败时继续使用最近成功内容。
-- Provider 定义变化通过进程内受控 `ApplyConfig` 替换 Provider/Proxy 拓扑，不重启产品进程。
-- 没有 Draft/Applied revision、节点骤降审批或订阅转换器。
-- Authenticator、Router、节点 API 和 `/proxies` 共用同一个不可变原子 Snapshot。
-- 未知、错误或已过期身份严格拒绝，绝不回落到 DIRECT。
-- Surge 继续独占系统代理、TUN、规则和策略组；Surge External Bridge 永不接管系统网络。
+- Mihomo Provider 管理 Surge 不支持的节点订阅。
+- Surge External Bridge 通过多身份，单端口将节点映射成 SOCKS5 代理，提供 policy-path 订阅链。
+- Surge 继续独占系统代理、TUN、规则和策略组；Surge External Bridge 不接管系统网络和规则。
 
 ## Surge 工作方式
 
