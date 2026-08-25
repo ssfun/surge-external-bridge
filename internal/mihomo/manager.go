@@ -15,8 +15,9 @@ import (
 	MConfig "github.com/metacubex/mihomo/config"
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
-	"github.com/metacubex/mihomo/hub"
 	"github.com/metacubex/mihomo/hub/executor"
+	"github.com/metacubex/mihomo/hub/route"
+	MLog "github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/tunnel"
 )
 
@@ -138,7 +139,7 @@ func (m *Manager) Start() error {
 			return err
 		}
 	} else {
-		hub.ApplyConfig(cfg)
+		applyInitialConfig(cfg)
 		m.mu.Lock()
 		m.coreReady = true
 		m.config = cfg
@@ -225,6 +226,39 @@ func (m *Manager) Start() error {
 	go m.watchProviders(ctx, done)
 	m.emit("info", fmt.Sprintf("Embedded Mihomo %s started with %d projected nodes", CoreVersion, len(m.store.Load().Entries())))
 	return nil
+}
+
+// applyInitialConfig preserves Mihomo's public hub.ApplyConfig semantics while
+// ordering its two public operations safely. Mihomo v1.19.30 starts the
+// Controller goroutines before executor.ApplyConfig writes the package-global
+// log level, so the Controller's startup log can race that write. Applying the
+// data-plane configuration first and starting the immutable private Controller
+// afterwards removes that upstream race without a fork or a second config
+// application.
+func applyInitialConfig(cfg *MConfig.Config) {
+	executor.ApplyConfig(cfg, true)
+	if cfg.Controller.ExternalUI != "" {
+		route.SetUIPath(cfg.Controller.ExternalUI)
+	}
+	route.ReCreateServer(&route.Config{
+		Addr:           cfg.Controller.ExternalController,
+		TLSAddr:        cfg.Controller.ExternalControllerTLS,
+		UnixAddr:       cfg.Controller.ExternalControllerUnix,
+		PipeAddr:       cfg.Controller.ExternalControllerPipe,
+		RoutingMark:    cfg.Controller.ExternalControllerRoutingMark,
+		Secret:         cfg.Controller.Secret,
+		Certificate:    cfg.TLS.Certificate,
+		PrivateKey:     cfg.TLS.PrivateKey,
+		ClientAuthType: cfg.TLS.ClientAuthType,
+		ClientAuthCert: cfg.TLS.ClientAuthCert,
+		EchKey:         cfg.TLS.EchKey,
+		DohServer:      cfg.Controller.ExternalDohServer,
+		IsDebug:        cfg.General.LogLevel == MLog.DEBUG,
+		Cors: route.Cors{
+			AllowOrigins:        cfg.Controller.Cors.AllowOrigins,
+			AllowPrivateNetwork: cfg.Controller.Cors.AllowPrivateNetwork,
+		},
+	})
 }
 
 func (m *Manager) ApplyProviders(definitions []ProviderDefinition) error {

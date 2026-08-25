@@ -353,7 +353,7 @@ func runManagerRecoveryHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(home)
-	blocker, err := net.Listen("tcp", "127.0.0.1:0")
+	blocker, udpBlocker, err := reserveSOCKSPort()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,6 +377,9 @@ func runManagerRecoveryHelper(t *testing.T) {
 		t.Fatalf("private Controller was not retained for repair: %v", err)
 	}
 	if err := blocker.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := udpBlocker.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.ConfigureProjectionWhenStopped("127.0.0.1", "127.0.0.1", port, true, []byte("01234567890123456789012345678901")); err != nil {
@@ -437,6 +440,25 @@ func freePort() (uint16, error) {
 	port := listener.Addr().(*net.TCPAddr).Port
 	_ = listener.Close()
 	return uint16(port), nil
+}
+
+// reserveSOCKSPort prevents a process using the independent UDP namespace from
+// taking the TCP-selected port between the intentional bind failure and the
+// recovery attempt. The Manager still fails on TCP first; both reservations are
+// released before retrying the real dual-protocol listener.
+func reserveSOCKSPort() (net.Listener, net.PacketConn, error) {
+	for range 100 {
+		tcp, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, nil, err
+		}
+		udp, err := net.ListenPacket("udp", tcp.Addr().String())
+		if err == nil {
+			return tcp, udp, nil
+		}
+		_ = tcp.Close()
+	}
+	return nil, nil, fmt.Errorf("reserve matching TCP and UDP test port")
 }
 
 func shortTempDir(t *testing.T) string {
