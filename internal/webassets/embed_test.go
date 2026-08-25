@@ -79,3 +79,42 @@ func TestConsoleExperienceContracts(t *testing.T) {
 		}
 	}
 }
+
+func TestConsoleUsesViewScopedDataRefresh(t *testing.T) {
+	javascript, err := Static.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(javascript)
+	for _, required := range []string{
+		`const viewResources=`,
+		`overview:['overview','providers','nodes']`,
+		`providers:['providers','nodes']`,
+		`nodes:['nodes']`,
+		`logs:['events','providers','nodes']`,
+		`settings:['settings','service']`,
+		`if(state.requests[name])return state.requests[name]`,
+		`state.snapshots[name]!==snapshot`,
+		`state.loadedAt[name]=Date.now()`,
+		`background?unique.filter(name=>Date.now()-(state.loadedAt[name]||0)>=5000):unique`,
+		`state.activeMutations>0`,
+		`state.activeMutations>0||state.settingsDirty`,
+		`active.matches('input,select,textarea')`,
+		`state.expandedProviders[id])loadProviderRuntime(id)`,
+		`const streamResources=`,
+		`socket.close()`,
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("view-scoped refresh contract is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		`async function load(){`,
+		`Promise.all([api('/api/overview'),api('/api/providers'),api('/api/nodes'),api('/api/events'),api('/api/settings')`,
+		`providers.map(async provider=>`,
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("global refresh implementation remains: %q", forbidden)
+		}
+	}
+}
