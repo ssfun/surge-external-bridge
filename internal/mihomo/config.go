@@ -43,7 +43,7 @@ func ProviderKey(stableID string) (string, error) {
 	if !stableIDPattern.MatchString(stableID) {
 		return "", errors.New("provider stable ID must use 1-80 ASCII letters, digits, underscore, or hyphen")
 	}
-	return "v2s-provider-" + stableID, nil
+	return "surgeeb-provider-" + stableID, nil
 }
 
 func BuildControlledConfig(homeDir, controllerSocket, controllerSecret string, providers []ProviderDefinition, store *SnapshotStore) (*MConfig.Config, error) {

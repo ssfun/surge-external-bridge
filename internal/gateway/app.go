@@ -14,12 +14,11 @@ import (
 	"sync"
 	"time"
 
-	C "github.com/metacubex/mihomo/constant"
-	M "github.com/ssfun/vless2surge/internal/mihomo"
+	M "github.com/ssfun/surge-external-bridge/internal/mihomo"
 )
 
 var Version = "0.2.0-dev"
-var BuildVersionMarker = "vless2surge-version:0.2.0-dev"
+var BuildVersionMarker = "surgeeb-version:0.2.0-dev"
 
 type App struct {
 	mu               sync.RWMutex
@@ -36,11 +35,11 @@ type App struct {
 }
 
 func New(dataDir string) (*App, error) {
-	if BuildVersionMarker != "vless2surge-version:"+Version {
+	if BuildVersionMarker != "surgeeb-version:"+Version {
 		return nil, errors.New("binary build metadata is inconsistent; rebuild with the official Makefile")
 	}
 	store := NewStore(dataDir)
-	config, migrated, err := store.Load()
+	config, err := store.Load()
 	if err != nil {
 		return nil, err
 	}
@@ -83,9 +82,6 @@ func New(dataDir string) (*App, error) {
 		application.addEvent("error", application.recoveryError)
 		return application, nil
 	}
-	if migrated {
-		application.addEvent("warn", "Mihomo Core 架构迁移已完成；Surge 节点凭据已整体变化。旧 config.json/state.json 保留在 migration-v1-readonly，旧节点快照和随机身份未进入新架构")
-	}
 	if err := manager.Start(); err != nil {
 		application.addEvent("error", "Mihomo 启动失败: "+err.Error())
 		// Keep the authenticated management plane available so deployment or
@@ -97,15 +93,6 @@ func New(dataDir string) (*App, error) {
 
 func (a *App) Close() error    { return a.manager.Stop() }
 func (a *App) DataDir() string { return a.store.Dir() }
-
-func (a *App) MigrationNotice() string {
-	path := filepath.Join(a.store.Dir(), "migration-v1-readonly", "config.json")
-	info, err := os.Lstat(path)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return ""
-	}
-	return "Mihomo Core 架构迁移已完成；Surge 节点凭据已整体变化，请重新加载 Policy Path。旧配置仍以只读备份保留。"
-}
 
 // ControllerAccess is intentionally consumed only by the authenticated product
 // facade. Neither value is serialized into public configuration or APIs.
@@ -580,7 +567,7 @@ func definitions(config Config) []M.ProviderDefinition {
 			Headers: provider.Headers, RefreshSeconds: provider.RefreshSeconds, DownloadProxy: provider.DownloadProxy, SizeLimit: provider.SizeLimit,
 			HealthCheck: provider.HealthCheck, HealthCheckURL: provider.HealthCheckURL, HealthCheckSeconds: provider.HealthCheckSeconds,
 			HealthCheckTimeout: provider.HealthCheckTimeout, HealthCheckLazy: provider.HealthCheckLazy, ExpectedStatus: provider.ExpectedStatus,
-			IncludeName: provider.IncludeName, ExcludeName: provider.ExcludeName, IncludeTypes: []C.AdapterType{C.Vless},
+			IncludeName: provider.IncludeName, ExcludeName: provider.ExcludeName,
 		})
 	}
 	return result
@@ -616,8 +603,8 @@ func ValidateConfig(config Config) error {
 	if config.Mode == "linux" && (!isPrivateOrTrustedHost(config.SocksAdvertise) || !isPrivateOrTrustedHost(parsedPolicy.Hostname())) {
 		return errors.New("linux mode advertise and Policy addresses must be private or trusted hostnames")
 	}
-	if len(config.ProjectionTypes) != 1 || !strings.EqualFold(config.ProjectionTypes[0], "vless") {
-		return errors.New("projection protocol scope must be exactly vless")
+	if len(config.ProjectionTypes) != 1 || config.ProjectionTypes[0] != "*" {
+		return errors.New("projection protocol scope must include all Mihomo Provider protocols")
 	}
 	testURL, err := url.Parse(config.NodeTestURL)
 	if err != nil || (testURL.Scheme != "http" && testURL.Scheme != "https") || testURL.Hostname() == "" {

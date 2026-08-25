@@ -167,7 +167,7 @@ func probeTCP(ctx context.Context, gateway, user, pass string, target probeTarge
 	}
 	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, target.raw, nil)
 	request.Host = target.hostHeader
-	request.Header.Set("User-Agent", "vless2surge-diagnostic")
+	request.Header.Set("User-Agent", "SurgeEB-diagnostic")
 	request.Header.Set("Connection", "close")
 	if err := request.Write(stream); err != nil {
 		return 0, staged("http", err)

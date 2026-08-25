@@ -1,4 +1,4 @@
-module github.com/ssfun/vless2surge
+module github.com/ssfun/surge-external-bridge
 
 go 1.24.7
 

@@ -19,7 +19,7 @@ import (
 	C "github.com/metacubex/mihomo/constant"
 )
 
-const RouterName = "v2s-router"
+const RouterName = "surgeeb-router"
 
 var (
 	ErrUnknownIdentity = errors.New("unknown or stale SOCKS identity")
@@ -164,7 +164,7 @@ func BuildProjection(providers []ProviderView, options BuildOptions) (*Snapshot,
 				ProviderName: provider.Name,
 				ProxyName:    proxy.Name(),
 				PublicID:     "n_" + digest(nodeKey)[:22],
-				Username:     "v2s_" + keyedDigest(options.MasterKey, "user:"+nodeKey)[:22],
+				Username:     "surgeeb_" + keyedDigest(options.MasterKey, "user:"+nodeKey)[:22],
 				Password:     keyedDigest(options.MasterKey, "pass:"+nodeKey),
 				Proxy:        proxy,
 				SupportUDP:   proxy.SupportUDP() || proxy.SupportUOT(),
@@ -219,7 +219,7 @@ func surgeDisplayName(value string) string {
 	}, value)
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return "Unnamed VLESS node"
+		return "Unnamed external node"
 	}
 	if strings.HasPrefix(value, "#") || strings.HasPrefix(value, ";") {
 		return "Node " + value

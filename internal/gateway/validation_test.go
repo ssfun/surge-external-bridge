@@ -8,6 +8,13 @@ func TestDefaultConfigUsesProductUDPDiagnosticTarget(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigProjectsAllMihomoProviderProtocols(t *testing.T) {
+	config := DefaultConfig()
+	if len(config.ProjectionTypes) != 1 || config.ProjectionTypes[0] != "*" {
+		t.Fatalf("default projection types=%v, want all protocols", config.ProjectionTypes)
+	}
+}
+
 func TestValidateConfigNetworkBoundaries(t *testing.T) {
 	validLocal := DefaultConfig()
 	validLinux := DefaultConfig()

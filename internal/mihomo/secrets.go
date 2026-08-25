@@ -33,7 +33,7 @@ func EnsurePrivateDir(path string) error {
 // SecurePrivateTree enforces the product permission boundary after Mihomo has
 // initialized or refreshed Provider resources. Mihomo upstream creates cache
 // files using the process umask; this explicit pass also protects library use
-// where vless2surge's CLI-level 0077 umask is not installed.
+// where SurgeEB's CLI-level 0077 umask is not installed.
 func SecurePrivateTree(root string) error {
 	if err := EnsurePrivateDir(root); err != nil {
 		return err

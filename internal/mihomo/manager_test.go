@@ -39,7 +39,7 @@ func TestMain(m *testing.M) {
 func runtimeManager(t *testing.T) *Manager {
 	t.Helper()
 	sharedRuntime.once.Do(func() {
-		sharedRuntime.home, sharedRuntime.err = os.MkdirTemp("/tmp", "v2s-")
+		sharedRuntime.home, sharedRuntime.err = os.MkdirTemp("/tmp", "surgeeb-")
 		if sharedRuntime.err != nil {
 			return
 		}
@@ -307,11 +307,11 @@ func TestProjectionSettingsRotateCredentialsAndRebindListenerWithoutCoreRestart(
 }
 
 func TestProviderCacheSurvivesProcessRestart(t *testing.T) {
-	if os.Getenv("V2S_CACHE_HELPER") != "" {
+	if os.Getenv("SURGEEB_CACHE_HELPER") != "" {
 		runProviderCacheHelper(t)
 		return
 	}
-	dir, err := os.MkdirTemp("/tmp", "v2s-cache-")
+	dir, err := os.MkdirTemp("/tmp", "surgeeb-cache-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +325,7 @@ func TestProviderCacheSurvivesProcessRestart(t *testing.T) {
 	defer upstream.Close()
 	run := func(phase string) {
 		command := exec.Command(os.Args[0], "-test.run=^TestProviderCacheSurvivesProcessRestart$", "-test.v")
-		command.Env = append(os.Environ(), "V2S_CACHE_HELPER="+phase, "V2S_CACHE_HOME="+dir, "V2S_CACHE_URL="+upstream.URL)
+		command.Env = append(os.Environ(), "SURGEEB_CACHE_HELPER="+phase, "SURGEEB_CACHE_HOME="+dir, "SURGEEB_CACHE_URL="+upstream.URL)
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("cache helper %s failed: %v\n%s", phase, err, output)
 		}
@@ -336,19 +336,19 @@ func TestProviderCacheSurvivesProcessRestart(t *testing.T) {
 }
 
 func TestManagerRecoversFromSOCKSBindFailureWithoutCoreRestart(t *testing.T) {
-	if os.Getenv("V2S_RECOVERY_HELPER") != "" {
+	if os.Getenv("SURGEEB_RECOVERY_HELPER") != "" {
 		runManagerRecoveryHelper(t)
 		return
 	}
 	command := exec.Command(os.Args[0], "-test.run=^TestManagerRecoversFromSOCKSBindFailureWithoutCoreRestart$", "-test.v")
-	command.Env = append(os.Environ(), "V2S_RECOVERY_HELPER=1")
+	command.Env = append(os.Environ(), "SURGEEB_RECOVERY_HELPER=1")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("manager recovery helper failed: %v\n%s", err, output)
 	}
 }
 
 func runManagerRecoveryHelper(t *testing.T) {
-	home, err := os.MkdirTemp("/tmp", "v2s-recovery-")
+	home, err := os.MkdirTemp("/tmp", "surgeeb-recovery-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +394,7 @@ func runManagerRecoveryHelper(t *testing.T) {
 }
 
 func runProviderCacheHelper(t *testing.T) {
-	home, upstream := os.Getenv("V2S_CACHE_HOME"), os.Getenv("V2S_CACHE_URL")
+	home, upstream := os.Getenv("SURGEEB_CACHE_HOME"), os.Getenv("SURGEEB_CACHE_URL")
 	port, err := freePort()
 	if err != nil {
 		t.Fatal(err)
@@ -414,10 +414,10 @@ func runProviderCacheHelper(t *testing.T) {
 	defer manager.Stop()
 	entries := manager.Snapshot().Entries()
 	if len(entries) != 1 || entries[0].ProxyName != "Cached Node" {
-		t.Fatalf("phase %s restored %#v", os.Getenv("V2S_CACHE_HELPER"), entries)
+		t.Fatalf("phase %s restored %#v", os.Getenv("SURGEEB_CACHE_HELPER"), entries)
 	}
 	if !PrivateTreeProtected(home) {
-		t.Fatalf("phase %s left Mihomo Provider cache or Controller permissions unprotected", os.Getenv("V2S_CACHE_HELPER"))
+		t.Fatalf("phase %s left Mihomo Provider cache or Controller permissions unprotected", os.Getenv("SURGEEB_CACHE_HELPER"))
 	}
 }
 
@@ -463,7 +463,7 @@ func reserveSOCKSPort() (net.Listener, net.PacketConn, error) {
 
 func shortTempDir(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "v2s-")
+	dir, err := os.MkdirTemp("/tmp", "surgeeb-")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,7 +15,10 @@ import (
 	texttemplate "text/template"
 )
 
-const label = "fun.ssfun.vless2surge"
+const (
+	label       = "fun.ssfun.surgeeb"
+	systemdUnit = "surgeeb.service"
+)
 
 type Info struct {
 	Platform  string `json:"platform"`
@@ -44,7 +47,7 @@ func serviceActive() bool {
 		target := "gui/" + strconv.Itoa(os.Getuid()) + "/" + label
 		return exec.Command("launchctl", "print", target).Run() == nil
 	case "linux":
-		return exec.Command("systemctl", "--user", "is-active", "--quiet", "vless2surge.service").Run() == nil
+		return exec.Command("systemctl", "--user", "is-active", "--quiet", systemdUnit).Run() == nil
 	default:
 		return false
 	}
@@ -54,7 +57,7 @@ func Install(dataDir string) (Info, error) {
 	return install(dataDir, true)
 }
 
-// Register installs the user service without starting a second vless2surge
+// Register installs the user service without starting a second SurgeEB
 // process. It is used by the running configuration console, which already owns
 // the configured HTTP and SOCKS ports. The service will start at the next user
 // login; CLI installation can still activate it immediately via Install.
@@ -112,7 +115,7 @@ func systemdEnableArguments(activate bool) []string {
 	if activate {
 		arguments = append(arguments, "--now")
 	}
-	return append(arguments, "vless2surge.service")
+	return append(arguments, systemdUnit)
 }
 
 func prepareDataDir(dataDir string) (string, error) {
@@ -140,7 +143,7 @@ func Uninstall() (Info, error) {
 	if runtime.GOOS == "darwin" {
 		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid()), path).Run()
 	} else if runtime.GOOS == "linux" {
-		_ = exec.Command("systemctl", "--user", "disable", "--now", "vless2surge.service").Run()
+		_ = exec.Command("systemctl", "--user", "disable", "--now", systemdUnit).Run()
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return Info{}, err
@@ -164,7 +167,7 @@ func servicePathFor(goos, home string) (string, string, error) {
 	case "darwin":
 		return filepath.Join(home, "Library", "LaunchAgents", label+".plist"), "LaunchAgent", nil
 	case "linux":
-		return filepath.Join(home, ".config", "systemd", "user", "vless2surge.service"), "systemd user", nil
+		return filepath.Join(home, ".config", "systemd", "user", systemdUnit), "systemd user", nil
 	default:
 		return "", "", fmt.Errorf("service management is unsupported on %s", goos)
 	}
@@ -206,7 +209,7 @@ func renderFor(goos, executable, dataDir string) ([]byte, error) {
 		return nil, fmt.Errorf("service rendering is unsupported on %s", goos)
 	}
 	const source = `[Unit]
-Description=vless2surge Embedded VLESS gateway
+Description=Surge External Bridge
 After=network-online.target
 Wants=network-online.target
 

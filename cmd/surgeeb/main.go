@@ -11,15 +11,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ssfun/vless2surge/internal/gateway"
-	"github.com/ssfun/vless2surge/internal/management"
-	core "github.com/ssfun/vless2surge/internal/mihomo"
-	serviceManager "github.com/ssfun/vless2surge/internal/service"
+	"github.com/ssfun/surge-external-bridge/internal/gateway"
+	"github.com/ssfun/surge-external-bridge/internal/management"
+	core "github.com/ssfun/surge-external-bridge/internal/mihomo"
+	serviceManager "github.com/ssfun/surge-external-bridge/internal/service"
 )
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "vless2surge:", err)
+		fmt.Fprintln(os.Stderr, "SurgeEB:", err)
 		os.Exit(1)
 	}
 }
@@ -32,7 +32,7 @@ func run(args []string) error {
 	case "serve":
 		return serve(args[1:])
 	case "version", "--version", "-v":
-		fmt.Printf("vless2surge %s (Embedded Mihomo %s)\n", gateway.Version, core.CoreVersion)
+		fmt.Printf("SurgeEB %s (Embedded Mihomo %s)\n", gateway.Version, core.CoreVersion)
 		return nil
 	case "service":
 		return serviceCommand(args[1:])
@@ -68,7 +68,7 @@ func serve(args []string) error {
 	errCh := make(chan error, 1)
 	go func() { errCh <- server.ListenAndServe() }()
 	config := application.Config()
-	fmt.Printf("vless2surge %s · Embedded Mihomo %s\n", gateway.Version, core.CoreVersion)
+	fmt.Printf("Surge External Bridge %s · Embedded Mihomo %s\n", gateway.Version, core.CoreVersion)
 	fmt.Printf("configuration console: http://%s\n", config.HTTPBind)
 	select {
 	case <-ctx.Done():
@@ -117,23 +117,23 @@ func serviceCommand(args []string) error {
 }
 
 func defaultDataDir() string {
-	if override := os.Getenv("VLESS2SURGE_DATA_DIR"); override != "" {
+	if override := os.Getenv("SURGEEB_DATA_DIR"); override != "" {
 		return override
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ".vless2surge"
+		return ".surge-external-bridge"
 	}
-	return filepath.Join(home, ".vless2surge")
+	return filepath.Join(home, ".surge-external-bridge")
 }
 
 func printHelp() {
-	fmt.Println(`vless2surge - Embedded VLESS gateway for Surge
+	fmt.Println(`SurgeEB - Surge External Bridge powered by embedded Mihomo
 
 Usage:
-  vless2surge serve [--data-dir PATH]
-  vless2surge version
-  vless2surge service status
-  vless2surge service install [--data-dir PATH]
-  vless2surge service uninstall`)
+  SurgeEB serve [--data-dir PATH]
+  SurgeEB version
+  SurgeEB service status
+  SurgeEB service install [--data-dir PATH]
+  SurgeEB service uninstall`)
 }

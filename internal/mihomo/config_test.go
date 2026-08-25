@@ -22,9 +22,9 @@ func TestBuildControlledConfigHasOnlyPrivateControllerAndRouter(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.Proxies[RouterName] == nil {
-		t.Fatal("v2s-router was not injected")
+		t.Fatal("surgeeb-router was not injected")
 	}
-	if _, exists := cfg.Providers["v2s-provider-unexpected"]; exists {
+	if _, exists := cfg.Providers["surgeeb-provider-unexpected"]; exists {
 		t.Fatal("unexpected product Provider was constructed")
 	}
 }

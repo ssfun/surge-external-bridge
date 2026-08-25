@@ -85,12 +85,12 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: vless2surge-${{ steps.versions.outputs.version }}
+          name: surge-external-bridge-${{ steps.versions.outputs.version }}
           path: |
-            dist/vless2surge-darwin-arm64
-            dist/vless2surge-darwin-amd64
-            dist/vless2surge-linux-arm64
-            dist/vless2surge-linux-amd64
+            dist/SurgeEB-darwin-arm64
+            dist/SurgeEB-darwin-amd64
+            dist/SurgeEB-linux-arm64
+            dist/SurgeEB-linux-amd64
             dist/SHA256SUMS
             dist/BUILDINFO.txt
             dist/THIRD_PARTY_NOTICES.txt
@@ -116,10 +116,10 @@ jobs:
           set -euo pipefail
           tag="${{ steps.versions.outputs.tag }}"
           files=(
-            dist/vless2surge-darwin-arm64
-            dist/vless2surge-darwin-amd64
-            dist/vless2surge-linux-arm64
-            dist/vless2surge-linux-amd64
+            dist/SurgeEB-darwin-arm64
+            dist/SurgeEB-darwin-amd64
+            dist/SurgeEB-linux-arm64
+            dist/SurgeEB-linux-amd64
             dist/SHA256SUMS
             dist/BUILDINFO.txt
             dist/THIRD_PARTY_NOTICES.txt
@@ -130,7 +130,7 @@ jobs:
             gh release upload "$tag" "${files[@]}" --clobber
           else
             gh release create "$tag" "${files[@]}" \
-              --title "vless2surge ${{ steps.versions.outputs.version }}" \
+              --title "Surge External Bridge ${{ steps.versions.outputs.version }}" \
               --generate-notes \
               --notes "Embedded Mihomo Core: ${{ steps.versions.outputs.core_version }}"
           fi

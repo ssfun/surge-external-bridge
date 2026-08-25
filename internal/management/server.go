@@ -17,10 +17,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ssfun/vless2surge/internal/gateway"
-	M "github.com/ssfun/vless2surge/internal/mihomo"
-	serviceManager "github.com/ssfun/vless2surge/internal/service"
-	"github.com/ssfun/vless2surge/internal/webassets"
+	"github.com/ssfun/surge-external-bridge/internal/gateway"
+	M "github.com/ssfun/surge-external-bridge/internal/mihomo"
+	serviceManager "github.com/ssfun/surge-external-bridge/internal/service"
+	"github.com/ssfun/surge-external-bridge/internal/webassets"
 )
 
 func coreProviderKey(id string) (string, error) { return M.ProviderKey(id) }
@@ -154,7 +154,7 @@ func (s *Server) proxies(w http.ResponseWriter, r *http.Request) {
 	etag := `"` + revision + `"`
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("ETag", etag)
-	w.Header().Set("X-Vless2Surge-Projection", revision)
+	w.Header().Set("X-SurgeEB-Projection", revision)
 	if r.Header.Get("If-None-Match") == etag {
 		w.WriteHeader(http.StatusNotModified)
 		return
@@ -169,9 +169,8 @@ func (s *Server) overview(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version": gateway.Version, "core_version": status.CoreVersion, "gateway": status,
 		"provider_count": len(config.Providers), "projection_count": status.ProjectionCount,
-		"policy_url": policyURL(config), "process_rule": "PROCESS-NAME,vless2surge,DIRECT",
-		"socks_advertise":  net.JoinHostPort(config.SocksAdvertise, fmt.Sprint(config.SocksPort)),
-		"migration_notice": s.app.MigrationNotice(),
+		"policy_url": policyURL(config), "process_rule": "PROCESS-NAME,SurgeEB,DIRECT",
+		"socks_advertise": net.JoinHostPort(config.SocksAdvertise, fmt.Sprint(config.SocksPort)),
 	})
 }
 
@@ -335,7 +334,7 @@ func (s *Server) providerRuntime(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) providerSecrets(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("X-Vless2Surge-Confirm") != "reveal-provider-secrets" {
+	if r.Header.Get("X-SurgeEB-Confirm") != "reveal-provider-secrets" {
 		writeError(w, http.StatusPreconditionFailed, "查看订阅敏感字段需要显式确认")
 		return
 	}
@@ -391,7 +390,7 @@ func (s *Server) nodeHealthCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) nodeSurgeLine(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("X-Vless2Surge-Confirm") != "reveal-node-credential" {
+	if r.Header.Get("X-SurgeEB-Confirm") != "reveal-node-credential" {
 		writeError(w, http.StatusPreconditionFailed, "copying a node credential requires explicit confirmation")
 		return
 	}
@@ -511,7 +510,7 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) rotateProjectionKey(w http.ResponseWriter, r *http.Request) {
-	if !sameOrigin(r) || r.Header.Get("X-Vless2Surge-Confirm") != "rotate-projection-key" {
+	if !sameOrigin(r) || r.Header.Get("X-SurgeEB-Confirm") != "rotate-projection-key" {
 		writeError(w, http.StatusPreconditionFailed, "projection key rotation requires explicit confirmation")
 		return
 	}
@@ -543,7 +542,7 @@ func makePublicServiceInfo(info serviceManager.Info) publicServiceInfo {
 }
 
 func (s *Server) serviceInstall(w http.ResponseWriter, r *http.Request) {
-	if !sameOrigin(r) || r.Header.Get("X-Vless2Surge-Confirm") != "install-user-service" {
+	if !sameOrigin(r) || r.Header.Get("X-SurgeEB-Confirm") != "install-user-service" {
 		writeError(w, http.StatusPreconditionFailed, "service installation requires explicit confirmation")
 		return
 	}
@@ -556,7 +555,7 @@ func (s *Server) serviceInstall(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serviceUninstall(w http.ResponseWriter, r *http.Request) {
-	if !sameOrigin(r) || r.Header.Get("X-Vless2Surge-Confirm") != "uninstall-user-service" {
+	if !sameOrigin(r) || r.Header.Get("X-SurgeEB-Confirm") != "uninstall-user-service" {
 		writeError(w, http.StatusPreconditionFailed, "service removal requires explicit confirmation")
 		return
 	}
@@ -601,7 +600,7 @@ func (s *Server) authorize(next http.HandlerFunc) http.HandlerFunc {
 		if token != "" {
 			provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 			expectedCookie := managementCookieValue(token)
-			cookie, _ := r.Cookie("v2s_management")
+			cookie, _ := r.Cookie("surgeeb_management")
 			cookieValue := ""
 			if cookie != nil {
 				cookieValue = cookie.Value
@@ -612,7 +611,7 @@ func (s *Server) authorize(next http.HandlerFunc) http.HandlerFunc {
 			}
 			if constantEqual(provided, token) {
 				http.SetCookie(w, &http.Cookie{
-					Name: "v2s_management", Value: expectedCookie, Path: "/api/", HttpOnly: true,
+					Name: "surgeeb_management", Value: expectedCookie, Path: "/api/", HttpOnly: true,
 					SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil, MaxAge: 86400,
 				})
 			}
@@ -622,7 +621,7 @@ func (s *Server) authorize(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func managementCookieValue(token string) string {
-	digest := sha256.Sum256([]byte("vless2surge-management-session\x00" + token))
+	digest := sha256.Sum256([]byte("surge-external-bridge-management-session\x00" + token))
 	return base64.RawURLEncoding.EncodeToString(digest[:])
 }
 

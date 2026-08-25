@@ -34,7 +34,7 @@ func TestPrepareDataDirCreatesPrivateAbsoluteDirectory(t *testing.T) {
 }
 
 func TestRenderLaunchAgentEscapesPaths(t *testing.T) {
-	content, err := renderFor("darwin", "/Applications/VLESS & Tools/vless2surge", "/Users/test/Data & State")
+	content, err := renderFor("darwin", "/Applications/Surge & Tools/SurgeEB", "/Users/test/Data & State")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestRenderLaunchAgentEscapesPaths(t *testing.T) {
 		t.Fatalf("invalid LaunchAgent XML: %v\n%s", err, content)
 	}
 	text := string(content)
-	if !strings.Contains(text, "VLESS &amp; Tools") || !strings.Contains(text, "Data &amp; State") {
+	if !strings.Contains(text, "Surge &amp; Tools") || !strings.Contains(text, "Data &amp; State") {
 		t.Fatalf("LaunchAgent paths were not XML escaped: %s", text)
 	}
 	if !strings.Contains(text, "<key>Umask</key><integer>63</integer>") || !strings.Contains(text, "service.stderr.log") {
@@ -52,7 +52,7 @@ func TestRenderLaunchAgentEscapesPaths(t *testing.T) {
 }
 
 func TestRenderSystemdDoesNotHTMLEscapePaths(t *testing.T) {
-	content, err := renderFor("linux", `/opt/VLESS & Tools/vless2surge`, `/home/test/Data % State`)
+	content, err := renderFor("linux", `/opt/Surge & Tools/SurgeEB`, `/home/test/Data % State`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestRenderSystemdDoesNotHTMLEscapePaths(t *testing.T) {
 	if strings.Contains(text, "&#") || strings.Contains(text, "&amp;") {
 		t.Fatalf("systemd unit contains HTML escaping: %s", text)
 	}
-	if !strings.Contains(text, `ExecStart="/opt/VLESS & Tools/vless2surge" serve --data-dir "/home/test/Data %% State"`) {
+	if !strings.Contains(text, `ExecStart="/opt/Surge & Tools/SurgeEB" serve --data-dir "/home/test/Data %% State"`) {
 		t.Fatalf("systemd ExecStart was not safely quoted: %s", text)
 	}
 	if !strings.Contains(text, "UMask=0077") {
@@ -75,7 +75,7 @@ func TestServicePaths(t *testing.T) {
 		t.Fatalf("unexpected Darwin path: path=%q scope=%q err=%v", darwin, scope, err)
 	}
 	linux, scope, err := servicePathFor("linux", home)
-	if err != nil || scope != "systemd user" || linux != filepath.Join(home, ".config", "systemd", "user", "vless2surge.service") {
+	if err != nil || scope != "systemd user" || linux != filepath.Join(home, ".config", "systemd", "user", systemdUnit) {
 		t.Fatalf("unexpected Linux path: path=%q scope=%q err=%v", linux, scope, err)
 	}
 	if _, _, err := servicePathFor("windows", home); err == nil {
@@ -84,7 +84,7 @@ func TestServicePaths(t *testing.T) {
 }
 
 func TestRenderRejectsUnitInjectionInPaths(t *testing.T) {
-	if _, err := renderFor("linux", "/usr/bin/vless2surge", "/tmp/data\nExecStart=/bin/evil"); err == nil {
+	if _, err := renderFor("linux", "/usr/bin/SurgeEB", "/tmp/data\nExecStart=/bin/evil"); err == nil {
 		t.Fatal("newline injection in systemd path was accepted")
 	}
 	if _, err := renderFor("darwin", "/tmp/app\x00evil", "/tmp/data"); err == nil {

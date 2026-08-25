@@ -62,7 +62,7 @@ func TestProjectionIdentityIsStableAcrossProxyReplacement(t *testing.T) {
 	if a.Username != b.Username || a.Password != b.Password || a.PublicID != b.PublicID {
 		t.Fatalf("identity changed across same-name proxy replacement: %#v != %#v", a, b)
 	}
-	if len(a.Username) != 26 || len(a.Password) != 43 || len(a.PublicID) != 24 {
+	if len(a.Username) != 30 || !strings.HasPrefix(a.Username, "surgeeb_") || len(a.Password) != 43 || len(a.PublicID) != 24 {
 		t.Fatalf("unexpected derived identity lengths: user=%d pass=%d id=%d", len(a.Username), len(a.Password), len(a.PublicID))
 	}
 	if first.Revision() == second.Revision() {
@@ -86,6 +86,18 @@ func TestProjectionFiltersWithoutMutatingProvider(t *testing.T) {
 	}
 	if got := len(all); got != 3 {
 		t.Fatalf("provider slice was mutated, len=%d", got)
+	}
+}
+
+func TestProjectionIncludesMultipleProviderProtocolsWhenTypeScopeIsOpen(t *testing.T) {
+	proxies := []C.Proxy{
+		&fakeProxy{name: "VLESS", adapterType: C.Vless},
+		&fakeProxy{name: "Trojan", adapterType: C.Trojan},
+		&fakeProxy{name: "WireGuard", adapterType: C.WireGuard},
+	}
+	snapshot := mustProjection(t, make([]byte, 32), []ProviderView{{StableID: "p", Name: "provider", Proxies: proxies}})
+	if got := len(snapshot.Entries()); got != len(proxies) {
+		t.Fatalf("projected %d entries, want all %d protocols", got, len(proxies))
 	}
 }
 

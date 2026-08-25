@@ -1,7 +1,7 @@
 /dist/
 /doc/*
 !/doc/PRODUCT.md
-/vless2surge
+/SurgeEB
 /.cache/
-/.vless2surge/
+/.surge-external-bridge/
 .DS_Store

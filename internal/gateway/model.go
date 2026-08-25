@@ -56,7 +56,7 @@ func DefaultConfig() Config {
 		Mode:          "local", HTTPBind: "127.0.0.1:18080",
 		SocksBind: "127.0.0.1", SocksPort: 1080, SocksAdvertise: "127.0.0.1",
 		PolicyBaseURL: "http://127.0.0.1:18080", PrefixProvider: true,
-		ProjectionTypes: []string{"vless"}, NodeTestURL: "https://www.gstatic.com/generate_204",
+		ProjectionTypes: []string{"*"}, NodeTestURL: "https://www.gstatic.com/generate_204",
 		NodeTestUDP: "8.8.8.8:53", NodeTestTimeout: 15, Providers: []Provider{},
 	}
 }

@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/ssfun/vless2surge/internal/gateway"
+	"github.com/ssfun/surge-external-bridge/internal/gateway"
 )
 
 const maxControllerStreams = 8
@@ -291,7 +291,7 @@ func (s *Server) closeConnection(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) closeAllConnections(w http.ResponseWriter, r *http.Request) {
-	if !sameOrigin(r) || r.Header.Get("X-Vless2Surge-Confirm") != "close-all-connections" {
+	if !sameOrigin(r) || r.Header.Get("X-SurgeEB-Confirm") != "close-all-connections" {
 		writeError(w, http.StatusPreconditionFailed, "closing all connections requires explicit confirmation")
 		return
 	}

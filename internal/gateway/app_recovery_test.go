@@ -11,7 +11,7 @@ import (
 )
 
 func TestAppRecoversCorruptProjectionKeyThroughExplicitRotation(t *testing.T) {
-	dir, err := os.MkdirTemp("/tmp", "v2s-recovery-")
+	dir, err := os.MkdirTemp("/tmp", "surgeeb-recovery-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +24,7 @@ func TestAppRecoversCorruptProjectionKeyThroughExplicitRotation(t *testing.T) {
 	config.SocksPort = uint16(listener.Addr().(*net.TCPAddr).Port)
 	_ = listener.Close()
 	store := NewStore(dir)
-	if _, _, err := store.Load(); err != nil {
+	if _, err := store.Load(); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Save(config); err != nil {
@@ -65,7 +65,7 @@ func TestAppRecoversCorruptProjectionKeyThroughExplicitRotation(t *testing.T) {
 
 func TestProductEventsRedactConfiguredAndRedirectSecrets(t *testing.T) {
 	application := &App{
-		store: NewStore("/private/vless2surge"),
+		store: NewStore("/private/surge-external-bridge"),
 		config: Config{
 			ManagementToken: "management-secret-value",
 			Providers: []Provider{{
@@ -91,7 +91,7 @@ func TestProviderSourceSwitchClearsObsoleteSecretsDurably(t *testing.T) {
 		_, _ = w.Write([]byte("vless://11111111-1111-4111-8111-111111111111@127.0.0.1:65501?type=tcp&security=none#HTTP%20Node\n"))
 	}))
 	defer upstream.Close()
-	dir, err := os.MkdirTemp("/tmp", "v2s-source-switch-")
+	dir, err := os.MkdirTemp("/tmp", "surgeeb-source-switch-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestProviderSourceSwitchClearsObsoleteSecretsDurably(t *testing.T) {
 	config.SocksPort = uint16(listener.Addr().(*net.TCPAddr).Port)
 	_ = listener.Close()
 	store := NewStore(dir)
-	if _, _, err := store.Load(); err != nil {
+	if _, err := store.Load(); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Save(config); err != nil {

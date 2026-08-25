@@ -35,10 +35,10 @@ type target struct {
 }
 
 var releaseTargets = []target{
-	{Filename: "vless2surge-darwin-arm64", GOOS: "darwin", GOARCH: "arm64"},
-	{Filename: "vless2surge-darwin-amd64", GOOS: "darwin", GOARCH: "amd64"},
-	{Filename: "vless2surge-linux-arm64", GOOS: "linux", GOARCH: "arm64"},
-	{Filename: "vless2surge-linux-amd64", GOOS: "linux", GOARCH: "amd64"},
+	{Filename: "SurgeEB-darwin-arm64", GOOS: "darwin", GOARCH: "arm64"},
+	{Filename: "SurgeEB-darwin-amd64", GOOS: "darwin", GOARCH: "amd64"},
+	{Filename: "SurgeEB-linux-arm64", GOOS: "linux", GOARCH: "arm64"},
+	{Filename: "SurgeEB-linux-amd64", GOOS: "linux", GOARCH: "amd64"},
 }
 
 type module struct {
@@ -71,7 +71,7 @@ func main() {
 	dist := flag.String("dist", "dist", "directory containing release binaries")
 	coreVersion := flag.String("core-version", "", "expected Mihomo module version")
 	buildTags := flag.String("build-tags", "", "required Go build tags")
-	version := flag.String("version", "", "expected vless2surge release version")
+	version := flag.String("version", "", "expected Surge External Bridge release version")
 	flag.Parse()
 	if err := generate(*dist, *coreVersion, *buildTags, *version); err != nil {
 		fmt.Fprintln(os.Stderr, "releasegen:", err)
@@ -118,7 +118,7 @@ func generate(dist, expectedCore, requiredTags, version string) error {
 func inspectBinaries(dist, expectedCore, requiredTags, version string, coreSource moduleDownload) ([]byte, []byte, error) {
 	var sums bytes.Buffer
 	var details bytes.Buffer
-	details.WriteString("vless2surge release build information\n")
+	details.WriteString("Surge External Bridge release build information\n")
 	details.WriteString("Generated from Go build metadata embedded in each binary.\n\n")
 	fmt.Fprintf(&details, "release version: %s\n", version)
 	fmt.Fprintf(&details, "Mihomo module: %s %s\n", coreSource.Path, coreSource.Version)
@@ -147,7 +147,7 @@ func inspectBinaries(dist, expectedCore, requiredTags, version string, coreSourc
 		if settings["CGO_ENABLED"] != "0" {
 			return nil, nil, fmt.Errorf("%s was not built with CGO_ENABLED=0", expected.Filename)
 		}
-		if !bytes.Contains(data, []byte("vless2surge-version:"+version)) {
+		if !bytes.Contains(data, []byte("surgeeb-version:"+version)) {
 			return nil, nil, fmt.Errorf("%s does not embed release version %q", expected.Filename, version)
 		}
 		for _, required := range splitBuildTags(requiredTags) {
@@ -303,7 +303,7 @@ func validateStaticELF(path string) error {
 func linkedModules(buildTags string) ([]module, error) {
 	unique := map[string]module{}
 	for _, buildTarget := range releaseTargets {
-		command := exec.Command("go", "list", "-tags", buildTags, "-deps", "-json", "./cmd/vless2surge")
+		command := exec.Command("go", "list", "-tags", buildTags, "-deps", "-json", "./cmd/surgeeb")
 		command.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+buildTarget.GOOS, "GOARCH="+buildTarget.GOARCH)
 		output, err := command.Output()
 		if err != nil {
@@ -360,10 +360,10 @@ func contains(values []string, wanted string) bool {
 
 func renderNotices(modules []module) ([]byte, error) {
 	var output bytes.Buffer
-	output.WriteString("vless2surge third-party notices\n")
+	output.WriteString("Surge External Bridge third-party notices\n")
 	output.WriteString("Targets: darwin/arm64, darwin/amd64, linux/arm64, linux/amd64\n")
 	output.WriteString("This inventory contains the Go toolchain license and the license and notice files supplied by each linked Go module.\n")
-	output.WriteString("vless2surge is independent from the Mihomo project and does not imply association or endorsement.\n\n")
+	output.WriteString("Surge External Bridge is independent from the Mihomo project and does not imply association or endorsement.\n\n")
 	toolchainFiles, err := goToolchainLicenseFiles(runtime.GOROOT())
 	if err != nil {
 		return nil, err

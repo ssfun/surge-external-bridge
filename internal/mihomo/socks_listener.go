@@ -116,7 +116,7 @@ func validateSOCKSAuthenticationRuntime(address string, snapshot *Snapshot) erro
 		return fmt.Errorf("SOCKS runtime no-authentication assertion: %w", err)
 	}
 	unknownPassword := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-	if accepted, err := probeUserPassword(dialAddress, "v2s_runtime_probe_unknown", unknownPassword); err != nil {
+	if accepted, err := probeUserPassword(dialAddress, "surgeeb_runtime_probe_unknown", unknownPassword); err != nil {
 		return fmt.Errorf("SOCKS runtime unknown-user assertion: %w", err)
 	} else if accepted {
 		return errors.New("SOCKS runtime assertion failed: unknown identity was accepted")
@@ -249,7 +249,7 @@ func (l *SOCKSListener) handleTCP(conn net.Conn) {
 		return
 	}
 	additions := []I.Addition{
-		I.WithInName("vless2surge-socks"),
+		I.WithInName("surgeeb-socks"),
 		I.WithInUser(user),
 		I.WithSpecialProxy(RouterName),
 	}
@@ -292,7 +292,7 @@ func (l *SOCKSListener) acceptUDP() {
 		data := append([]byte(nil), payload...)
 		packet := &socksPacket{pc: l.udp, remote: remote, data: data}
 		additions := []I.Addition{
-			I.WithInName("vless2surge-socks"),
+			I.WithInName("surgeeb-socks"),
 			I.WithInUser(user),
 			I.WithSpecialProxy(RouterName),
 		}

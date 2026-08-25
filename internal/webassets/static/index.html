@@ -4,26 +4,29 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>vless2surge · Mihomo Provider 网关</title>
+  <meta name="theme-color" content="#11141a">
+  <title>Surge External Bridge · Mihomo Protocol Bridge</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
+  <a class="skip-link" href="#app">跳到主要内容</a>
   <div class="shell">
     <aside class="sidebar">
-      <div class="brand"><div class="mark"><i></i><i></i><i></i><i></i></div><div><strong>vless2surge</strong><span>MIHOMO PROVIDER GATEWAY</span></div></div>
-      <nav id="nav">
-        <button class="active" data-view="overview"><b data-short="总">00</b><span>总览</span></button>
-        <button data-view="providers"><b data-short="源">01</b><span>Providers</span></button>
-        <button data-view="nodes"><b data-short="节">02</b><span>节点</span></button>
-        <button data-view="connections"><b data-short="连">03</b><span>连接</span></button>
-        <button data-view="logs"><b data-short="志">04</b><span>日志</span></button>
-        <button data-view="settings"><b data-short="设">05</b><span>设置</span></button>
+      <div class="brand"><div class="mark"><i></i><i></i><i></i><i></i></div><div><strong>Surge External Bridge</strong><span>MIHOMO PROTOCOL BRIDGE</span></div></div>
+      <nav id="nav" aria-label="主导航">
+        <button type="button" class="active" data-view="overview" aria-current="page"><b data-short="总览">00</b><span>总览</span></button>
+        <button type="button" data-view="providers"><b data-short="订阅">01</b><span>订阅</span></button>
+        <button type="button" data-view="nodes"><b data-short="节点">02</b><span>节点</span></button>
+        <button type="button" data-view="connections"><b data-short="连接">03</b><span>连接</span></button>
+        <button type="button" data-view="logs"><b data-short="日志">04</b><span>日志</span></button>
+        <button type="button" data-view="settings"><b data-short="设置">05</b><span>设置</span></button>
       </nav>
       <div class="side-status"><div class="engine-line"><i id="engine-led"></i><span id="engine-label">正在连接…</span></div><code id="side-endpoint">—</code><small id="side-projection">Projection —</small></div>
     </aside>
-    <main><div id="app" aria-live="polite"><div class="loading">正在连接配置台…</div></div></main>
+    <main><div id="app" tabindex="-1"><div class="loading"><span class="loading-dot"></span><b>正在连接配置台</b><small>读取网关、Provider 与投影状态…</small></div></div></main>
   </div>
-  <div id="modal-root"></div><div id="toasts"></div>
+  <div id="modal-root"></div><div id="toasts" aria-live="polite" aria-atomic="true"></div><div id="announcer" class="sr-only" aria-live="polite"></div>
+  <noscript><div class="noscript">配置台需要启用 JavaScript。</div></noscript>
   <script src="/app.js" defer></script>
 </body>
 </html>

@@ -45,12 +45,12 @@ jobs:
         run: make release VERSION=0.0.0-ci.${{ github.run_number }}
       - uses: actions/upload-artifact@v7
         with:
-          name: vless2surge-ci-${{ github.run_number }}
+          name: surge-external-bridge-ci-${{ github.run_number }}
           path: |
-            dist/vless2surge-darwin-arm64
-            dist/vless2surge-darwin-amd64
-            dist/vless2surge-linux-arm64
-            dist/vless2surge-linux-amd64
+            dist/SurgeEB-darwin-arm64
+            dist/SurgeEB-darwin-amd64
+            dist/SurgeEB-linux-arm64
+            dist/SurgeEB-linux-amd64
             dist/SHA256SUMS
             dist/BUILDINFO.txt
             dist/THIRD_PARTY_NOTICES.txt

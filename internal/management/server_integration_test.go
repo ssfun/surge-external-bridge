@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/ssfun/vless2surge/internal/gateway"
+	"github.com/ssfun/surge-external-bridge/internal/gateway"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -207,7 +207,7 @@ func TestControllerAllowlistUsesPrivateCredentialAndBlocksDangerousRoutes(t *tes
 		t.Fatalf("close all without confirmation = %d", response.StatusCode)
 	}
 	_ = response.Body.Close()
-	response = request(http.MethodDelete, "/api/mihomo/connections", map[string]string{"Origin": endpoint, "X-Vless2Surge-Confirm": "close-all-connections"})
+	response = request(http.MethodDelete, "/api/mihomo/connections", map[string]string{"Origin": endpoint, "X-SurgeEB-Confirm": "close-all-connections"})
 	if response.StatusCode != http.StatusNoContent {
 		t.Fatalf("confirmed close all = %d", response.StatusCode)
 	}
@@ -500,7 +500,7 @@ func TestSameOriginRequiresMatchingSchemeAndHost(t *testing.T) {
 
 func testManagementServer(t *testing.T, token string) (*gateway.App, *Server, string) {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "v2s-mgt-")
+	dir, err := os.MkdirTemp("/tmp", "surgeeb-mgt-")
 	if err != nil {
 		t.Fatal(err)
 	}
