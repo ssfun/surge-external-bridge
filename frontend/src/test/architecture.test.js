@@ -1,9 +1,11 @@
 import { createPinia, setActivePinia } from 'pinia'
-import { mount } from '@vue/test-utils'
+import { DOMWrapper, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import App from '@/App.vue'
 import OverviewView from '@/views/OverviewView.vue'
+import ProvidersView from '@/views/ProvidersView.vue'
 import SettingsView from '@/views/SettingsView.vue'
 import LogsView from '@/views/LogsView.vue'
 import ProviderDialog from '@/components/ProviderDialog.vue'
@@ -22,6 +24,25 @@ function testRouter(component, name = 'overview') {
 
 describe('component update boundaries', () => {
   beforeEach(() => setActivePinia(createPinia()))
+
+  it('uses the concise SurgeEB title in the left navigation', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const data = useDataStore()
+    data.overview = sampleOverview()
+    data.providers = []
+    data.nodes = []
+    const router = testRouter(OverviewView)
+    await router.push('/')
+    vi.stubGlobal('fetch', vi.fn(async (path) => ({
+      ok: true,
+      status: 200,
+      json: async () => path === '/api/overview' ? sampleOverview() : [],
+    })))
+    const wrapper = mount(App, { global: { plugins: [pinia, router] } })
+    expect(wrapper.get('[data-testid="brand-title"]').text()).toBe('SurgeEB')
+    wrapper.unmount()
+  })
 
   it('keeps selected Overview text and its DOM node while realtime metrics change', async () => {
     const data = useDataStore()
@@ -50,13 +71,16 @@ describe('component update boundaries', () => {
     expect(window.getSelection().toString()).toBe(selectedText)
     expect(wrapper.text()).toContain('6.0 KiB/s')
     expect(wrapper.text()).toContain('1 / 2 / 1')
+    expect(wrapper.text()).not.toContain('Projection')
+    expect(wrapper.text()).not.toContain('一个强制认证 SOCKS5 TCP/UDP 端口')
+    expect(wrapper.text()).not.toContain('abcdef')
     wrapper.unmount()
   })
 
   it('keeps a dirty Settings draft across unrelated store updates', async () => {
     const data = useDataStore()
     const realtime = useRealtimeStore()
-    data.settings = { mode: 'local', http_bind: '127.0.0.1:9090', socks_bind: '127.0.0.1', socks_port: 1080, virtual_host: 'surge.eb', projection_key: 'shared-projection-key-for-devices', prefix_provider: false, node_test_url: 'https://example.com', node_test_udp_address: '1.1.1.1:53', node_test_timeout_seconds: 10 }
+    data.settings = { mode: 'local', http_bind: '127.0.0.1:9090', socks_bind: '127.0.0.1', socks_port: 1080, virtual_host: 'surge.eb', projection_key: 'shared-projection-key-for-devices', projection_hash: 'abcdef', projection_count: 3, prefix_provider: false, node_test_url: 'https://example.com', node_test_udp_address: '1.1.1.1:53', node_test_timeout_seconds: 10 }
     data.service = {}
     const router = testRouter(SettingsView, 'settings')
     await router.push('/')
@@ -65,6 +89,8 @@ describe('component update boundaries', () => {
     expect(deploymentModes).toEqual([['local', '仅本机'], ['gateway', '局域网网关']])
     expect(wrapper.get('input[placeholder="surge.eb"]').element.value).toBe('surge.eb')
     expect(wrapper.get('[data-testid="projection-key"]').element.value).toBe('shared-projection-key-for-devices')
+    expect(wrapper.text()).toContain('可用节点3 个')
+    expect(wrapper.text()).not.toContain('abcdef')
     const input = wrapper.find('input[spellcheck="false"]')
     await input.setValue('127.0.0.1:9191')
     realtime.memory = { inuse: 123456 }
@@ -85,9 +111,81 @@ describe('component update boundaries', () => {
     expect(dialog.getAttribute('aria-labelledby')).toBe('provider-dialog-title')
     expect(dialog.getAttribute('aria-describedby')).toBe('provider-dialog-description')
     expect(document.activeElement).toBe(dialog.querySelector('input'))
+    const primary = new DOMWrapper(document.querySelector('[data-testid="provider-primary"]'))
+    expect(primary.text()).toContain('名称')
+    expect(primary.text()).toContain('订阅 URL')
+    expect(primary.text()).toContain('节点筛选')
+    expect(primary.text()).not.toContain('请求 Header')
+    const options = new DOMWrapper(document.querySelector('[data-testid="provider-options"]'))
+    expect(options.element.open).toBe(false)
+    expect(options.text()).toContain('请求 Header')
+    expect(options.text()).toContain('刷新间隔')
+    expect(options.text()).toContain('健康检查')
     dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await nextTick()
     expect(wrapper.emitted('close')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('keeps same-type edit secrets optional but requires a source after changing type', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const provider = {
+      stable_id: 'provider-1', name: '机场', type: 'http', enabled: true,
+      refresh_seconds: 21600, size_limit: 16777216, include_name: '香港', exclude_name: '过期',
+      health_check: true, health_check_seconds: 300, health_check_timeout: 5000,
+      health_check_lazy: true, expected_status: '200-399',
+    }
+    const wrapper = mount(ProviderDialog, { props: { open: true, provider }, global: { plugins: [pinia] } })
+    await nextTick()
+    const field = (selector) => new DOMWrapper(document.querySelector(selector))
+    expect(field('[data-testid="provider-url"]').attributes('required')).toBeUndefined()
+    expect(field('[data-testid="provider-include"]').element.value).toBe('香港')
+    expect(field('[data-testid="provider-exclude"]').element.value).toBe('过期')
+    await field('[data-testid="provider-type"]').setValue('file')
+    expect(field('[data-testid="provider-file-path"]').attributes()).toHaveProperty('required')
+    expect(field('[data-testid="provider-http-options"]').isVisible()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('keeps Provider cards focused on actionable state and gates source-specific actions', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const data = useDataStore()
+    data.providers = [
+      {
+        stable_id: 'http-off', name: '主力订阅', type: 'http', url: 'https://example.com/…', enabled: false,
+        refresh_seconds: 21600, size_limit: 16777216, include_name: '香港', exclude_name: '过期',
+        header_names: ['Authorization'], health_check: true,
+      },
+      {
+        stable_id: 'inline-on', name: '本地节点', type: 'inline', enabled: true, health_check: false,
+        runtime: { proxies: [{ name: '香港 01', type: 'Vless', alive: true, history: [{ delay: 42 }] }] },
+      },
+    ]
+    data.nodes = [{ id: 'node-1', provider_id: 'inline-on' }]
+    const router = testRouter(ProvidersView, 'providers')
+    await router.push('/')
+    const wrapper = mount({ template: '<RouterView />' }, { global: { plugins: [pinia, router] } })
+    const http = wrapper.get('[data-provider-id="http-off"]')
+    const inline = wrapper.get('[data-provider-id="inline-on"]')
+
+    expect(wrapper.get('[data-testid="provider-summary"]').text()).toContain('1 / 2 已启用')
+    expect(http.text()).toContain('6 小时')
+    expect(http.text()).toContain('筛选包含 香港 · 排除 过期')
+    expect(http.text()).not.toContain('最近更新 —')
+    expect(http.text()).not.toContain('暂无订阅流量信息')
+    expect(http.findAll('button').map((button) => button.text())).toEqual(['编辑', '更多'])
+
+    await http.get('.provider-more').trigger('click')
+    expect(wrapper.get('.provider-menu-panel').text()).toContain('复制 URL / Header')
+    await inline.get('.provider-more').trigger('click')
+    expect(wrapper.findAll('.provider-menu-panel')).toHaveLength(1)
+    expect(wrapper.get('.provider-menu-panel').text()).not.toContain('复制 URL / Header')
+
+    await inline.get('.provider-disclosure').trigger('click')
+    expect(inline.get('.provider-node-row').text()).toContain('香港 01')
+    expect(inline.get('.provider-node-row').text()).toContain('42 ms')
     wrapper.unmount()
   })
 

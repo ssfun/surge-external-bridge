@@ -83,7 +83,7 @@ onBeforeUnmount(() => {
     <aside class="sidebar">
       <div class="brand">
         <div class="mark"><i /><i /><i /><i /></div>
-        <div><strong>Surge External Bridge</strong><span>MIHOMO PROTOCOL BRIDGE</span></div>
+        <div><strong data-testid="brand-title">SurgeEB</strong><span>MIHOMO PROTOCOL BRIDGE</span></div>
       </div>
       <nav id="nav" aria-label="主导航">
         <button
@@ -100,7 +100,7 @@ onBeforeUnmount(() => {
       <div class="side-status">
         <div class="engine-line"><i :class="running ? 'ok' : 'bad'" /><span>{{ running ? 'Mihomo 网关运行中' : 'Mihomo 网关异常' }}</span></div>
         <code>socks {{ gateway.socks_address || '—' }}</code>
-        <small>Projection {{ String(gateway.projection_hash || '—').slice(0, 10) }} · {{ gateway.projection_count || 0 }} 节点</small>
+        <small>{{ gateway.projection_count || 0 }} 个可用节点</small>
       </div>
     </aside>
     <main id="main-content" tabindex="-1">

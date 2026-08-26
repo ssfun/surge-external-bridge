@@ -105,7 +105,7 @@ async function serviceAction(install) {
     <div class="grid two diagnostics-grid">
       <div class="card"><h3>投影协议范围</h3><dl class="kv"><dt>协议</dt><dd><span class="pill ok">全部 Mihomo Provider 协议</span></dd><dt>配置来源</dt><dd>Mihomo Provider 当前成功节点</dd><dt>输出方式</dt><dd>统一投影为 Surge SOCKS5 节点</dd></dl></div>
       <div class="card"><h3>版本与安全诊断</h3><dl class="kv">
-        <dt>产品 / Core</dt><dd>{{ settings.version || '—' }} / Mihomo {{ settings.core_version || '—' }}</dd><dt>网关状态</dt><dd><span class="pill" :class="settings.gateway_state === 'running' ? 'ok' : 'warn'">{{ settings.gateway_state || '—' }}</span></dd><dt>Projection</dt><dd>{{ settings.projection_count || 0 }} 节点 · <code>{{ settings.projection_hash || '空' }}</code></dd><dt>私有数据目录</dt><dd><span class="pill" :class="protectedState ? 'ok' : 'bad'">{{ protectedState ? '权限受保护' : '权限需要修复' }}</span></dd><dt>配置 / Controller Key</dt><dd>{{ settings.configuration_protected ? '安全' : '异常' }} / {{ settings.controller_key_protected ? '安全' : '异常' }}</dd>
+        <dt>产品 / Core</dt><dd>{{ settings.version || '—' }} / Mihomo {{ settings.core_version || '—' }}</dd><dt>网关状态</dt><dd><span class="pill" :class="settings.gateway_state === 'running' ? 'ok' : 'warn'">{{ settings.gateway_state || '—' }}</span></dd><dt>可用节点</dt><dd>{{ settings.projection_count || 0 }} 个</dd><dt>私有数据目录</dt><dd><span class="pill" :class="protectedState ? 'ok' : 'bad'">{{ protectedState ? '权限受保护' : '权限需要修复' }}</span></dd><dt>配置 / Controller Key</dt><dd>{{ settings.configuration_protected ? '安全' : '异常' }} / {{ settings.controller_key_protected ? '安全' : '异常' }}</dd>
       </dl><p class="meta">Projection Key 保存在 gateway.json 中，可在多设备间直接同步；安全状态仅报告权限结论，不公开本地路径。</p></div>
     </div>
     <div class="grid two diagnostics-grid">

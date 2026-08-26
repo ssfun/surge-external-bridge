@@ -68,7 +68,7 @@ async function copyPolicy() {
 
   <div class="grid two section-gap">
     <div class="card">
-      <div class="code-head"><span>Surge Policy Path</span><button v-if="overview.projection_count" class="button ghost compact" type="button" @click="copyPolicy">复制配置</button><span v-else>有可投影节点后即可复制</span></div>
+      <div class="code-head"><span>Surge Policy Path</span><button v-if="overview.projection_count" class="button ghost compact" type="button" @click="copyPolicy">复制配置</button><span v-else>有可用节点后即可复制</span></div>
       <pre>{{ snippet }}</pre>
     </div>
     <div class="card">
@@ -77,8 +77,6 @@ async function copyPolicy() {
         <dt>产品 / Core</dt><dd>{{ overview.version }} / Mihomo {{ overview.core_version }}</dd>
         <dt>SOCKS</dt><dd><code>{{ gateway.socks_address }}</code></dd>
         <dt>TUN / 系统代理</dt><dd><span class="pill ok">永久禁用 / 不接管</span></dd>
-        <dt>代理入口</dt><dd>一个强制认证 SOCKS5 TCP/UDP 端口</dd>
-        <dt>Projection</dt><dd><code :title="gateway.projection_hash">{{ gateway.projection_hash ? `${gateway.projection_hash.slice(0, 12)}…` : '空' }}</code></dd>
         <dt>最近 Provider 错误</dt><dd>{{ providerError || '无' }}</dd>
       </dl>
     </div>

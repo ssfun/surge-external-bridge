@@ -10,6 +10,14 @@ export function formatRate(value) {
   return `${formatBytes(value)}/s`
 }
 
+export function formatDuration(value) {
+  const seconds = Number(value) || 0
+  if (seconds >= 86400 && seconds % 86400 === 0) return `${seconds / 86400} 天`
+  if (seconds >= 3600 && seconds % 3600 === 0) return `${seconds / 3600} 小时`
+  if (seconds >= 60 && seconds % 60 === 0) return `${seconds / 60} 分钟`
+  return `${seconds} 秒`
+}
+
 export function formatDateTime(value) {
   if (!value || value === '—') return '—'
   const date = new Date(value)

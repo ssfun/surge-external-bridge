@@ -105,56 +105,62 @@ async function submit() {
           <button type="button" class="modal-close" aria-label="关闭" :disabled="busy" @click="close">×</button>
         </div>
         <div class="modal-scroll">
-          <p id="provider-dialog-description">订阅和节点由 Mihomo 直接管理；名称筛选只影响 Surge 投影。</p>
-          <div class="banner"><b>应用方式</b><span>保存 Provider 定义会在进程内应用，相关既有连接可能结束；普通订阅刷新不会主动关闭连接。</span></div>
-          <section class="form-section">
-            <div class="form-section-title"><b>基础信息</b><span>{{ form.type === 'http' ? 'Mihomo 定时拉取并保留最近成功缓存。' : form.type === 'file' ? '文件必须位于 Mihomo 私有数据目录内。' : '适合临时粘贴或测试，不执行远端刷新。' }}</span></div>
+          <p id="provider-dialog-description">先完成来源与节点筛选；请求、刷新和健康检查可在高级选项中按需调整。</p>
+          <section class="form-section provider-primary" data-testid="provider-primary">
+            <div class="form-section-title"><b>配置信息</b><span>{{ form.type === 'http' ? 'Mihomo 定时拉取并保留最近成功缓存。' : form.type === 'file' ? '文件必须位于 Mihomo 私有数据目录内。' : '适合临时粘贴或测试，不执行远端刷新。' }}</span></div>
             <div class="form-grid">
               <label class="field"><span>名称</span><input ref="nameInput" v-model="form.name" required autocomplete="off"></label>
-              <label class="field"><span>来源类型</span><select v-model="form.type"><option value="http">HTTP 订阅</option><option value="file">私有文件</option><option value="inline">Inline payload</option></select></label>
+              <label class="field"><span>来源类型</span><span class="select-control"><select v-model="form.type" data-testid="provider-type"><option value="http">HTTP 订阅</option><option value="file">私有文件</option><option value="inline">Inline payload</option></select></span></label>
+            </div>
+            <div v-show="form.type === 'http'" class="conditional">
+              <label class="field"><span>订阅 URL{{ provider && provider.type === 'http' ? '（留空保持现有值）' : '' }}</span><input v-model="form.url" data-testid="provider-url" type="url" placeholder="https://example.com/subscription" autocomplete="off" :required="!provider || provider.type !== 'http'"><small>支持 Clash YAML、URI 列表与 Base64 URI。</small></label>
+            </div>
+            <div v-show="form.type === 'file'" class="conditional">
+              <label class="field"><span>Provider 文件路径{{ provider && provider.type === 'file' ? '（留空保持现有值）' : '' }}</span><input v-model="form.file_path" data-testid="provider-file-path" autocomplete="off" :required="!provider || provider.type !== 'file'"><small>必须位于 Mihomo 私有目录；不能使用任意绝对路径。</small></label>
+            </div>
+            <div v-show="form.type === 'inline'" class="conditional">
+              <label class="field"><span>Proxies JSON 数组{{ provider && provider.type === 'inline' ? '（留空保持现有值）' : '' }}</span><textarea v-model="form.payload" data-testid="provider-payload" spellcheck="false" placeholder='[{"name":"...","type":"vless",...}]' :required="!provider || provider.type !== 'inline'" /></label>
+            </div>
+            <div class="field-group">
+              <div class="field-group-title"><b>节点筛选</b><span>可选 · 正则表达式</span></div>
+              <div class="form-grid">
+                <label class="field"><span>名称包含</span><input v-model="form.include_name" data-testid="provider-include" placeholder="留空包含全部节点"></label>
+                <label class="field"><span>名称排除</span><input v-model="form.exclude_name" data-testid="provider-exclude" placeholder="留空不排除节点"></label>
+              </div>
+              <small class="field-help">筛选只影响发布给 Surge 的节点，不删除或改写 Mihomo Provider 内容。</small>
             </div>
             <label class="check-row"><input v-model="form.enabled" type="checkbox"> 启用这个 Provider</label>
           </section>
 
-          <section v-show="form.type === 'http'" class="form-section conditional">
-            <div class="form-section-title"><b>HTTP 订阅</b><span>支持 Clash YAML、URI 列表与 Base64 URI</span></div>
-            <label class="field"><span>订阅 URL{{ provider ? '（留空保持现有值）' : '' }}</span><input v-model="form.url" type="url" placeholder="https://example.com/subscription" autocomplete="off"></label>
-            <label class="field"><span>请求 Header JSON{{ provider ? '（留空保持现有值）' : '' }}</span><textarea v-model="form.headers" spellcheck="false" placeholder='{"Authorization":["Bearer ..."]}' /><small>仅允许 Authorization、Cookie、User-Agent、Accept 与 Accept-Language。</small></label>
-            <button v-if="provider" type="button" class="button ghost" @click="reveal">读取现有 URL / Header</button>
-            <div class="form-grid">
-              <label class="field"><span>刷新间隔（秒）</span><input v-model="form.refresh_seconds" type="number" min="60"></label>
-              <label class="field"><span>响应上限（字节）</span><input v-model="form.size_limit" type="number" min="1024" max="134217728"></label>
-            </div>
-            <label class="field"><span>下载所用代理</span><input v-model="form.download_proxy" placeholder="留空使用 DIRECT"><small>填写 Mihomo 中已有的 Proxy 名称。</small></label>
-          </section>
-
-          <section v-show="form.type === 'file'" class="form-section conditional">
-            <div class="form-section-title"><b>私有文件</b><span>路径受数据目录边界保护</span></div>
-            <label class="field"><span>Provider 文件路径</span><input v-model="form.file_path" autocomplete="off"><small>必须位于 Mihomo 私有目录；不能使用任意绝对路径。</small></label>
-          </section>
-          <section v-show="form.type === 'inline'" class="form-section conditional">
-            <div class="form-section-title"><b>Inline payload</b><span>适合粘贴与测试</span></div>
-            <label class="field"><span>Proxies JSON 数组</span><textarea v-model="form.payload" spellcheck="false" placeholder='[{"name":"...","type":"vless",...}]' /></label>
-          </section>
-
-          <details class="advanced">
-            <summary>投影筛选与健康检查 <span>可选</span></summary>
-            <div class="form-grid">
-              <label class="field"><span>名称包含（正则）</span><input v-model="form.include_name"></label>
-              <label class="field"><span>名称排除（正则）</span><input v-model="form.exclude_name"></label>
-            </div>
-            <div class="modal-hint">筛选只改变 Surge 投影视图，不删除或改写 Mihomo Provider 中的节点。</div>
-            <label class="check-row"><input v-model="form.health_check" type="checkbox"> 启用 Mihomo 自动健康检查</label>
-            <div v-show="form.health_check" class="conditional">
-              <div class="form-grid">
-                <label class="field"><span>健康检查 URL{{ provider ? '（留空保持现有值）' : '' }}</span><input v-model="form.health_check_url" type="url"></label>
-                <label class="field"><span>间隔（秒）</span><input v-model="form.health_check_seconds" type="number" min="60"></label>
-                <label class="field"><span>超时（毫秒）</span><input v-model="form.health_check_timeout" type="number" min="100" max="120000"></label>
-                <label class="field"><span>期望状态码</span><input v-model="form.expected_status"></label>
-              </div>
-              <label class="check-row"><input v-model="form.health_check_lazy" type="checkbox"> Lazy：只在需要时主动检查</label>
+          <details class="advanced provider-options" data-testid="provider-options">
+            <summary><span><b>高级选项</b><small>{{ form.type === 'http' ? '请求、刷新与健康检查' : '健康检查' }}</small></span><i aria-hidden="true" /></summary>
+            <div class="advanced-body">
+              <section v-show="form.type === 'http'" class="advanced-group conditional" data-testid="provider-http-options">
+                <div class="advanced-group-title"><b>订阅请求</b><span>低频调整</span></div>
+                <label class="field"><span>请求 Header JSON{{ provider && provider.type === 'http' ? '（留空保持现有值）' : '' }}</span><textarea v-model="form.headers" spellcheck="false" placeholder='{"Authorization":["Bearer ..."]}' /><small>仅允许 Authorization、Cookie、User-Agent、Accept 与 Accept-Language。</small></label>
+                <button v-if="provider && provider.type === 'http'" type="button" class="button ghost compact" @click="reveal">读取现有 URL / Header</button>
+                <div class="form-grid advanced-grid">
+                  <label class="field"><span>刷新间隔（秒）</span><input v-model="form.refresh_seconds" type="number" min="60"></label>
+                  <label class="field"><span>响应上限（字节）</span><input v-model="form.size_limit" type="number" min="1024" max="134217728"></label>
+                </div>
+                <label class="field"><span>下载所用代理</span><input v-model="form.download_proxy" placeholder="留空使用 DIRECT"><small>填写 Mihomo 中已有的 Proxy 名称。</small></label>
+              </section>
+              <section class="advanced-group">
+                <div class="advanced-group-title"><b>健康检查</b><span>Mihomo 自动执行</span></div>
+                <label class="check-row"><input v-model="form.health_check" type="checkbox"> 启用自动健康检查</label>
+                <div v-show="form.health_check" class="conditional health-options">
+                  <div class="form-grid">
+                    <label class="field"><span>检查 URL{{ provider ? '（留空保持现有值）' : '' }}</span><input v-model="form.health_check_url" type="url"></label>
+                    <label class="field"><span>间隔（秒）</span><input v-model="form.health_check_seconds" type="number" min="60"></label>
+                    <label class="field"><span>超时（毫秒）</span><input v-model="form.health_check_timeout" type="number" min="100" max="120000"></label>
+                    <label class="field"><span>期望状态码</span><input v-model="form.expected_status"></label>
+                  </div>
+                  <label class="check-row"><input v-model="form.health_check_lazy" type="checkbox"> Lazy：只在需要时主动检查</label>
+                </div>
+              </section>
             </div>
           </details>
+          <p class="modal-footnote">保存后立即应用 Provider 定义，相关既有连接可能结束；普通订阅刷新不会主动关闭连接。</p>
         </div>
         <div class="modal-actions"><button type="button" class="button" :disabled="busy" @click="close">取消</button><button class="button primary" type="submit" :disabled="busy" :aria-busy="busy">{{ provider ? '保存并应用' : '添加并应用' }}</button></div>
       </form>
