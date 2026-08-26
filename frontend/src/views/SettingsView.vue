@@ -14,7 +14,7 @@ const { settings, service } = storeToRefs(data)
 const dirty = ref(false)
 const saving = ref(false)
 const appliedMessage = ref('')
-const form = reactive({ mode: 'local', http_bind: '', socks_bind: '', socks_port: 0, socks_advertise: '', policy_base_url: '', prefix_provider: false, management_token: '', policy_token: '', node_test_url: '', node_test_udp_address: '', node_test_timeout_seconds: 10 })
+const form = reactive({ mode: 'local', http_bind: '', socks_bind: '', socks_port: 0, virtual_host: '', prefix_provider: false, management_token: '', policy_token: '', node_test_url: '', node_test_udp_address: '', node_test_timeout_seconds: 10 })
 
 function populate(value) {
   if (!value) return
@@ -43,7 +43,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
 async function save() {
   const body = {
     mode: form.mode, http_bind: form.http_bind, socks_bind: form.socks_bind, socks_port: Number(form.socks_port),
-    socks_advertise: form.socks_advertise, policy_base_url: form.policy_base_url, prefix_provider: form.prefix_provider,
+    virtual_host: form.virtual_host, prefix_provider: form.prefix_provider,
     projection_types: ['*'], node_test_url: form.node_test_url, node_test_udp_address: form.node_test_udp_address,
     node_test_timeout_seconds: Number(form.node_test_timeout_seconds),
   }
@@ -91,8 +91,7 @@ async function serviceAction(install) {
           <label class="field"><span>部署模式</span><select v-model="form.mode" @change="modeChanged"><option value="local">仅本机</option><option value="gateway">局域网网关</option></select><small>{{ form.mode === 'gateway' ? '适用于 macOS 与 Linux；允许局域网或可信私网地址，Management / Policy Token 均为必填。' : '配置台与 SOCKS 只允许监听回环地址。' }}</small></label>
           <label class="field"><span>配置台监听地址</span><input v-model="form.http_bind" spellcheck="false"><small>仅本机模式必须使用回环地址；局域网网关模式必须配置 Management Token。</small></label>
           <div class="form-grid"><label class="field"><span>SOCKS 监听 IP</span><input v-model="form.socks_bind" spellcheck="false"></label><label class="field"><span>SOCKS 端口</span><input v-model="form.socks_port" type="number" min="1" max="65535"></label></div>
-          <label class="field"><span>Surge 连接地址</span><input v-model="form.socks_advertise" spellcheck="false"><small>写入每条 Surge SOCKS5 节点，不能使用 0.0.0.0 或 ::。</small></label>
-          <label class="field"><span>Policy 基础 URL</span><input v-model="form.policy_base_url" type="url" spellcheck="false"></label>
+          <label class="field"><span>统一发布主机</span><input v-model="form.virtual_host" spellcheck="false" placeholder="surge.eb"><small>同时用于每条 Surge SOCKS5 节点和 Policy Path；不包含协议、端口或路径。Policy Path 端口自动跟随配置台监听端口。</small></label>
           <label class="check-row"><input v-model="form.prefix_provider" type="checkbox"> 节点展示名添加 Provider 前缀</label>
         </div>
         <div class="card"><h3>访问令牌与诊断</h3>

@@ -21,8 +21,7 @@ func TestValidateConfigNetworkBoundaries(t *testing.T) {
 	validGateway.Mode = ModeGateway
 	validGateway.HTTPBind = "0.0.0.0:18080"
 	validGateway.SocksBind = "0.0.0.0"
-	validGateway.SocksAdvertise = "192.168.50.10"
-	validGateway.PolicyBaseURL = "http://192.168.50.10:18080"
+	validGateway.VirtualHost = "192.168.50.10"
 	validGateway.ManagementToken = "management-token-1234"
 	validGateway.PolicyToken = "policy-token-12345678"
 
@@ -32,19 +31,23 @@ func TestValidateConfigNetworkBoundaries(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "local loopback", config: validLocal},
+		{name: "local explicit virtual hostname", config: func() Config { c := validLocal; c.VirtualHost = "surge.eb"; return c }()},
 		{name: "gateway private with distinct tokens", config: validGateway},
+		{name: "gateway explicit virtual hostname", config: func() Config { c := validGateway; c.VirtualHost = "surge.eb"; return c }()},
 		{name: "gateway Tailscale hostname", config: func() Config {
 			c := validGateway
-			c.SocksAdvertise = "gateway.tailnet.ts.net"
-			c.PolicyBaseURL = "https://gateway.tailnet.ts.net"
+			c.VirtualHost = "gateway.tailnet.ts.net"
 			return c
 		}()},
 		{name: "local public HTTP bind", config: func() Config { c := validLocal; c.HTTPBind = "0.0.0.0:18080"; return c }(), wantErr: true},
+		{name: "local public virtual IP", config: func() Config { c := validLocal; c.VirtualHost = "8.8.8.8"; return c }(), wantErr: true},
 		{name: "gateway missing tokens", config: func() Config { c := validGateway; c.ManagementToken, c.PolicyToken = "", ""; return c }(), wantErr: true},
 		{name: "gateway shared token", config: func() Config { c := validGateway; c.PolicyToken = c.ManagementToken; return c }(), wantErr: true},
-		{name: "gateway public advertise", config: func() Config { c := validGateway; c.SocksAdvertise = "8.8.8.8"; return c }(), wantErr: true},
-		{name: "gateway public policy host", config: func() Config { c := validGateway; c.PolicyBaseURL = "https://example.com"; return c }(), wantErr: true},
-		{name: "unspecified advertise", config: func() Config { c := validGateway; c.SocksAdvertise = "0.0.0.0"; return c }(), wantErr: true},
+		{name: "gateway public virtual IP", config: func() Config { c := validGateway; c.VirtualHost = "8.8.8.8"; return c }(), wantErr: true},
+		{name: "unspecified virtual IP", config: func() Config { c := validGateway; c.VirtualHost = "0.0.0.0"; return c }(), wantErr: true},
+		{name: "virtual host with port", config: func() Config { c := validGateway; c.VirtualHost = "surge.eb:18080"; return c }(), wantErr: true},
+		{name: "virtual host with wildcard", config: func() Config { c := validGateway; c.VirtualHost = "*.eb"; return c }(), wantErr: true},
+		{name: "bracketed IPv6 virtual host", config: func() Config { c := validLocal; c.VirtualHost = "[::1]"; return c }(), wantErr: true},
 		{name: "legacy linux enum", config: func() Config { c := validGateway; c.Mode = "linux"; return c }(), wantErr: true},
 	}
 	for _, test := range tests {
@@ -52,6 +55,48 @@ func TestValidateConfigNetworkBoundaries(t *testing.T) {
 			err := ValidateConfig(test.config)
 			if (err != nil) != test.wantErr {
 				t.Fatalf("ValidateConfig() error=%v, wantErr=%v", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestVirtualHostDerivesPolicyBaseURL(t *testing.T) {
+	config := DefaultConfig()
+	config.HTTPBind = "0.0.0.0:18080"
+	config.VirtualHost = "surge.eb"
+	if got := config.PolicyBaseURL(); got != "http://surge.eb:18080" {
+		t.Fatalf("PolicyBaseURL()=%q, want http://surge.eb:18080", got)
+	}
+}
+
+func TestAllowsHTTPHost(t *testing.T) {
+	local := DefaultConfig()
+	local.VirtualHost = "surge.eb"
+	gateway := local
+	gateway.Mode = ModeGateway
+	gateway.HTTPBind = "0.0.0.0:18080"
+	gateway.SocksBind = "0.0.0.0"
+	gateway.ManagementToken = "management-token-1234"
+	gateway.PolicyToken = "policy-token-12345678"
+
+	tests := []struct {
+		name, host string
+		config     Config
+		want       bool
+	}{
+		{name: "local virtual host", config: local, host: "surge.eb:18080", want: true},
+		{name: "local virtual host case and trailing dot", config: local, host: "SURGE.EB.:18080", want: true},
+		{name: "local loopback remains available", config: local, host: "127.0.0.1:18080", want: true},
+		{name: "local unrelated hostname", config: local, host: "attacker.example", want: false},
+		{name: "gateway virtual host", config: gateway, host: "surge.eb:18080", want: true},
+		{name: "gateway private IP remains available", config: gateway, host: "192.168.50.10:18080", want: true},
+		{name: "gateway unrelated eb hostname", config: gateway, host: "other.eb:18080", want: false},
+		{name: "gateway public hostname", config: gateway, host: "attacker.example", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := AllowsHTTPHost(test.config, test.host); got != test.want {
+				t.Fatalf("AllowsHTTPHost(%q)=%v, want %v", test.host, got, test.want)
 			}
 		})
 	}

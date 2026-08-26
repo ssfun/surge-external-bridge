@@ -170,7 +170,7 @@ func (s *Server) overview(w http.ResponseWriter, _ *http.Request) {
 		"version": gateway.Version, "core_version": status.CoreVersion, "gateway": status,
 		"provider_count": len(config.Providers), "projection_count": status.ProjectionCount,
 		"policy_url": policyURL(config), "process_rule": "PROCESS-NAME,SurgeEB,DIRECT",
-		"socks_advertise": net.JoinHostPort(config.SocksAdvertise, fmt.Sprint(config.SocksPort)),
+		"socks_advertise": net.JoinHostPort(config.VirtualHost, fmt.Sprint(config.SocksPort)),
 	})
 }
 
@@ -456,8 +456,7 @@ type settingsRequest struct {
 	HTTPBind        string   `json:"http_bind"`
 	SocksBind       string   `json:"socks_bind"`
 	SocksPort       uint16   `json:"socks_port"`
-	SocksAdvertise  string   `json:"socks_advertise"`
-	PolicyBaseURL   string   `json:"policy_base_url"`
+	VirtualHost     string   `json:"virtual_host"`
 	ManagementToken *string  `json:"management_token"`
 	PolicyToken     *string  `json:"policy_token"`
 	PrefixProvider  bool     `json:"prefix_provider"`
@@ -480,7 +479,7 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
 	current := s.app.Config().Settings()
 	next := gateway.Settings{
 		Mode: request.Mode, HTTPBind: request.HTTPBind, SocksBind: request.SocksBind, SocksPort: request.SocksPort,
-		SocksAdvertise: request.SocksAdvertise, PolicyBaseURL: request.PolicyBaseURL,
+		VirtualHost:     request.VirtualHost,
 		ManagementToken: current.ManagementToken, PolicyToken: current.PolicyToken,
 		PrefixProvider: request.PrefixProvider, ProjectionTypes: request.ProjectionTypes,
 		NodeTestURL: request.NodeTestURL, NodeTestUDP: request.NodeTestUDP, NodeTestTimeout: request.NodeTestTimeout,
@@ -628,8 +627,7 @@ func managementCookieValue(token string) string {
 func (s *Server) trustedHost(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		config := s.app.Config()
-		bindHost, _, _ := net.SplitHostPort(config.HTTPBind)
-		if config.Mode == "local" && isLoopback(bindHost) && !isLoopback(requestHost(r.Host)) {
+		if !gateway.AllowsHTTPHost(config, r.Host) {
 			writeError(w, http.StatusMisdirectedRequest, "untrusted Host header")
 			return
 		}
@@ -715,16 +713,8 @@ func requestHost(value string) string {
 	}
 	return strings.Trim(value, "[]")
 }
-func isLoopback(host string) bool {
-	if strings.EqualFold(strings.TrimSuffix(host, "."), "localhost") {
-		return true
-	}
-	ip := net.ParseIP(strings.Trim(host, "[]"))
-	return ip != nil && ip.IsLoopback()
-}
-
 func policyURL(config gateway.Config) string {
-	base := strings.TrimRight(config.PolicyBaseURL, "/") + "/proxies"
+	base := config.PolicyBaseURL() + "/proxies"
 	if config.PolicyToken == "" {
 		return base
 	}

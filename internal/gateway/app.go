@@ -70,7 +70,7 @@ func New(dataDir string) (*App, error) {
 	manager, err := M.NewManager(M.ManagerOptions{
 		HomeDir: filepath.Join(dataDir, "mihomo"), ControllerSocket: controllerSocket,
 		ControllerSecret: controllerSecret,
-		SocksBind:        config.SocksBind, SocksAdvertise: config.SocksAdvertise, SocksPort: config.SocksPort,
+		SocksBind:        config.SocksBind, SocksAdvertise: config.VirtualHost, SocksPort: config.SocksPort,
 		MasterKey: masterKey, PrefixProvider: config.PrefixProvider, Providers: definitions(config),
 		OnEvent: application.addEvent,
 	})
@@ -393,11 +393,11 @@ func (a *App) UpdateSettings(settings Settings) error {
 	}
 	wasRunning := a.manager.Status().State == "running"
 	if wasRunning {
-		if err := a.manager.ApplyProjectionSettings(candidate.SocksBind, candidate.SocksAdvertise, candidate.SocksPort, candidate.PrefixProvider, key); err != nil {
+		if err := a.manager.ApplyProjectionSettings(candidate.SocksBind, candidate.VirtualHost, candidate.SocksPort, candidate.PrefixProvider, key); err != nil {
 			return err
 		}
 	} else {
-		if err := a.manager.ConfigureProjectionWhenStopped(candidate.SocksBind, candidate.SocksAdvertise, candidate.SocksPort, candidate.PrefixProvider, key); err != nil {
+		if err := a.manager.ConfigureProjectionWhenStopped(candidate.SocksBind, candidate.VirtualHost, candidate.SocksPort, candidate.PrefixProvider, key); err != nil {
 			return err
 		}
 		if err := a.manager.StartWithProviders(definitions(candidate)); err != nil {
@@ -406,10 +406,10 @@ func (a *App) UpdateSettings(settings Settings) error {
 	}
 	if err := a.store.Save(candidate); err != nil {
 		if wasRunning {
-			_ = a.manager.ApplyProjectionSettings(previous.SocksBind, previous.SocksAdvertise, previous.SocksPort, previous.PrefixProvider, key)
+			_ = a.manager.ApplyProjectionSettings(previous.SocksBind, previous.VirtualHost, previous.SocksPort, previous.PrefixProvider, key)
 		} else {
 			_ = a.manager.Stop()
-			_ = a.manager.ConfigureProjectionWhenStopped(previous.SocksBind, previous.SocksAdvertise, previous.SocksPort, previous.PrefixProvider, key)
+			_ = a.manager.ConfigureProjectionWhenStopped(previous.SocksBind, previous.VirtualHost, previous.SocksPort, previous.PrefixProvider, key)
 			_ = a.manager.StartWithProviders(definitions(previous))
 		}
 		return err
@@ -435,17 +435,17 @@ func (a *App) RotateProjectionKey() error {
 	a.mu.RUnlock()
 	running := a.manager.Status().State == "running"
 	if running {
-		if err := a.manager.ApplyProjectionSettings(config.SocksBind, config.SocksAdvertise, config.SocksPort, config.PrefixProvider, newKey); err != nil {
+		if err := a.manager.ApplyProjectionSettings(config.SocksBind, config.VirtualHost, config.SocksPort, config.PrefixProvider, newKey); err != nil {
 			return err
 		}
-	} else if err := a.manager.ConfigureProjectionWhenStopped(config.SocksBind, config.SocksAdvertise, config.SocksPort, config.PrefixProvider, newKey); err != nil {
+	} else if err := a.manager.ConfigureProjectionWhenStopped(config.SocksBind, config.VirtualHost, config.SocksPort, config.PrefixProvider, newKey); err != nil {
 		return err
 	}
 	if err := M.ReplaceMasterKey(a.masterKeyPath, newKey); err != nil {
 		if running {
-			_ = a.manager.ApplyProjectionSettings(config.SocksBind, config.SocksAdvertise, config.SocksPort, config.PrefixProvider, oldKey)
+			_ = a.manager.ApplyProjectionSettings(config.SocksBind, config.VirtualHost, config.SocksPort, config.PrefixProvider, oldKey)
 		} else {
-			_ = a.manager.ConfigureProjectionWhenStopped(config.SocksBind, config.SocksAdvertise, config.SocksPort, config.PrefixProvider, oldKey)
+			_ = a.manager.ConfigureProjectionWhenStopped(config.SocksBind, config.VirtualHost, config.SocksPort, config.PrefixProvider, oldKey)
 		}
 		return err
 	}
@@ -521,7 +521,7 @@ func (a *App) Proxies() (string, string, error) {
 }
 
 func formatSurgeLine(entry M.Entry, config Config) string {
-	return fmt.Sprintf("%s = socks5, %s, %d, username=%s, password=%s, udp-relay=%t", entry.DisplayName, config.SocksAdvertise, config.SocksPort, entry.Username, entry.Password, entry.SupportUDP)
+	return fmt.Sprintf("%s = socks5, %s, %d, username=%s, password=%s, udp-relay=%t", entry.DisplayName, config.VirtualHost, config.SocksPort, entry.Username, entry.Password, entry.SupportUDP)
 }
 
 func (a *App) addEvent(level, message string) {
@@ -584,24 +584,27 @@ func ValidateConfig(config Config) error {
 	if err != nil || net.ParseIP(strings.Trim(httpHost, "[]")) == nil {
 		return errors.New("invalid HTTP bind address")
 	}
-	if net.ParseIP(config.SocksBind) == nil || strings.TrimSpace(config.SocksAdvertise) == "" || config.SocksPort == 0 || isUnspecifiedHost(config.SocksAdvertise) {
-		return errors.New("invalid SOCKS bind, advertise, or port")
+	if net.ParseIP(config.SocksBind) == nil || config.SocksPort == 0 {
+		return errors.New("invalid SOCKS bind or port")
 	}
-	parsedPolicy, err := url.Parse(config.PolicyBaseURL)
-	if err != nil || (parsedPolicy.Scheme != "http" && parsedPolicy.Scheme != "https") || parsedPolicy.Hostname() == "" || isUnspecifiedHost(parsedPolicy.Hostname()) {
-		return errors.New("invalid Policy base URL")
+	if !isValidVirtualHost(config.VirtualHost) || isUnspecifiedHost(config.VirtualHost) {
+		return errors.New("virtual host must be a hostname or non-unspecified IP address without a port")
 	}
+	virtualIP := net.ParseIP(config.VirtualHost)
 	if config.ManagementToken != "" && len(config.ManagementToken) < 16 || config.PolicyToken != "" && len(config.PolicyToken) < 16 || config.ManagementToken != "" && config.ManagementToken == config.PolicyToken {
 		return errors.New("configured Management and Policy tokens must be distinct and at least 16 characters")
 	}
-	if config.Mode == ModeLocal && (!isLoopbackHost(httpHost) || !isLoopbackHost(config.SocksBind) || !isLoopbackHost(config.SocksAdvertise) || !isLoopbackHost(parsedPolicy.Hostname())) {
-		return errors.New("local mode requires loopback HTTP, SOCKS, advertise, and Policy addresses")
+	if config.Mode == ModeLocal && (!isLoopbackHost(httpHost) || !isLoopbackHost(config.SocksBind)) {
+		return errors.New("local mode requires loopback HTTP and SOCKS bind addresses")
+	}
+	if config.Mode == ModeLocal && virtualIP != nil && !virtualIP.IsLoopback() {
+		return errors.New("local mode virtual host IP must be loopback")
 	}
 	if config.Mode == ModeGateway && (len(config.ManagementToken) < 16 || len(config.PolicyToken) < 16 || config.ManagementToken == config.PolicyToken) {
 		return errors.New("gateway mode requires distinct Management and Policy tokens of at least 16 characters")
 	}
-	if config.Mode == ModeGateway && (!isPrivateOrTrustedHost(config.SocksAdvertise) || !isPrivateOrTrustedHost(parsedPolicy.Hostname())) {
-		return errors.New("gateway mode advertise and Policy addresses must be private or trusted hostnames")
+	if config.Mode == ModeGateway && virtualIP != nil && !isPrivateOrTrustedHost(config.VirtualHost) {
+		return errors.New("gateway mode virtual host IP must be private or trusted")
 	}
 	if len(config.ProjectionTypes) != 1 || config.ProjectionTypes[0] != "*" {
 		return errors.New("projection protocol scope must include all Mihomo Provider protocols")
@@ -735,6 +738,67 @@ func isLoopbackHost(host string) bool {
 func isUnspecifiedHost(host string) bool {
 	ip := net.ParseIP(strings.Trim(host, "[]"))
 	return ip != nil && ip.IsUnspecified()
+}
+
+func isValidVirtualHost(raw string) bool {
+	if raw == "" || raw != strings.TrimSpace(raw) || strings.ContainsAny(raw, "[]") {
+		return false
+	}
+	host := strings.TrimSuffix(raw, ".")
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	if strings.Contains(host, ":") {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, character := range label {
+			if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
+}
+
+func requestHostname(value string) string {
+	value = strings.TrimSpace(value)
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		value = host
+	}
+	return strings.TrimSuffix(strings.Trim(value, "[]"), ".")
+}
+
+func sameHostname(left, right string) bool {
+	return strings.EqualFold(requestHostname(left), requestHostname(right))
+}
+
+// AllowsHTTPHost keeps literal loopback/private access available while adding
+// exactly one configured virtual hostname. It deliberately does not trust a
+// suffix such as .eb as a class.
+func AllowsHTTPHost(config Config, requestHost string) bool {
+	host := requestHostname(requestHost)
+	if host == "" {
+		return false
+	}
+	if sameHostname(host, config.VirtualHost) {
+		return true
+	}
+	bindHost, _, err := net.SplitHostPort(config.HTTPBind)
+	if err == nil && sameHostname(host, bindHost) {
+		return true
+	}
+	if config.Mode == ModeLocal {
+		return isLoopbackHost(host)
+	}
+	return config.Mode == ModeGateway && isPrivateOrTrustedHost(host)
 }
 
 func isPrivateOrTrustedHost(host string) bool {

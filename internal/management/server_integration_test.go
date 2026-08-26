@@ -310,9 +310,14 @@ func TestControllerAllowlistUsesPrivateCredentialAndBlocksDangerousRoutes(t *tes
 		t.Fatal(err)
 	}
 	_ = response.Body.Close()
-	for _, required := range []string{"version", "core_version", "gateway_state", "data_directory_protected", "configuration_protected", "master_key_protected", "controller_key_protected", "recovery_required"} {
+	for _, required := range []string{"virtual_host", "version", "core_version", "gateway_state", "data_directory_protected", "configuration_protected", "master_key_protected", "controller_key_protected", "recovery_required"} {
 		if _, ok := settings[required]; !ok {
 			t.Fatalf("settings DTO omitted %q: %#v", required, settings)
+		}
+	}
+	for _, removed := range []string{"socks_advertise", "policy_base_url"} {
+		if _, ok := settings[removed]; ok {
+			t.Fatalf("settings DTO retained independent publication field %q: %#v", removed, settings)
 		}
 	}
 	settingsEncoded, _ := json.Marshal(settings)
@@ -333,6 +338,38 @@ func TestControllerAllowlistUsesPrivateCredentialAndBlocksDangerousRoutes(t *tes
 	_ = response.Body.Close()
 	if _, exposed := service["path"]; exposed {
 		t.Fatalf("service DTO exposed a local path: %#v", service)
+	}
+}
+
+func TestConfiguredVirtualHostPassesHTTPHostBoundary(t *testing.T) {
+	application, _, endpoint := testManagementServer(t, "")
+	defer application.Close()
+	settings := application.Config().Settings()
+	settings.VirtualHost = "surge.eb"
+	if err := application.UpdateSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		host string
+		want int
+	}{
+		{host: "surge.eb:18080", want: http.StatusOK},
+		{host: "SURGE.EB.:18080", want: http.StatusOK},
+		{host: "127.0.0.1:18080", want: http.StatusOK},
+		{host: "other.eb:18080", want: http.StatusMisdirectedRequest},
+	}
+	for _, test := range tests {
+		req, _ := http.NewRequest(http.MethodGet, endpoint+"/health", nil)
+		req.Host = test.host
+		response, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = response.Body.Close()
+		if response.StatusCode != test.want {
+			t.Fatalf("Host %q status=%d, want %d", test.host, response.StatusCode, test.want)
+		}
 	}
 }
 

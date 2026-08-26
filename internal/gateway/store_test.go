@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +27,13 @@ func TestStoreCreatesFreshPrivateConfiguration(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("gateway.json mode=%o, want 600", info.Mode().Perm())
+	}
+	encoded, err := os.ReadFile(filepath.Join(dir, "gateway.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"virtual_host"`) || strings.Contains(string(encoded), `"socks_advertise"`) || strings.Contains(string(encoded), `"policy_base_url"`) {
+		t.Fatalf("gateway.json does not use virtual_host as its single publication source: %s", encoded)
 	}
 	directory, err := os.Stat(dir)
 	if err != nil {
@@ -101,7 +109,10 @@ func TestStoreRejectsIncompleteCurrentSchemaInsteadOfNormalizing(t *testing.T) {
   "socks_advertise":"127.0.0.1",
   "policy_base_url":"http://127.0.0.1:18080",
   "prefix_provider":true,
-  "projection_types":["vless"],
+	"projection_types":["*"],
+	"node_test_url":"https://www.gstatic.com/generate_204",
+	"node_test_udp_address":"8.8.8.8:53",
+	"node_test_timeout_seconds":15,
   "providers":[]
 }`)
 	if err := os.WriteFile(filepath.Join(dir, "gateway.json"), data, 0o600); err != nil {
@@ -112,6 +123,6 @@ func TestStoreRejectsIncompleteCurrentSchemaInsteadOfNormalizing(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := ValidateConfig(loaded); err == nil {
-		t.Fatal("legacy projection scope was accepted or normalized")
+		t.Fatal("legacy independent publish fields were accepted or normalized")
 	}
 }

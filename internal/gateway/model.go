@@ -1,6 +1,10 @@
 package gateway
 
-import "time"
+import (
+	"net"
+	"strings"
+	"time"
+)
 
 const SchemaVersion = 1
 
@@ -15,8 +19,7 @@ type Config struct {
 	HTTPBind        string     `json:"http_bind"`
 	SocksBind       string     `json:"socks_bind"`
 	SocksPort       uint16     `json:"socks_port"`
-	SocksAdvertise  string     `json:"socks_advertise"`
-	PolicyBaseURL   string     `json:"policy_base_url"`
+	VirtualHost     string     `json:"virtual_host"`
 	ManagementToken string     `json:"management_token,omitempty"`
 	PolicyToken     string     `json:"policy_token,omitempty"`
 	PrefixProvider  bool       `json:"prefix_provider"`
@@ -59,8 +62,8 @@ func DefaultConfig() Config {
 	return Config{
 		SchemaVersion: SchemaVersion,
 		Mode:          ModeLocal, HTTPBind: "127.0.0.1:18080",
-		SocksBind: "127.0.0.1", SocksPort: 1080, SocksAdvertise: "127.0.0.1",
-		PolicyBaseURL: "http://127.0.0.1:18080", PrefixProvider: true,
+		SocksBind: "127.0.0.1", SocksPort: 1080, VirtualHost: "127.0.0.1",
+		PrefixProvider:  true,
 		ProjectionTypes: []string{"*"}, NodeTestURL: "https://www.gstatic.com/generate_204",
 		NodeTestUDP: "8.8.8.8:53", NodeTestTimeout: 15, Providers: []Provider{},
 	}
@@ -71,8 +74,7 @@ type Settings struct {
 	HTTPBind        string   `json:"http_bind"`
 	SocksBind       string   `json:"socks_bind"`
 	SocksPort       uint16   `json:"socks_port"`
-	SocksAdvertise  string   `json:"socks_advertise"`
-	PolicyBaseURL   string   `json:"policy_base_url"`
+	VirtualHost     string   `json:"virtual_host"`
 	ManagementToken string   `json:"management_token,omitempty"`
 	PolicyToken     string   `json:"policy_token,omitempty"`
 	PrefixProvider  bool     `json:"prefix_provider"`
@@ -85,7 +87,7 @@ type Settings struct {
 func (c Config) Settings() Settings {
 	return Settings{
 		Mode: c.Mode, HTTPBind: c.HTTPBind, SocksBind: c.SocksBind, SocksPort: c.SocksPort,
-		SocksAdvertise: c.SocksAdvertise, PolicyBaseURL: c.PolicyBaseURL,
+		VirtualHost:     c.VirtualHost,
 		ManagementToken: c.ManagementToken, PolicyToken: c.PolicyToken,
 		PrefixProvider: c.PrefixProvider, ProjectionTypes: append([]string(nil), c.ProjectionTypes...),
 		NodeTestURL: c.NodeTestURL, NodeTestUDP: c.NodeTestUDP, NodeTestTimeout: c.NodeTestTimeout,
@@ -94,10 +96,19 @@ func (c Config) Settings() Settings {
 
 func (c *Config) SetSettings(settings Settings) {
 	c.Mode, c.HTTPBind = settings.Mode, settings.HTTPBind
-	c.SocksBind, c.SocksPort, c.SocksAdvertise = settings.SocksBind, settings.SocksPort, settings.SocksAdvertise
-	c.PolicyBaseURL = settings.PolicyBaseURL
+	c.SocksBind, c.SocksPort, c.VirtualHost = settings.SocksBind, settings.SocksPort, settings.VirtualHost
 	c.ManagementToken, c.PolicyToken = settings.ManagementToken, settings.PolicyToken
 	c.PrefixProvider = settings.PrefixProvider
 	c.ProjectionTypes = append([]string(nil), settings.ProjectionTypes...)
 	c.NodeTestURL, c.NodeTestUDP, c.NodeTestTimeout = settings.NodeTestURL, settings.NodeTestUDP, settings.NodeTestTimeout
+}
+
+// PolicyBaseURL is derived from the single published host declaration and the
+// HTTP listener port so Policy Path and projected SOCKS nodes cannot drift.
+func (c Config) PolicyBaseURL() string {
+	_, port, err := net.SplitHostPort(c.HTTPBind)
+	if err != nil || port == "" || strings.TrimSpace(c.VirtualHost) == "" {
+		return ""
+	}
+	return "http://" + net.JoinHostPort(strings.TrimSpace(c.VirtualHost), port)
 }
