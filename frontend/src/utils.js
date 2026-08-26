@@ -39,14 +39,6 @@ export function nodeConnectionStats(node, connections) {
   }
 }
 
-export function nodeHistory(node) {
-  const values = (Array.isArray(node.history) ? node.history : []).filter((item) => item.delay).slice(-4)
-  if (!values.length) return '—'
-  const current = values.at(-1)
-  const previous = values.slice(0, -1).map((item) => `${item.delay} ms`)
-  return `当前 ${current.delay} ms${previous.length ? ` · 历史 ${previous.join(' / ')}` : ''}`
-}
-
 export function logText(item) {
   return `${item.level || ''} ${item.message || ''} ${(item.fields || []).map((field) => `${field.key || ''}=${field.value || ''}`).join(' ')}`.toLowerCase()
 }

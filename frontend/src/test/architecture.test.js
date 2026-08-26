@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '@/App.vue'
 import OverviewView from '@/views/OverviewView.vue'
 import ProvidersView from '@/views/ProvidersView.vue'
+import NodesView from '@/views/NodesView.vue'
 import SettingsView from '@/views/SettingsView.vue'
 import LogsView from '@/views/LogsView.vue'
 import ProviderDialog from '@/components/ProviderDialog.vue'
@@ -89,15 +90,56 @@ describe('component update boundaries', () => {
     expect(deploymentModes).toEqual([['local', '仅本机'], ['gateway', '局域网网关']])
     expect(wrapper.get('input[placeholder="surge.eb"]').element.value).toBe('surge.eb')
     expect(wrapper.get('[data-testid="projection-key"]').element.value).toBe('shared-projection-key-for-devices')
+    expect(wrapper.get('[data-testid="settings-deployment"]').text()).toContain('部署与入口')
+    expect(wrapper.get('[data-testid="settings-security"]').text()).toContain('访问安全')
+    expect(wrapper.get('[data-testid="settings-identity"]').text()).toContain('投影身份')
+    expect(wrapper.get('[data-testid="settings-diagnostics"]').element.open).toBe(false)
+    expect(wrapper.find('[data-testid="settings-save"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('可用节点3 个')
     expect(wrapper.text()).not.toContain('abcdef')
-    const input = wrapper.find('input[spellcheck="false"]')
+    expect(wrapper.text()).not.toContain('投影协议范围')
+    expect(wrapper.text()).not.toContain('确定性投影身份')
+    const input = wrapper.get('[data-testid="settings-http-bind"]')
     await input.setValue('127.0.0.1:9191')
     realtime.memory = { inuse: 123456 }
     data.overview = sampleOverview()
     await nextTick()
     expect(input.element.value).toBe('127.0.0.1:9191')
-    expect(wrapper.text()).toContain('有未保存的设置')
+    expect(wrapper.get('[data-testid="settings-save"]').text()).toContain('有未保存的设置')
+    wrapper.unmount()
+  })
+
+  it('keeps gateway token generation and the settings save contract intact', async () => {
+    const data = useDataStore()
+    data.settings = {
+      mode: 'local', http_bind: '127.0.0.1:9090', socks_bind: '127.0.0.1', socks_port: 1080,
+      virtual_host: 'surge.eb', projection_key: 'shared-projection-key-for-devices', prefix_provider: false,
+      management_token_configured: false, policy_token_configured: false,
+      node_test_url: 'https://example.com', node_test_udp_address: '1.1.1.1:53', node_test_timeout_seconds: 10,
+    }
+    data.service = {}
+    data.updateSettings = vi.fn(async () => ({ reconnect: false }))
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const router = testRouter(SettingsView, 'settings')
+    await router.push('/')
+    const wrapper = mount({ template: '<RouterView />' }, { global: { plugins: [router] } })
+
+    await wrapper.get('select').setValue('gateway')
+    const tokens = wrapper.findAll('input[type="password"]').map((input) => input.element.value)
+    expect(tokens[0]).toBeTruthy()
+    expect(tokens[1]).toBeTruthy()
+    expect(tokens[0]).not.toBe(tokens[1])
+    expect(wrapper.get('.settings-note.warn').text()).toContain('网关模式要求两类 Token')
+
+    await wrapper.get('form').trigger('submit')
+    expect(data.updateSettings).toHaveBeenCalledWith(expect.objectContaining({
+      mode: 'gateway',
+      management_token: tokens[0],
+      policy_token: tokens[1],
+      projection_types: ['*'],
+      node_test_timeout_seconds: 10,
+    }))
+    expect(wrapper.find('[data-testid="settings-save"]').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -195,6 +237,54 @@ describe('component update boundaries', () => {
     expect(nodeCards[1].text()).toContain('新加坡 02')
     expect(nodeCards[1].text()).toContain('未知 / 失败')
     expect(nodeCards[1].text()).toContain('暂无数据')
+    wrapper.unmount()
+  })
+
+  it('presents node health and activity as layered cards and keeps credential copy secondary', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const data = useDataStore()
+    const realtime = useRealtimeStore()
+    data.providers = [{ stable_id: 'main', name: '主力订阅', enabled: true }]
+    data.nodes = [
+      {
+        id: 'node-1', name: '香港 HKG 01', provider_id: 'main', provider_name: '主力订阅',
+        type: 'vless', alive: true, udp: true, uot: true, history: [{ delay: 50 }, { delay: 42 }],
+      },
+      {
+        id: 'node-2', name: '日本 Tokyo 02', provider_id: 'main', provider_name: '主力订阅',
+        type: 'trojan', alive: false, history: [],
+      },
+    ]
+    realtime.connections = { connections: [{ id: 'connection-1', upload: 2048, download: 4096, chains: ['香港 HKG 01', 'GLOBAL'] }] }
+    const router = testRouter(NodesView, 'nodes')
+    await router.push('/')
+    const wrapper = mount(NodesView, { global: { plugins: [pinia, router] } })
+    const cards = wrapper.findAll('[data-testid="node-card"]')
+
+    expect(wrapper.get('[data-testid="node-summary"]').text()).toContain('2 个节点')
+    expect(wrapper.get('[data-testid="node-summary"]').text()).toContain('1 个可用')
+    expect(wrapper.get('[data-testid="node-summary"]').text()).toContain('1 个需检查')
+    expect(wrapper.get('[data-testid="node-summary"]').text()).toContain('1 个实时连接')
+    expect(cards).toHaveLength(2)
+    expect(cards[0].text()).toContain('香港 HKG 01')
+    expect(cards[0].text()).toContain('主力订阅')
+    expect(cards[0].text()).toContain('VLESS')
+    expect(cards[0].text()).toContain('42 ms')
+    expect(cards[0].text()).toContain('历史 50 ms')
+    expect(cards[0].text()).toContain('↑ 2.0 KiB · ↓ 4.0 KiB')
+    expect(cards[0].text()).toContain('代理链GLOBAL')
+    expect(cards[0].text()).not.toContain('node-1')
+    expect(cards[0].text()).not.toContain('尚未运行端到端诊断')
+    expect(cards[0].findAll('button').map((button) => button.text())).toEqual(['Mihomo 测速', '端到端诊断', '更多'])
+
+    await cards[0].get('.node-more').trigger('click')
+    expect(wrapper.get('.node-menu-panel').text()).toBe('复制 Surge 节点行')
+    await wrapper.get('select[aria-label="按存活状态过滤"]').setValue('false')
+    expect(wrapper.findAll('[data-testid="node-card"]')).toHaveLength(1)
+    expect(wrapper.get('[data-testid="node-card"]').text()).toContain('日本 Tokyo 02')
+    await wrapper.get('.node-filter-summary button').trigger('click')
+    expect(wrapper.findAll('[data-testid="node-card"]')).toHaveLength(2)
     wrapper.unmount()
   })
 
