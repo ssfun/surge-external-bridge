@@ -44,7 +44,8 @@ export function logText(item) {
 }
 
 export function randomToken() {
-  const bytes = new Uint8Array(32)
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+  const bytes = new Uint8Array(24)
   crypto.getRandomValues(bytes)
-  return [...bytes].map((value) => value.toString(16).padStart(2, '0')).join('')
+  return [...bytes].map((value) => alphabet[value & 63]).join('')
 }

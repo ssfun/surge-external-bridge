@@ -2,7 +2,7 @@ package gateway
 
 import (
 	"crypto/rand"
-	"encoding/hex"
+	"encoding/base64"
 	"net"
 	"strings"
 	"time"
@@ -62,7 +62,7 @@ type Event struct {
 }
 
 func DefaultConfig() (Config, error) {
-	key := make([]byte, 32)
+	key := make([]byte, 18)
 	if _, err := rand.Read(key); err != nil {
 		return Config{}, err
 	}
@@ -70,7 +70,7 @@ func DefaultConfig() (Config, error) {
 		SchemaVersion: SchemaVersion,
 		Mode:          ModeLocal, HTTPBind: "127.0.0.1:18080",
 		SocksBind: "127.0.0.1", SocksPort: 1080, VirtualHost: "127.0.0.1",
-		ProjectionKey:   hex.EncodeToString(key),
+		ProjectionKey:   base64.RawURLEncoding.EncodeToString(key),
 		PrefixProvider:  true,
 		ProjectionTypes: []string{"*"}, NodeTestURL: "https://www.gstatic.com/generate_204",
 		NodeTestUDP: "8.8.8.8:53", NodeTestTimeout: 15, Providers: []Provider{},

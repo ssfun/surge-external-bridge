@@ -27,8 +27,11 @@ func TestStoreCreatesFreshPrivateConfiguration(t *testing.T) {
 	if !reflect.DeepEqual(config, want) {
 		t.Fatalf("fresh config = %#v, want defaults", config)
 	}
-	if len(config.ProjectionKey) != 64 {
-		t.Fatalf("generated projection key length=%d, want 64", len(config.ProjectionKey))
+	if len(config.ProjectionKey) != 24 {
+		t.Fatalf("generated projection key length=%d, want 24", len(config.ProjectionKey))
+	}
+	if strings.ContainsAny(config.ProjectionKey, "+/=") {
+		t.Fatalf("generated projection key is not URL-safe: %q", config.ProjectionKey)
 	}
 	info, err := os.Stat(filepath.Join(dir, "gateway.json"))
 	if err != nil {
