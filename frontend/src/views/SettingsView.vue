@@ -25,7 +25,7 @@ const protectedState = computed(() => settings.value?.data_directory_protected &
 
 function markDirty() { dirty.value = true; appliedMessage.value = '' }
 function modeChanged() {
-  if (form.mode === 'linux') {
+  if (form.mode === 'gateway') {
     let generated = false
     if (!settings.value?.management_token_configured && !form.management_token) { form.management_token = randomToken(); generated = true }
     if (!settings.value?.policy_token_configured && !form.policy_token) { form.policy_token = randomToken(); generated = true }
@@ -88,8 +88,8 @@ async function serviceAction(install) {
     <form @submit.prevent="save" @input="markDirty">
       <div class="grid two">
         <div class="card"><h3>监听与发布</h3>
-          <label class="field"><span>部署模式</span><select v-model="form.mode" @change="modeChanged"><option value="local">macOS 本地</option><option value="linux">Linux 私网网关</option></select><small>{{ form.mode === 'linux' ? '允许私网地址；Management / Policy Token 均为必填。' : '配置台与 SOCKS 只允许监听回环地址。' }}</small></label>
-          <label class="field"><span>配置台监听地址</span><input v-model="form.http_bind" spellcheck="false"><small>本地模式必须使用回环地址；私网模式必须配置 Management Token。</small></label>
+          <label class="field"><span>部署模式</span><select v-model="form.mode" @change="modeChanged"><option value="local">仅本机</option><option value="gateway">局域网网关</option></select><small>{{ form.mode === 'gateway' ? '适用于 macOS 与 Linux；允许局域网或可信私网地址，Management / Policy Token 均为必填。' : '配置台与 SOCKS 只允许监听回环地址。' }}</small></label>
+          <label class="field"><span>配置台监听地址</span><input v-model="form.http_bind" spellcheck="false"><small>仅本机模式必须使用回环地址；局域网网关模式必须配置 Management Token。</small></label>
           <div class="form-grid"><label class="field"><span>SOCKS 监听 IP</span><input v-model="form.socks_bind" spellcheck="false"></label><label class="field"><span>SOCKS 端口</span><input v-model="form.socks_port" type="number" min="1" max="65535"></label></div>
           <label class="field"><span>Surge 连接地址</span><input v-model="form.socks_advertise" spellcheck="false"><small>写入每条 Surge SOCKS5 节点，不能使用 0.0.0.0 或 ::。</small></label>
           <label class="field"><span>Policy 基础 URL</span><input v-model="form.policy_base_url" type="url" spellcheck="false"></label>
@@ -98,7 +98,7 @@ async function serviceAction(install) {
         <div class="card"><h3>访问令牌与诊断</h3>
           <label class="field"><span>Management Token</span><input v-model="form.management_token" type="password" autocomplete="new-password" :placeholder="settings.management_token_configured ? '已设置；留空保持不变' : '尚未设置'"><small>保护配置台和管理 API；不会从普通 API 回显。</small></label>
           <label class="field"><span>Policy Token</span><input v-model="form.policy_token" type="password" autocomplete="new-password" :placeholder="settings.policy_token_configured ? '已设置；留空保持不变' : '尚未设置'"><small>单独保护包含节点 SOCKS 凭据的 /proxies。</small></label>
-          <div class="modal-hint">切换到 Linux 私网模式时，会为尚未配置的两类 Token 自动生成互不相同的随机值。保存前请妥善记录。</div>
+          <div class="modal-hint">切换到局域网网关模式时，会为尚未配置的两类 Token 自动生成互不相同的随机值。保存前请妥善记录。</div>
           <div class="form-section"><div class="form-section-title"><b>节点诊断目标</b><span>由项目内核直接测试，不经过 Surge</span></div>
             <label class="field"><span>TCP Web 测试 URL</span><input v-model="form.node_test_url" type="url"></label>
             <div class="form-grid"><label class="field"><span>UDP DNS 目标</span><input v-model="form.node_test_udp_address"></label><label class="field"><span>超时（秒）</span><input v-model="form.node_test_timeout_seconds" type="number" min="1" max="120"></label></div>

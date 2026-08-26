@@ -80,10 +80,20 @@ func TestStoreDoesNotReadLegacyConfiguration(t *testing.T) {
 	}
 }
 
+func TestStoreRejectsUnsupportedSchemaWithoutMigration(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "gateway.json"), []byte(`{"schema_version":2}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewStore(dir).Load(); err == nil {
+		t.Fatal("unsupported schema was accepted or migrated")
+	}
+}
+
 func TestStoreRejectsIncompleteCurrentSchemaInsteadOfNormalizing(t *testing.T) {
 	dir := t.TempDir()
 	data := []byte(`{
-  "schema_version":2,
+  "schema_version":1,
   "mode":"local",
   "http_bind":"127.0.0.1:18080",
   "socks_bind":"127.0.0.1",

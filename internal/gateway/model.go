@@ -2,7 +2,12 @@ package gateway
 
 import "time"
 
-const SchemaVersion = 2
+const SchemaVersion = 1
+
+const (
+	ModeLocal   = "local"
+	ModeGateway = "gateway"
+)
 
 type Config struct {
 	SchemaVersion   int        `json:"schema_version"`
@@ -53,7 +58,7 @@ type Event struct {
 func DefaultConfig() Config {
 	return Config{
 		SchemaVersion: SchemaVersion,
-		Mode:          "local", HTTPBind: "127.0.0.1:18080",
+		Mode:          ModeLocal, HTTPBind: "127.0.0.1:18080",
 		SocksBind: "127.0.0.1", SocksPort: 1080, SocksAdvertise: "127.0.0.1",
 		PolicyBaseURL: "http://127.0.0.1:18080", PrefixProvider: true,
 		ProjectionTypes: []string{"*"}, NodeTestURL: "https://www.gstatic.com/generate_204",

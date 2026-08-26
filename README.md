@@ -39,7 +39,7 @@ External = select, policy-path=http://127.0.0.1:18080/proxies, update-interval=3
 PROCESS-NAME,SurgeEB,DIRECT
 ```
 
-`PROCESS-NAME` 规则必须位于其他代理规则之前，避免桥接进程的出站再次进入 Surge 形成递归。Linux 私网网关不在 Surge 所在 Mac 上运行时不需要此规则。
+`PROCESS-NAME` 规则必须位于其他代理规则之前，避免桥接进程的出站再次进入 Surge 形成递归。SurgeEB 与 Surge 不在同一台 Mac 上运行时不需要此规则。
 
 ## 首次运行
 
@@ -72,7 +72,7 @@ PROCESS-NAME,SurgeEB,DIRECT
 - 节点：协议、能力、Mihomo 延迟历史、TCP/UDP 诊断和 Surge 行复制。
 - 连接：实时目标、节点链、规则、流量，以及关闭单个或全部连接。
 - 日志：Mihomo 结构化实时日志与产品事件，敏感字段二次脱敏。
-- 设置：本地/Linux 私网模式、HTTP/SOCKS 地址、Token、诊断目标、Projection Key 和用户级系统服务。
+- 设置：仅本机/局域网网关模式、HTTP/SOCKS 地址、Token、诊断目标、Projection Key 和用户级系统服务。
 
 浏览器只访问产品 allowlist。允许的 Mihomo 能力包括版本、只读配置、Provider/节点健康、连接、流量、内存和结构化日志。`PUT/PATCH /configs`、restart、upgrade、debug 和未来未列入清单的 Controller 路由均不暴露。
 
@@ -98,11 +98,11 @@ listeners: []
 
 同时禁用 iptables、NTP 系统时间写入、named listeners、tunnels、HTTP/Mixed/Redir/TProxy、DNS listener 和系统代理操作。配置在 `ApplyConfig` 前与运行后各验证一次；私有 Controller 使用数据目录内权限为 `0600` 的 Unix Socket。唯一代理入口是 Projection 与 Router 就绪后才开放的产品自管认证 SOCKS5 listener。
 
-## 本地与 Linux 私网边界
+## 仅本机与局域网网关边界
 
-本地模式默认只允许回环 HTTP、SOCKS、发布地址和 Policy URL。无 Management Token 时，配置台拒绝非回环 Host。
+仅本机模式默认只允许回环 HTTP、SOCKS、发布地址和 Policy URL。无 Management Token 时，配置台拒绝非回环 Host。
 
-Linux 私网模式要求：
+局域网网关模式同时适用于 macOS 与 Linux，并要求：
 
 - Management Token 与 Policy Token 不同且都至少 16 字符；
 - HTTP 写操作执行 Token、同源、方法和请求体大小检查；
@@ -118,7 +118,7 @@ Surge External Bridge 采用全新数据目录和配置，不读取或迁移旧�
 
 ```text
 ~/.surge-external-bridge/
-├── gateway.json          # 0600，schema 2
+├── gateway.json          # 0600，schema 1
 ├── projection.key        # 0600，确定性身份主密钥
 ├── controller.key        # 0600，内部 Controller Secret 来源
 └── mihomo/               # 0700，Provider 最近成功缓存与 Unix Socket

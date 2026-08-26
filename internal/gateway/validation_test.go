@@ -17,14 +17,14 @@ func TestDefaultConfigProjectsAllMihomoProviderProtocols(t *testing.T) {
 
 func TestValidateConfigNetworkBoundaries(t *testing.T) {
 	validLocal := DefaultConfig()
-	validLinux := DefaultConfig()
-	validLinux.Mode = "linux"
-	validLinux.HTTPBind = "0.0.0.0:18080"
-	validLinux.SocksBind = "0.0.0.0"
-	validLinux.SocksAdvertise = "192.168.50.10"
-	validLinux.PolicyBaseURL = "http://192.168.50.10:18080"
-	validLinux.ManagementToken = "management-token-1234"
-	validLinux.PolicyToken = "policy-token-12345678"
+	validGateway := DefaultConfig()
+	validGateway.Mode = ModeGateway
+	validGateway.HTTPBind = "0.0.0.0:18080"
+	validGateway.SocksBind = "0.0.0.0"
+	validGateway.SocksAdvertise = "192.168.50.10"
+	validGateway.PolicyBaseURL = "http://192.168.50.10:18080"
+	validGateway.ManagementToken = "management-token-1234"
+	validGateway.PolicyToken = "policy-token-12345678"
 
 	tests := []struct {
 		name    string
@@ -32,19 +32,20 @@ func TestValidateConfigNetworkBoundaries(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "local loopback", config: validLocal},
-		{name: "linux private with distinct tokens", config: validLinux},
-		{name: "linux Tailscale hostname", config: func() Config {
-			c := validLinux
+		{name: "gateway private with distinct tokens", config: validGateway},
+		{name: "gateway Tailscale hostname", config: func() Config {
+			c := validGateway
 			c.SocksAdvertise = "gateway.tailnet.ts.net"
 			c.PolicyBaseURL = "https://gateway.tailnet.ts.net"
 			return c
 		}()},
 		{name: "local public HTTP bind", config: func() Config { c := validLocal; c.HTTPBind = "0.0.0.0:18080"; return c }(), wantErr: true},
-		{name: "linux missing tokens", config: func() Config { c := validLinux; c.ManagementToken, c.PolicyToken = "", ""; return c }(), wantErr: true},
-		{name: "linux shared token", config: func() Config { c := validLinux; c.PolicyToken = c.ManagementToken; return c }(), wantErr: true},
-		{name: "linux public advertise", config: func() Config { c := validLinux; c.SocksAdvertise = "8.8.8.8"; return c }(), wantErr: true},
-		{name: "linux public policy host", config: func() Config { c := validLinux; c.PolicyBaseURL = "https://example.com"; return c }(), wantErr: true},
-		{name: "unspecified advertise", config: func() Config { c := validLinux; c.SocksAdvertise = "0.0.0.0"; return c }(), wantErr: true},
+		{name: "gateway missing tokens", config: func() Config { c := validGateway; c.ManagementToken, c.PolicyToken = "", ""; return c }(), wantErr: true},
+		{name: "gateway shared token", config: func() Config { c := validGateway; c.PolicyToken = c.ManagementToken; return c }(), wantErr: true},
+		{name: "gateway public advertise", config: func() Config { c := validGateway; c.SocksAdvertise = "8.8.8.8"; return c }(), wantErr: true},
+		{name: "gateway public policy host", config: func() Config { c := validGateway; c.PolicyBaseURL = "https://example.com"; return c }(), wantErr: true},
+		{name: "unspecified advertise", config: func() Config { c := validGateway; c.SocksAdvertise = "0.0.0.0"; return c }(), wantErr: true},
+		{name: "legacy linux enum", config: func() Config { c := validGateway; c.Mode = "linux"; return c }(), wantErr: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

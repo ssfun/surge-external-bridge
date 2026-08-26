@@ -577,8 +577,8 @@ func ValidateConfig(config Config) error {
 	if config.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("schema version must be %d", SchemaVersion)
 	}
-	if config.Mode != "local" && config.Mode != "linux" {
-		return errors.New("mode must be local or linux")
+	if config.Mode != ModeLocal && config.Mode != ModeGateway {
+		return errors.New("mode must be local or gateway")
 	}
 	httpHost, _, err := net.SplitHostPort(config.HTTPBind)
 	if err != nil || net.ParseIP(strings.Trim(httpHost, "[]")) == nil {
@@ -594,14 +594,14 @@ func ValidateConfig(config Config) error {
 	if config.ManagementToken != "" && len(config.ManagementToken) < 16 || config.PolicyToken != "" && len(config.PolicyToken) < 16 || config.ManagementToken != "" && config.ManagementToken == config.PolicyToken {
 		return errors.New("configured Management and Policy tokens must be distinct and at least 16 characters")
 	}
-	if config.Mode == "local" && (!isLoopbackHost(httpHost) || !isLoopbackHost(config.SocksBind) || !isLoopbackHost(config.SocksAdvertise) || !isLoopbackHost(parsedPolicy.Hostname())) {
+	if config.Mode == ModeLocal && (!isLoopbackHost(httpHost) || !isLoopbackHost(config.SocksBind) || !isLoopbackHost(config.SocksAdvertise) || !isLoopbackHost(parsedPolicy.Hostname())) {
 		return errors.New("local mode requires loopback HTTP, SOCKS, advertise, and Policy addresses")
 	}
-	if config.Mode == "linux" && (len(config.ManagementToken) < 16 || len(config.PolicyToken) < 16 || config.ManagementToken == config.PolicyToken) {
-		return errors.New("linux mode requires distinct Management and Policy tokens of at least 16 characters")
+	if config.Mode == ModeGateway && (len(config.ManagementToken) < 16 || len(config.PolicyToken) < 16 || config.ManagementToken == config.PolicyToken) {
+		return errors.New("gateway mode requires distinct Management and Policy tokens of at least 16 characters")
 	}
-	if config.Mode == "linux" && (!isPrivateOrTrustedHost(config.SocksAdvertise) || !isPrivateOrTrustedHost(parsedPolicy.Hostname())) {
-		return errors.New("linux mode advertise and Policy addresses must be private or trusted hostnames")
+	if config.Mode == ModeGateway && (!isPrivateOrTrustedHost(config.SocksAdvertise) || !isPrivateOrTrustedHost(parsedPolicy.Hostname())) {
+		return errors.New("gateway mode advertise and Policy addresses must be private or trusted hostnames")
 	}
 	if len(config.ProjectionTypes) != 1 || config.ProjectionTypes[0] != "*" {
 		return errors.New("projection protocol scope must include all Mihomo Provider protocols")

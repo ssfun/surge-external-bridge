@@ -61,6 +61,8 @@ describe('component update boundaries', () => {
     const router = testRouter(SettingsView, 'settings')
     await router.push('/')
     const wrapper = mount({ template: '<RouterView />' }, { global: { plugins: [router] } })
+    const deploymentModes = wrapper.get('select').findAll('option').map((option) => [option.attributes('value'), option.text()])
+    expect(deploymentModes).toEqual([['local', '仅本机'], ['gateway', '局域网网关']])
     const input = wrapper.find('input[spellcheck="false"]')
     await input.setValue('127.0.0.1:9191')
     realtime.memory = { inuse: 123456 }
