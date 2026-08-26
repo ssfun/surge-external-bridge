@@ -8,58 +8,95 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	M "github.com/ssfun/surge-external-bridge/internal/mihomo"
 )
 
-func TestAppRecoversCorruptProjectionKeyThroughExplicitRotation(t *testing.T) {
-	dir, err := os.MkdirTemp("/tmp", "surgeeb-recovery-")
-	if err != nil {
-		t.Fatal(err)
+func TestConfiguredProjectionIdentityMatchesAcrossIndependentApps(t *testing.T) {
+	waitEntry := func(application *App) M.Entry {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if entries := application.Snapshot().Entries(); len(entries) == 1 {
+				return entries[0]
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("projection did not become ready: %#v", application.Status())
+		return M.Entry{}
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	config := DefaultConfig()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	config.SocksPort = uint16(listener.Addr().(*net.TCPAddr).Port)
-	_ = listener.Close()
-	store := NewStore(dir)
-	if _, err := store.Load(); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Save(config); err != nil {
-		t.Fatal(err)
-	}
-	keyPath := filepath.Join(dir, "projection.key")
-	if err := os.WriteFile(keyPath, []byte("corrupt"), 0o600); err != nil {
-		t.Fatal(err)
+	newApp := func() *App {
+		t.Helper()
+		dir, err := os.MkdirTemp("/tmp", "surgeeb-deterministic-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+		config := mustDefaultConfig(t)
+		config.ProjectionKey = "shared-projection-key-for-all-devices"
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		config.SocksPort = uint16(listener.Addr().(*net.TCPAddr).Port)
+		_ = listener.Close()
+		config.Providers = []Provider{{
+			Name: "Shared Provider", Type: "inline", Enabled: true,
+			Payload: []map[string]any{{
+				"name": "Shared Node", "type": "vless", "server": "127.0.0.1", "port": 65502,
+				"uuid": "22222222-2222-4222-8222-222222222222", "network": "tcp", "tls": false,
+			}},
+		}}
+		assignProviderIDs(&config)
+		store := NewStore(dir)
+		if _, err := store.Load(); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Save(config); err != nil {
+			t.Fatal(err)
+		}
+		application, err := New(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = application.Close() })
+		return application
 	}
 
-	application, err := New(dir)
+	first := newApp()
+	firstProvider := first.Config().Providers[0]
+	encoded, err := os.ReadFile(filepath.Join(first.DataDir(), "gateway.json"))
 	if err != nil {
-		t.Fatalf("management recovery mode did not start: %v", err)
+		t.Fatal(err)
 	}
-	defer application.Close()
-	if status := application.Status(); status.State != "recovery" || status.ProjectionCount != 0 || status.SocksAddress != "" {
-		t.Fatalf("corrupt key did not keep the data plane closed: %#v", status)
+	if strings.Contains(string(encoded), `"stable_id"`) {
+		t.Fatalf("gateway.json persisted a derived Provider ID: %s", encoded)
 	}
-	security := application.SecurityStatus()
-	if !security.RecoveryRequired || security.MasterKeyProtected {
-		t.Fatalf("unexpected recovery security status: %#v", security)
+	firstEntry := waitEntry(first)
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
 	}
-	if err := application.RotateProjectionKey(); err != nil {
-		t.Fatalf("explicit full rotation did not recover the key: %v", err)
+	second := newApp()
+	secondProvider := second.Config().Providers[0]
+	if firstProvider.StableID == "" || firstProvider.StableID != secondProvider.StableID {
+		t.Fatalf("Provider names did not produce the same internal ID: %q != %q", firstProvider.StableID, secondProvider.StableID)
 	}
-	key, err := os.ReadFile(keyPath)
-	if err != nil || len(key) != 32 {
-		t.Fatalf("recovered key is invalid: length=%d err=%v", len(key), err)
+	secondEntry := waitEntry(second)
+	if firstEntry.Username != secondEntry.Username || firstEntry.Password != secondEntry.Password || firstEntry.PublicID != secondEntry.PublicID {
+		t.Fatalf("same open configuration produced different identities: %#v != %#v", firstEntry, secondEntry)
 	}
-	if status := application.Status(); status.State != "running" || status.SocksAddress == "" {
-		t.Fatalf("data plane did not start after recovery: %#v", status)
+	settings := second.Config().Settings()
+	settings.ProjectionKey = "different-projection-key-for-device"
+	if err := second.UpdateSettings(settings); err != nil {
+		t.Fatal(err)
 	}
-	security = application.SecurityStatus()
-	if security.RecoveryRequired || !security.DataDirectoryProtected || !security.ConfigurationProtected || !security.MasterKeyProtected || !security.ControllerKeyProtected {
-		t.Fatalf("security status did not become healthy: %#v", security)
+	changed := waitEntry(second)
+	if changed.Username == firstEntry.Username || changed.Password == firstEntry.Password {
+		t.Fatal("changing projection_key retained the old identity")
+	}
+	if changed.PublicID != firstEntry.PublicID {
+		t.Fatal("changing projection_key changed the name-derived public node ID")
 	}
 }
 
@@ -96,7 +133,7 @@ func TestProviderSourceSwitchClearsObsoleteSecretsDurably(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	config := DefaultConfig()
+	config := mustDefaultConfig(t)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

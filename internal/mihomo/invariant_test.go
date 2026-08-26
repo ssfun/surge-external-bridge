@@ -69,14 +69,14 @@ func TestValidateControlledConfigRejectsPublicOrEscapedController(t *testing.T) 
 	}
 }
 
-func TestLoadOrCreateMasterKeyIsStableAndPrivate(t *testing.T) {
+func TestLoadOrCreatePrivateKeyIsStableAndPrivate(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "private")
-	path := filepath.Join(dir, "projection.key")
-	first, err := LoadOrCreateMasterKey(path)
+	path := filepath.Join(dir, "controller.key")
+	first, err := LoadOrCreatePrivateKey(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := LoadOrCreateMasterKey(path)
+	second, err := LoadOrCreatePrivateKey(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,17 +99,17 @@ func TestLoadOrCreateMasterKeyIsStableAndPrivate(t *testing.T) {
 	}
 }
 
-func TestLoadOrCreateMasterKeyRejectsSymbolicLink(t *testing.T) {
+func TestLoadOrCreatePrivateKeyRejectsSymbolicLink(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "target.key")
 	if err := os.WriteFile(target, make([]byte, MasterKeySize), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	linked := filepath.Join(dir, "projection.key")
+	linked := filepath.Join(dir, "controller.key")
 	if err := os.Symlink(target, linked); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadOrCreateMasterKey(linked); err == nil {
+	if _, err := LoadOrCreatePrivateKey(linked); err == nil {
 		t.Fatal("symbolic-link master key was accepted")
 	}
 }

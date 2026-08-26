@@ -47,7 +47,10 @@ func (s *Store) Load() (Config, error) {
 	var config Config
 	data, err := os.ReadFile(s.configPath)
 	if errors.Is(err, os.ErrNotExist) {
-		config = DefaultConfig()
+		config, err = DefaultConfig()
+		if err != nil {
+			return Config{}, fmt.Errorf("generate projection key: %w", err)
+		}
 		if err := s.Save(config); err != nil {
 			return Config{}, err
 		}
@@ -62,6 +65,7 @@ func (s *Store) Load() (Config, error) {
 	if config.SchemaVersion != SchemaVersion {
 		return Config{}, fmt.Errorf("unsupported gateway schema %d", config.SchemaVersion)
 	}
+	assignProviderIDs(&config)
 	return config, nil
 }
 

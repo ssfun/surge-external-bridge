@@ -56,7 +56,7 @@ describe('component update boundaries', () => {
   it('keeps a dirty Settings draft across unrelated store updates', async () => {
     const data = useDataStore()
     const realtime = useRealtimeStore()
-    data.settings = { mode: 'local', http_bind: '127.0.0.1:9090', socks_bind: '127.0.0.1', socks_port: 1080, virtual_host: 'surge.eb', prefix_provider: false, node_test_url: 'https://example.com', node_test_udp_address: '1.1.1.1:53', node_test_timeout_seconds: 10 }
+    data.settings = { mode: 'local', http_bind: '127.0.0.1:9090', socks_bind: '127.0.0.1', socks_port: 1080, virtual_host: 'surge.eb', projection_key: 'shared-projection-key-for-devices', prefix_provider: false, node_test_url: 'https://example.com', node_test_udp_address: '1.1.1.1:53', node_test_timeout_seconds: 10 }
     data.service = {}
     const router = testRouter(SettingsView, 'settings')
     await router.push('/')
@@ -64,6 +64,7 @@ describe('component update boundaries', () => {
     const deploymentModes = wrapper.get('select').findAll('option').map((option) => [option.attributes('value'), option.text()])
     expect(deploymentModes).toEqual([['local', '仅本机'], ['gateway', '局域网网关']])
     expect(wrapper.get('input[placeholder="surge.eb"]').element.value).toBe('surge.eb')
+    expect(wrapper.get('[data-testid="projection-key"]').element.value).toBe('shared-projection-key-for-devices')
     const input = wrapper.find('input[spellcheck="false"]')
     await input.setValue('127.0.0.1:9191')
     realtime.memory = { inuse: 123456 }

@@ -55,7 +55,7 @@ func TestProjectionIdentityIsStableAcrossProxyReplacement(t *testing.T) {
 	firstProxy := &fakeProxy{name: "香港 01", adapterType: C.Vless, udp: true}
 	first := mustProjection(t, key, []ProviderView{{StableID: "provider-id", Name: "机场", Proxies: []C.Proxy{firstProxy}}})
 	replacement := &fakeProxy{name: "香港 01", adapterType: C.Vless, udp: false}
-	second := mustProjection(t, key, []ProviderView{{StableID: "provider-id", Name: "已改名机场", Proxies: []C.Proxy{replacement}}})
+	second := mustProjection(t, key, []ProviderView{{StableID: "provider-id", Name: "机场", Proxies: []C.Proxy{replacement}}})
 
 	a := first.Entries()[0]
 	b := second.Entries()[0]
@@ -67,6 +67,10 @@ func TestProjectionIdentityIsStableAcrossProxyReplacement(t *testing.T) {
 	}
 	if first.Revision() == second.Revision() {
 		t.Fatal("projection revision did not change when published udp-relay capability changed")
+	}
+	renamed := mustProjection(t, key, []ProviderView{{StableID: "renamed-provider-id", Name: "已改名机场", Proxies: []C.Proxy{replacement}}}).Entries()[0]
+	if renamed.Username == a.Username || renamed.Password == a.Password || renamed.PublicID == a.PublicID {
+		t.Fatal("provider name change retained the old projected identity")
 	}
 }
 
@@ -104,7 +108,7 @@ func TestProjectionIncludesMultipleProviderProtocolsWhenTypeScopeIsOpen(t *testi
 func TestAuthenticatorAndRouterFailClosedAfterSnapshotChange(t *testing.T) {
 	key := make([]byte, 32)
 	proxy := &fakeProxy{name: "node", adapterType: C.Vless, udp: true}
-	snapshot := mustProjection(t, key, []ProviderView{{StableID: "p", Proxies: []C.Proxy{proxy}}})
+	snapshot := mustProjection(t, key, []ProviderView{{StableID: "p", Name: "Provider", Proxies: []C.Proxy{proxy}}})
 	entry := snapshot.Entries()[0]
 	store := NewSnapshotStore(snapshot)
 	authenticator := NewAuthenticator(store)
@@ -135,7 +139,7 @@ func TestAuthenticatorAndRouterFailClosedAfterSnapshotChange(t *testing.T) {
 
 func TestRouterRejectsUDPWhenSelectedProxyDoesNotSupportIt(t *testing.T) {
 	proxy := &fakeProxy{name: "tcp-only", adapterType: C.Vless, udp: false}
-	snapshot := mustProjection(t, make([]byte, 32), []ProviderView{{StableID: "p", Proxies: []C.Proxy{proxy}}})
+	snapshot := mustProjection(t, make([]byte, 32), []ProviderView{{StableID: "p", Name: "Provider", Proxies: []C.Proxy{proxy}}})
 	entry := snapshot.Entries()[0]
 	router := NewRouter(NewSnapshotStore(snapshot))
 	if _, err := router.ListenPacketContext(context.Background(), &C.Metadata{InUser: entry.Username}); !errors.Is(err, ErrUDPUnsupported) {
@@ -148,7 +152,7 @@ func TestRouterRejectsUDPWhenSelectedProxyDoesNotSupportIt(t *testing.T) {
 
 func TestProjectionTreatsUOTAsSurgeUDPTransport(t *testing.T) {
 	proxy := &uotOnlyProxy{fakeProxy: fakeProxy{name: "uot-only", adapterType: C.Vless}}
-	snapshot := mustProjection(t, make([]byte, 32), []ProviderView{{StableID: "p", Proxies: []C.Proxy{proxy}}})
+	snapshot := mustProjection(t, make([]byte, 32), []ProviderView{{StableID: "p", Name: "Provider", Proxies: []C.Proxy{proxy}}})
 	entry := snapshot.Entries()[0]
 	if !entry.SupportUDP || !entry.SupportUOT {
 		t.Fatalf("UOT-only VLESS was not projected as UDP capable: %#v", entry)
@@ -164,12 +168,12 @@ func (p *uotOnlyProxy) SupportUOT() bool { return true }
 
 func TestDisplayNamesRemainUniqueWithNaturalSuffixCollision(t *testing.T) {
 	providers := []ProviderView{
-		{StableID: "p1", Proxies: []C.Proxy{&fakeProxy{name: "A", adapterType: C.Vless}}},
-		{StableID: "p2", Proxies: []C.Proxy{&fakeProxy{name: "A", adapterType: C.Vless}}},
-		{StableID: "p3", Proxies: []C.Proxy{&fakeProxy{name: "A · 2", adapterType: C.Vless}}},
-		{StableID: "p4", Proxies: []C.Proxy{&fakeProxy{name: "A=B", adapterType: C.Vless}}},
-		{StableID: "p5", Proxies: []C.Proxy{&fakeProxy{name: "A-B", adapterType: C.Vless}}},
-		{StableID: "p6", Proxies: []C.Proxy{&fakeProxy{name: "#comment\nnode", adapterType: C.Vless}}},
+		{StableID: "p1", Name: "Provider 1", Proxies: []C.Proxy{&fakeProxy{name: "A", adapterType: C.Vless}}},
+		{StableID: "p2", Name: "Provider 2", Proxies: []C.Proxy{&fakeProxy{name: "A", adapterType: C.Vless}}},
+		{StableID: "p3", Name: "Provider 3", Proxies: []C.Proxy{&fakeProxy{name: "A · 2", adapterType: C.Vless}}},
+		{StableID: "p4", Name: "Provider 4", Proxies: []C.Proxy{&fakeProxy{name: "A=B", adapterType: C.Vless}}},
+		{StableID: "p5", Name: "Provider 5", Proxies: []C.Proxy{&fakeProxy{name: "A-B", adapterType: C.Vless}}},
+		{StableID: "p6", Name: "Provider 6", Proxies: []C.Proxy{&fakeProxy{name: "#comment\nnode", adapterType: C.Vless}}},
 	}
 	snapshot := mustProjection(t, make([]byte, 32), providers)
 	seen := map[string]bool{}
@@ -189,7 +193,7 @@ func TestProjectionSupportsOneHundredFiftyUniqueIdentitiesOnOnePort(t *testing.T
 	for index := range proxies {
 		proxies[index] = &fakeProxy{name: fmt.Sprintf("Node %03d", index), adapterType: C.Vless, udp: true}
 	}
-	snapshot := mustProjection(t, []byte("01234567890123456789012345678901"), []ProviderView{{StableID: "provider", Proxies: proxies}})
+	snapshot := mustProjection(t, []byte("01234567890123456789012345678901"), []ProviderView{{StableID: "provider", Name: "Provider", Proxies: proxies}})
 	if len(snapshot.Entries()) != 150 {
 		t.Fatalf("projection count = %d", len(snapshot.Entries()))
 	}

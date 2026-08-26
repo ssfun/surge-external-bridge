@@ -24,6 +24,15 @@ func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) 
 	return f(request)
 }
 
+func mustDefaultGatewayConfig(t *testing.T) gateway.Config {
+	t.Helper()
+	config, err := gateway.DefaultConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return config
+}
+
 func TestManagementProviderLifecycleAndMutationBoundaries(t *testing.T) {
 	application, _, endpoint := testManagementServer(t, "management-token-1234567890")
 	defer application.Close()
@@ -310,10 +319,13 @@ func TestControllerAllowlistUsesPrivateCredentialAndBlocksDangerousRoutes(t *tes
 		t.Fatal(err)
 	}
 	_ = response.Body.Close()
-	for _, required := range []string{"virtual_host", "version", "core_version", "gateway_state", "data_directory_protected", "configuration_protected", "master_key_protected", "controller_key_protected", "recovery_required"} {
+	for _, required := range []string{"virtual_host", "projection_key", "version", "core_version", "gateway_state", "data_directory_protected", "configuration_protected", "controller_key_protected"} {
 		if _, ok := settings[required]; !ok {
 			t.Fatalf("settings DTO omitted %q: %#v", required, settings)
 		}
+	}
+	if settings["projection_key"] != application.Config().ProjectionKey {
+		t.Fatalf("settings DTO did not expose the configured projection key: %#v", settings)
 	}
 	for _, removed := range []string{"socks_advertise", "policy_base_url"} {
 		if _, ok := settings[removed]; ok {
@@ -323,6 +335,26 @@ func TestControllerAllowlistUsesPrivateCredentialAndBlocksDangerousRoutes(t *tes
 	settingsEncoded, _ := json.Marshal(settings)
 	if strings.Contains(string(settingsEncoded), application.DataDir()) {
 		t.Fatalf("settings DTO exposed the data directory: %s", settingsEncoded)
+	}
+	nextSettings := application.Config().Settings()
+	nextSettings.ProjectionKey = "shared-projection-key-updated-through-api"
+	settingsBody, _ := json.Marshal(nextSettings)
+	req, _ = http.NewRequest(http.MethodPut, endpoint+"/api/settings", bytes.NewReader(settingsBody))
+	req.Header.Set("Authorization", "Bearer management-token-1234567890")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", endpoint)
+	response, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		t.Fatalf("projection_key settings update status=%d body=%s", response.StatusCode, body)
+	}
+	_ = response.Body.Close()
+	if application.Config().ProjectionKey != nextSettings.ProjectionKey {
+		t.Fatal("projection_key settings update was not applied")
 	}
 	req, _ = http.NewRequest(http.MethodGet, endpoint+"/api/service", nil)
 	req.Header.Set("Authorization", "Bearer management-token-1234567890")
@@ -429,7 +461,7 @@ func TestNodeHealthCheckTranslatesPublicPostToMihomoGet(t *testing.T) {
 }
 
 func TestStructuredLogRedaction(t *testing.T) {
-	config := gateway.DefaultConfig()
+	config := mustDefaultGatewayConfig(t)
 	config.ManagementToken = "management-secret-value"
 	config.PolicyToken = "policy-secret-value"
 	config.Providers = []gateway.Provider{{StableID: "p1", Name: "provider", Type: "http", URL: "https://user:pass@example.com/sub?token=abc", Headers: map[string][]string{"Authorization": {"Bearer upstream-secret"}}}}
@@ -469,7 +501,7 @@ func TestPublicDTOsRedactSecretsAndExposeOnlySecurityConclusions(t *testing.T) {
 }
 
 func TestControllerValueSanitizesNestedSensitiveFields(t *testing.T) {
-	config := gateway.DefaultConfig()
+	config := mustDefaultGatewayConfig(t)
 	config.ManagementToken = "management-secret-value"
 	value := map[string]any{
 		"connections": []any{map[string]any{
@@ -542,7 +574,7 @@ func testManagementServer(t *testing.T, token string) (*gateway.App, *Server, st
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	config := gateway.DefaultConfig()
+	config := mustDefaultGatewayConfig(t)
 	config.SocksPort = freePort(t)
 	config.ManagementToken = token
 	if err := gateway.NewStore(dir).Save(config); err != nil {

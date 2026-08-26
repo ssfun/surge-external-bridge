@@ -65,7 +65,6 @@ func New(application *gateway.App) (*Server, error) {
 	mux.HandleFunc("GET /api/events", server.authorize(server.events))
 	mux.HandleFunc("GET /api/settings", server.authorize(server.settings))
 	mux.HandleFunc("PUT /api/settings", server.authorize(server.updateSettings))
-	mux.HandleFunc("POST /api/settings/rotate-projection-key", server.authorize(server.rotateProjectionKey))
 	mux.HandleFunc("GET /api/service", server.authorize(server.serviceStatus))
 	mux.HandleFunc("POST /api/service/install", server.authorize(server.serviceInstall))
 	mux.HandleFunc("DELETE /api/service", server.authorize(server.serviceUninstall))
@@ -430,9 +429,7 @@ type publicSettings struct {
 	ProjectionCount           int    `json:"projection_count"`
 	DataDirectoryProtected    bool   `json:"data_directory_protected"`
 	ConfigurationProtected    bool   `json:"configuration_protected"`
-	MasterKeyProtected        bool   `json:"master_key_protected"`
 	ControllerKeyProtected    bool   `json:"controller_key_protected"`
-	RecoveryRequired          bool   `json:"recovery_required"`
 }
 
 func (s *Server) settings(w http.ResponseWriter, _ *http.Request) {
@@ -446,8 +443,7 @@ func (s *Server) settings(w http.ResponseWriter, _ *http.Request) {
 		Version: gateway.Version, CoreVersion: status.CoreVersion, GatewayState: status.State,
 		ProjectionHash: status.ProjectionHash, ProjectionCount: status.ProjectionCount,
 		DataDirectoryProtected: security.DataDirectoryProtected, ConfigurationProtected: security.ConfigurationProtected,
-		MasterKeyProtected: security.MasterKeyProtected, ControllerKeyProtected: security.ControllerKeyProtected,
-		RecoveryRequired: security.RecoveryRequired,
+		ControllerKeyProtected: security.ControllerKeyProtected,
 	})
 }
 
@@ -457,6 +453,7 @@ type settingsRequest struct {
 	SocksBind       string   `json:"socks_bind"`
 	SocksPort       uint16   `json:"socks_port"`
 	VirtualHost     string   `json:"virtual_host"`
+	ProjectionKey   string   `json:"projection_key"`
 	ManagementToken *string  `json:"management_token"`
 	PolicyToken     *string  `json:"policy_token"`
 	PrefixProvider  bool     `json:"prefix_provider"`
@@ -479,7 +476,7 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
 	current := s.app.Config().Settings()
 	next := gateway.Settings{
 		Mode: request.Mode, HTTPBind: request.HTTPBind, SocksBind: request.SocksBind, SocksPort: request.SocksPort,
-		VirtualHost:     request.VirtualHost,
+		VirtualHost: request.VirtualHost, ProjectionKey: request.ProjectionKey,
 		ManagementToken: current.ManagementToken, PolicyToken: current.PolicyToken,
 		PrefixProvider: request.PrefixProvider, ProjectionTypes: request.ProjectionTypes,
 		NodeTestURL: request.NodeTestURL, NodeTestUDP: request.NodeTestUDP, NodeTestTimeout: request.NodeTestTimeout,
@@ -506,18 +503,6 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
 		s.activateHTTPRebind(prepared)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "reconnect": prepared != nil, "http_bind": next.HTTPBind})
-}
-
-func (s *Server) rotateProjectionKey(w http.ResponseWriter, r *http.Request) {
-	if !sameOrigin(r) || r.Header.Get("X-SurgeEB-Confirm") != "rotate-projection-key" {
-		writeError(w, http.StatusPreconditionFailed, "projection key rotation requires explicit confirmation")
-		return
-	}
-	if err := s.app.RotateProjectionKey(); err != nil {
-		writeError(w, http.StatusInternalServerError, s.publicError(err))
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "credentials_rotated": true})
 }
 
 func (s *Server) serviceStatus(w http.ResponseWriter, _ *http.Request) {

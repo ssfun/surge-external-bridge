@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"net"
 	"strings"
 	"time"
@@ -20,6 +22,7 @@ type Config struct {
 	SocksBind       string     `json:"socks_bind"`
 	SocksPort       uint16     `json:"socks_port"`
 	VirtualHost     string     `json:"virtual_host"`
+	ProjectionKey   string     `json:"projection_key"`
 	ManagementToken string     `json:"management_token,omitempty"`
 	PolicyToken     string     `json:"policy_token,omitempty"`
 	PrefixProvider  bool       `json:"prefix_provider"`
@@ -31,7 +34,7 @@ type Config struct {
 }
 
 type Provider struct {
-	StableID           string              `json:"stable_id"`
+	StableID           string              `json:"-"`
 	Name               string              `json:"name"`
 	Type               string              `json:"type"`
 	URL                string              `json:"url,omitempty"`
@@ -58,15 +61,20 @@ type Event struct {
 	Message string    `json:"message"`
 }
 
-func DefaultConfig() Config {
+func DefaultConfig() (Config, error) {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return Config{}, err
+	}
 	return Config{
 		SchemaVersion: SchemaVersion,
 		Mode:          ModeLocal, HTTPBind: "127.0.0.1:18080",
 		SocksBind: "127.0.0.1", SocksPort: 1080, VirtualHost: "127.0.0.1",
+		ProjectionKey:   hex.EncodeToString(key),
 		PrefixProvider:  true,
 		ProjectionTypes: []string{"*"}, NodeTestURL: "https://www.gstatic.com/generate_204",
 		NodeTestUDP: "8.8.8.8:53", NodeTestTimeout: 15, Providers: []Provider{},
-	}
+	}, nil
 }
 
 type Settings struct {
@@ -75,6 +83,7 @@ type Settings struct {
 	SocksBind       string   `json:"socks_bind"`
 	SocksPort       uint16   `json:"socks_port"`
 	VirtualHost     string   `json:"virtual_host"`
+	ProjectionKey   string   `json:"projection_key"`
 	ManagementToken string   `json:"management_token,omitempty"`
 	PolicyToken     string   `json:"policy_token,omitempty"`
 	PrefixProvider  bool     `json:"prefix_provider"`
@@ -87,7 +96,7 @@ type Settings struct {
 func (c Config) Settings() Settings {
 	return Settings{
 		Mode: c.Mode, HTTPBind: c.HTTPBind, SocksBind: c.SocksBind, SocksPort: c.SocksPort,
-		VirtualHost:     c.VirtualHost,
+		VirtualHost: c.VirtualHost, ProjectionKey: c.ProjectionKey,
 		ManagementToken: c.ManagementToken, PolicyToken: c.PolicyToken,
 		PrefixProvider: c.PrefixProvider, ProjectionTypes: append([]string(nil), c.ProjectionTypes...),
 		NodeTestURL: c.NodeTestURL, NodeTestUDP: c.NodeTestUDP, NodeTestTimeout: c.NodeTestTimeout,
@@ -97,6 +106,7 @@ func (c Config) Settings() Settings {
 func (c *Config) SetSettings(settings Settings) {
 	c.Mode, c.HTTPBind = settings.Mode, settings.HTTPBind
 	c.SocksBind, c.SocksPort, c.VirtualHost = settings.SocksBind, settings.SocksPort, settings.VirtualHost
+	c.ProjectionKey = settings.ProjectionKey
 	c.ManagementToken, c.PolicyToken = settings.ManagementToken, settings.PolicyToken
 	c.PrefixProvider = settings.PrefixProvider
 	c.ProjectionTypes = append([]string(nil), settings.ProjectionTypes...)

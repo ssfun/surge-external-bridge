@@ -132,6 +132,7 @@ func BuildProjection(providers []ProviderView, options BuildOptions) (*Snapshot,
 
 	entries := make([]Entry, 0)
 	seenProvider := make(map[string]struct{}, len(providers))
+	seenProviderName := make(map[string]struct{}, len(providers))
 	seenUsers := make(map[string]struct{})
 	seenIDs := make(map[string]struct{})
 	for _, provider := range providers {
@@ -142,6 +143,15 @@ func BuildProjection(providers []ProviderView, options BuildOptions) (*Snapshot,
 			return nil, fmt.Errorf("duplicate provider stable ID %q", provider.StableID)
 		}
 		seenProvider[provider.StableID] = struct{}{}
+		providerName := strings.TrimSpace(provider.Name)
+		if providerName == "" {
+			return nil, errors.New("provider name is required")
+		}
+		foldedName := strings.ToLower(providerName)
+		if _, exists := seenProviderName[foldedName]; exists {
+			return nil, fmt.Errorf("duplicate provider name %q", providerName)
+		}
+		seenProviderName[foldedName] = struct{}{}
 		include, err := compileOptionalRegexp(provider.IncludeName)
 		if err != nil {
 			return nil, fmt.Errorf("provider %q include filter: %w", provider.Name, err)
@@ -158,7 +168,7 @@ func BuildProjection(providers []ProviderView, options BuildOptions) (*Snapshot,
 			if proxy == nil || !matchesProjection(proxy, include, exclude, allowedTypes) {
 				continue
 			}
-			nodeKey := provider.StableID + "\x00" + proxy.Name()
+			nodeKey := providerName + "\x00" + proxy.Name()
 			entry := Entry{
 				ProviderID:   provider.StableID,
 				ProviderName: provider.Name,

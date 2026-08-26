@@ -14,16 +14,17 @@ const { settings, service } = storeToRefs(data)
 const dirty = ref(false)
 const saving = ref(false)
 const appliedMessage = ref('')
-const form = reactive({ mode: 'local', http_bind: '', socks_bind: '', socks_port: 0, virtual_host: '', prefix_provider: false, management_token: '', policy_token: '', node_test_url: '', node_test_udp_address: '', node_test_timeout_seconds: 10 })
+const form = reactive({ mode: 'local', http_bind: '', socks_bind: '', socks_port: 0, virtual_host: '', projection_key: '', prefix_provider: false, management_token: '', policy_token: '', node_test_url: '', node_test_udp_address: '', node_test_timeout_seconds: 10 })
 
 function populate(value) {
   if (!value) return
   Object.assign(form, value, { management_token: '', policy_token: '' })
 }
 watch(settings, (value) => { if (!dirty.value) populate(value) }, { immediate: true })
-const protectedState = computed(() => settings.value?.data_directory_protected && settings.value?.configuration_protected && settings.value?.master_key_protected && settings.value?.controller_key_protected)
+const protectedState = computed(() => settings.value?.data_directory_protected && settings.value?.configuration_protected && settings.value?.controller_key_protected)
 
 function markDirty() { dirty.value = true; appliedMessage.value = '' }
+function generateProjectionKey() { form.projection_key = randomToken(); markDirty() }
 function modeChanged() {
   if (form.mode === 'gateway') {
     let generated = false
@@ -43,13 +44,14 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
 async function save() {
   const body = {
     mode: form.mode, http_bind: form.http_bind, socks_bind: form.socks_bind, socks_port: Number(form.socks_port),
-    virtual_host: form.virtual_host, prefix_provider: form.prefix_provider,
+    virtual_host: form.virtual_host, projection_key: form.projection_key, prefix_provider: form.prefix_provider,
     projection_types: ['*'], node_test_url: form.node_test_url, node_test_udp_address: form.node_test_udp_address,
     node_test_timeout_seconds: Number(form.node_test_timeout_seconds),
   }
   if (form.management_token) body.management_token = form.management_token
   if (form.policy_token) body.policy_token = form.policy_token
   if (body.policy_token && !window.confirm('Policy Token 保存后不会在普通 API 或界面中再次显示，请确认已经妥善记录。')) return
+  if (body.projection_key !== settings.value?.projection_key && !window.confirm('修改 Projection Key 会立即改变全部投影节点凭据。确认保存？')) return
   saving.value = true
   try {
     const result = await data.updateSettings(body)
@@ -60,15 +62,6 @@ async function save() {
     ui.toast(result.reconnect ? '设置已应用，请使用新 HTTP 地址重新连接' : '设置已原子应用')
   } catch (error) { ui.toast(error.message, true) }
   finally { saving.value = false }
-}
-
-async function rotateKey() {
-  if (!window.confirm('这会立即使所有旧 Surge SOCKS 凭据失效。确认全量轮换？')) return
-  try {
-    await api('/api/settings/rotate-projection-key', { method: 'POST', headers: { 'X-SurgeEB-Confirm': 'rotate-projection-key' } })
-    await data.reloadResources(['overview', 'settings'])
-    ui.toast('Projection Key 已轮换')
-  } catch (error) { ui.toast(error.message, true) }
 }
 
 async function serviceAction(install) {
@@ -92,6 +85,8 @@ async function serviceAction(install) {
           <label class="field"><span>配置台监听地址</span><input v-model="form.http_bind" spellcheck="false"><small>仅本机模式必须使用回环地址；局域网网关模式必须配置 Management Token。</small></label>
           <div class="form-grid"><label class="field"><span>SOCKS 监听 IP</span><input v-model="form.socks_bind" spellcheck="false"></label><label class="field"><span>SOCKS 端口</span><input v-model="form.socks_port" type="number" min="1" max="65535"></label></div>
           <label class="field"><span>统一发布主机</span><input v-model="form.virtual_host" spellcheck="false" placeholder="surge.eb"><small>同时用于每条 Surge SOCKS5 节点和 Policy Path；不包含协议、端口或路径。Policy Path 端口自动跟随配置台监听端口。</small></label>
+          <label class="field"><span>Projection Key</span><input v-model="form.projection_key" data-testid="projection-key" spellcheck="false" autocomplete="off" minlength="16" maxlength="256"><small>与 Provider 名称、Mihomo 节点名共同确定投影凭据；所有设备填写相同值才能生成相同节点。</small></label>
+          <button class="button ghost" type="button" @click="generateProjectionKey">生成新 Key</button>
           <label class="check-row"><input v-model="form.prefix_provider" type="checkbox"> 节点展示名添加 Provider 前缀</label>
         </div>
         <div class="card"><h3>访问令牌与诊断</h3>
@@ -109,12 +104,12 @@ async function serviceAction(install) {
 
     <div class="grid two diagnostics-grid">
       <div class="card"><h3>投影协议范围</h3><dl class="kv"><dt>协议</dt><dd><span class="pill ok">全部 Mihomo Provider 协议</span></dd><dt>配置来源</dt><dd>Mihomo Provider 当前成功节点</dd><dt>输出方式</dt><dd>统一投影为 Surge SOCKS5 节点</dd></dl></div>
-      <div class="card" :class="{ 'recovery-card': settings.recovery_required }"><h3>版本与安全诊断</h3><dl class="kv">
-        <dt>产品 / Core</dt><dd>{{ settings.version || '—' }} / Mihomo {{ settings.core_version || '—' }}</dd><dt>网关状态</dt><dd><span class="pill" :class="settings.gateway_state === 'running' ? 'ok' : 'warn'">{{ settings.gateway_state || '—' }}</span></dd><dt>Projection</dt><dd>{{ settings.projection_count || 0 }} 节点 · <code>{{ settings.projection_hash || '空' }}</code></dd><dt>私有数据目录</dt><dd><span class="pill" :class="protectedState ? 'ok' : 'bad'">{{ protectedState ? '权限受保护' : '权限需要修复' }}</span></dd><dt>配置 / 主密钥 / Controller Key</dt><dd>{{ settings.configuration_protected ? '安全' : '异常' }} / {{ settings.master_key_protected ? '安全' : '异常' }} / {{ settings.controller_key_protected ? '安全' : '异常' }}</dd>
-      </dl><div v-if="settings.recovery_required" class="provider-error"><b>需要恢复</b><span>Projection Master Key 无效。数据面保持关闭，请确认执行全量轮换。</span></div><p class="meta">安全状态仅报告权限结论，不向浏览器暴露本地路径。</p></div>
+      <div class="card"><h3>版本与安全诊断</h3><dl class="kv">
+        <dt>产品 / Core</dt><dd>{{ settings.version || '—' }} / Mihomo {{ settings.core_version || '—' }}</dd><dt>网关状态</dt><dd><span class="pill" :class="settings.gateway_state === 'running' ? 'ok' : 'warn'">{{ settings.gateway_state || '—' }}</span></dd><dt>Projection</dt><dd>{{ settings.projection_count || 0 }} 节点 · <code>{{ settings.projection_hash || '空' }}</code></dd><dt>私有数据目录</dt><dd><span class="pill" :class="protectedState ? 'ok' : 'bad'">{{ protectedState ? '权限受保护' : '权限需要修复' }}</span></dd><dt>配置 / Controller Key</dt><dd>{{ settings.configuration_protected ? '安全' : '异常' }} / {{ settings.controller_key_protected ? '安全' : '异常' }}</dd>
+      </dl><p class="meta">Projection Key 保存在 gateway.json 中，可在多设备间直接同步；安全状态仅报告权限结论，不公开本地路径。</p></div>
     </div>
     <div class="grid two diagnostics-grid">
-      <div class="card"><h3>Projection Master Key</h3><p class="meta">只有在需要让全部旧 Surge SOCKS 凭据立即失效时才轮换。该操作不可撤销。</p><button class="button danger" type="button" @click="rotateKey">全量轮换凭据</button></div>
+      <div class="card"><h3>确定性投影身份</h3><p class="meta">凭据只取决于 Projection Key、Provider 名称与 Mihomo 节点名。修改 Provider 名称会改变该 Provider 下全部节点凭据。</p></div>
       <div class="card"><h3>系统服务</h3><dl class="kv"><dt>平台 / 范围</dt><dd>{{ service?.platform || '—' }} / {{ service?.scope || '—' }}</dd><dt>已安装 / 活动</dt><dd>{{ service?.installed ? '是' : '否' }} / {{ service?.active ? '是' : '否' }}</dd><dt>服务定义</dt><dd>{{ service?.installed ? '已注册' : '未注册' }}（本地路径不公开）</dd></dl><div class="actions"><button class="button" type="button" :disabled="service?.installed" @click="serviceAction(true)">注册开机服务</button><button class="button danger" type="button" :disabled="!service?.installed" @click="serviceAction(false)">卸载服务</button></div></div>
     </div>
     <div class="banner diagnostics-grid"><b>系统接管永久关闭</b><span>TUN、HTTP/Mixed/Redir/TProxy、DNS listener、iptables、系统代理和公开 Controller 均不可通过此配置台开启。</span></div>

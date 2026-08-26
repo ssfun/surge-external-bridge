@@ -26,7 +26,7 @@ func (t *captureTunnel) NatTable() C.NatTable { return nil }
 
 func TestAuthenticatedSOCKSListenerPropagatesTCPAndBoundUDPIdentity(t *testing.T) {
 	proxy := &fakeProxy{name: "node", adapterType: C.Vless, udp: true}
-	snapshot := mustProjection(t, make([]byte, 32), []ProviderView{{StableID: "p", Proxies: []C.Proxy{proxy}}})
+	snapshot := mustProjection(t, make([]byte, 32), []ProviderView{{StableID: "p", Name: "Provider", Proxies: []C.Proxy{proxy}}})
 	entry := snapshot.Entries()[0]
 	store := NewSnapshotStore(snapshot)
 	tunnel := &captureTunnel{tcp: make(chan *C.Metadata, 1), udp: make(chan *C.Metadata, 2)}
@@ -118,7 +118,7 @@ func TestAuthenticatedSOCKSListenerPropagatesTCPAndBoundUDPIdentity(t *testing.T
 
 func TestRuntimeAuthenticationProbeValidatesCurrentSnapshot(t *testing.T) {
 	proxy := &fakeProxy{name: "node", adapterType: C.Vless, udp: true}
-	snapshot := mustProjection(t, make([]byte, 32), []ProviderView{{StableID: "p", Proxies: []C.Proxy{proxy}}})
+	snapshot := mustProjection(t, make([]byte, 32), []ProviderView{{StableID: "p", Name: "Provider", Proxies: []C.Proxy{proxy}}})
 	listener, err := NewSOCKSListener("127.0.0.1:0", &captureTunnel{tcp: make(chan *C.Metadata, 1), udp: make(chan *C.Metadata, 1)}, NewAuthenticator(NewSnapshotStore(snapshot)))
 	if err != nil {
 		t.Fatal(err)

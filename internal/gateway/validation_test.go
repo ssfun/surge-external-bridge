@@ -2,22 +2,31 @@ package gateway
 
 import "testing"
 
+func mustDefaultConfig(t *testing.T) Config {
+	t.Helper()
+	config, err := DefaultConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return config
+}
+
 func TestDefaultConfigUsesProductUDPDiagnosticTarget(t *testing.T) {
-	if got := DefaultConfig().NodeTestUDP; got != "8.8.8.8:53" {
+	if got := mustDefaultConfig(t).NodeTestUDP; got != "8.8.8.8:53" {
 		t.Fatalf("default UDP diagnostic target=%q, want 8.8.8.8:53", got)
 	}
 }
 
 func TestDefaultConfigProjectsAllMihomoProviderProtocols(t *testing.T) {
-	config := DefaultConfig()
+	config := mustDefaultConfig(t)
 	if len(config.ProjectionTypes) != 1 || config.ProjectionTypes[0] != "*" {
 		t.Fatalf("default projection types=%v, want all protocols", config.ProjectionTypes)
 	}
 }
 
 func TestValidateConfigNetworkBoundaries(t *testing.T) {
-	validLocal := DefaultConfig()
-	validGateway := DefaultConfig()
+	validLocal := mustDefaultConfig(t)
+	validGateway := mustDefaultConfig(t)
 	validGateway.Mode = ModeGateway
 	validGateway.HTTPBind = "0.0.0.0:18080"
 	validGateway.SocksBind = "0.0.0.0"
@@ -49,6 +58,8 @@ func TestValidateConfigNetworkBoundaries(t *testing.T) {
 		{name: "virtual host with wildcard", config: func() Config { c := validGateway; c.VirtualHost = "*.eb"; return c }(), wantErr: true},
 		{name: "bracketed IPv6 virtual host", config: func() Config { c := validLocal; c.VirtualHost = "[::1]"; return c }(), wantErr: true},
 		{name: "legacy linux enum", config: func() Config { c := validGateway; c.Mode = "linux"; return c }(), wantErr: true},
+		{name: "missing projection key", config: func() Config { c := validLocal; c.ProjectionKey = ""; return c }(), wantErr: true},
+		{name: "short projection key", config: func() Config { c := validLocal; c.ProjectionKey = "too-short"; return c }(), wantErr: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -61,7 +72,7 @@ func TestValidateConfigNetworkBoundaries(t *testing.T) {
 }
 
 func TestVirtualHostDerivesPolicyBaseURL(t *testing.T) {
-	config := DefaultConfig()
+	config := mustDefaultConfig(t)
 	config.HTTPBind = "0.0.0.0:18080"
 	config.VirtualHost = "surge.eb"
 	if got := config.PolicyBaseURL(); got != "http://surge.eb:18080" {
@@ -70,7 +81,7 @@ func TestVirtualHostDerivesPolicyBaseURL(t *testing.T) {
 }
 
 func TestAllowsHTTPHost(t *testing.T) {
-	local := DefaultConfig()
+	local := mustDefaultConfig(t)
 	local.VirtualHost = "surge.eb"
 	gateway := local
 	gateway.Mode = ModeGateway

@@ -25,7 +25,7 @@ Surge 节点凭据 ──> 单一认证 SOCKS5 TCP/UDP ──> surgeeb-router �
 
 ## Surge 工作方式
 
-每个节点的稳定凭据由 Provider 稳定 ID、Mihomo 节点名和持久化 Projection Master Key 派生。节点参数变化但名称不变时凭据保持稳定；Provider 或节点删除后，对应身份立即失效。
+每个节点的稳定凭据由开放配置的 `projection_key`、Provider 名称和 Mihomo 节点名派生。节点参数变化但两个名称不变时凭据保持稳定；修改任一名称或 Projection Key 会改变对应身份。内部 Provider ID 仅由名称确定性计算，不使用随机 ID，也不作为独立配置来源。
 
 所有节点共享一个认证 SOCKS5 端口。TCP 和 UDP 都通过认证用户路由到 `surgeeb-router`；UDP listener 会把已认证的 `UDP ASSOCIATE` 控制连接与 UDP 源端点绑定，无绑定、过期或歧义的数据包直接丢弃。
 
@@ -117,7 +117,7 @@ listeners: []
 
 ## 多设备统一 Policy Path
 
-所有 SurgeEB 实例配置相同的 `virtual_host`，例如 `surge.eb`，即可发布相同格式的节点和 Policy Path：
+所有 SurgeEB 实例配置相同的 `virtual_host` 与 `projection_key`，并保持 Provider 名称和 Mihomo 节点名一致，即可发布相同的节点凭据和 Policy Path：
 
 ```ini
 [Proxy Group]
@@ -141,13 +141,12 @@ Surge External Bridge 采用全新数据目录和配置，不读取或迁移旧�
 
 ```text
 ~/.surge-external-bridge/
-├── gateway.json          # 0600，schema 1
-├── projection.key        # 0600，确定性身份主密钥
+├── gateway.json          # 0600，schema 1；包含开放配置的 projection_key
 ├── controller.key        # 0600，内部 Controller Secret 来源
 └── mihomo/               # 0700，Provider 最近成功缓存与 Unix Socket
 ```
 
-Projection、健康状态、实时连接、流量、内存、日志和 ETag 都可从 Mihomo Provider 与主密钥重建，不是备份权威数据。
+`gateway.json` 是部署、Provider 和投影身份的唯一配置权威。首次运行会生成可直接编辑和跨设备复制的 `projection_key`；它不再使用独立的 `projection.key` 文件。Projection、健康状态、实时连接、流量、内存、日志和 ETag 都可从 Mihomo Provider 与配置重建，不是备份权威数据。
 
 ## 系统服务
 

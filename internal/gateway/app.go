@@ -1,8 +1,9 @@
 package gateway
 
 import (
-	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -24,14 +25,12 @@ type App struct {
 	mu               sync.RWMutex
 	applyMu          sync.Mutex
 	store            *Store
-	masterKeyPath    string
 	masterKey        []byte
 	config           Config
 	manager          *M.Manager
 	events           []Event
 	controllerSocket string
 	controllerSecret string
-	recoveryError    string
 }
 
 func New(dataDir string) (*App, error) {
@@ -46,27 +45,14 @@ func New(dataDir string) (*App, error) {
 	if err := ValidateConfig(config); err != nil {
 		return nil, fmt.Errorf("invalid gateway configuration: %w", err)
 	}
-	masterKeyPath := filepath.Join(dataDir, "projection.key")
-	masterKey, masterKeyErr := M.LoadOrCreateMasterKey(masterKeyPath)
-	if masterKeyErr != nil {
-		// Keep only an ephemeral key in memory so the authenticated management
-		// plane can offer an explicit full rotation. The data plane remains
-		// closed until that recovery action durably replaces the corrupt key.
-		masterKey, err = M.GenerateMasterKey()
-		if err != nil {
-			return nil, errors.Join(masterKeyErr, err)
-		}
-	}
-	controllerKey, err := M.LoadOrCreateMasterKey(filepath.Join(dataDir, "controller.key"))
+	masterKey := projectionMasterKey(config.ProjectionKey)
+	controllerKey, err := M.LoadOrCreatePrivateKey(filepath.Join(dataDir, "controller.key"))
 	if err != nil {
 		return nil, err
 	}
 	controllerSocket := filepath.Join(dataDir, "mihomo", "controller.sock")
 	controllerSecret := base64.RawURLEncoding.EncodeToString(controllerKey)
-	application := &App{store: store, config: config, masterKeyPath: masterKeyPath, masterKey: append([]byte(nil), masterKey...), controllerSocket: controllerSocket, controllerSecret: controllerSecret}
-	if masterKeyErr != nil {
-		application.recoveryError = "Projection Master Key 无效；必须确认全量轮换后才能启用身份数据面"
-	}
+	application := &App{store: store, config: config, masterKey: append([]byte(nil), masterKey...), controllerSocket: controllerSocket, controllerSecret: controllerSecret}
 	manager, err := M.NewManager(M.ManagerOptions{
 		HomeDir: filepath.Join(dataDir, "mihomo"), ControllerSocket: controllerSocket,
 		ControllerSecret: controllerSecret,
@@ -78,10 +64,6 @@ func New(dataDir string) (*App, error) {
 		return nil, err
 	}
 	application.manager = manager
-	if application.recoveryError != "" {
-		application.addEvent("error", application.recoveryError)
-		return application, nil
-	}
 	if err := manager.Start(); err != nil {
 		application.addEvent("error", "Mihomo 启动失败: "+err.Error())
 		// Keep the authenticated management plane available so deployment or
@@ -109,12 +91,6 @@ func (a *App) Config() Config {
 func (a *App) Status() M.ManagerStatus {
 	status := a.manager.Status()
 	a.mu.RLock()
-	if a.recoveryError != "" {
-		status.State = "recovery"
-		status.LastError = a.recoveryError
-		status.ProjectionHash = ""
-		status.ProjectionCount = 0
-	}
 	status.LastError = a.redactEventLocked(status.LastError)
 	a.mu.RUnlock()
 	return status
@@ -123,24 +99,17 @@ func (a *App) Status() M.ManagerStatus {
 type SecurityStatus struct {
 	DataDirectoryProtected bool `json:"data_directory_protected"`
 	ConfigurationProtected bool `json:"configuration_protected"`
-	MasterKeyProtected     bool `json:"master_key_protected"`
 	ControllerKeyProtected bool `json:"controller_key_protected"`
-	RecoveryRequired       bool `json:"recovery_required"`
 }
 
 // SecurityStatus intentionally reports only protection booleans. Local paths
 // remain private even when the management UI is accessed from a trusted LAN.
 func (a *App) SecurityStatus() SecurityStatus {
-	a.mu.RLock()
-	recoveryRequired := a.recoveryError != ""
-	a.mu.RUnlock()
 	dir := a.store.Dir()
 	return SecurityStatus{
 		DataDirectoryProtected: privatePathMode(dir, true, 0o700) && M.PrivateTreeProtected(filepath.Join(dir, "mihomo")),
 		ConfigurationProtected: privatePathMode(filepath.Join(dir, "gateway.json"), false, 0o600),
-		MasterKeyProtected:     !recoveryRequired && privatePathMode(a.masterKeyPath, false, 0o600),
 		ControllerKeyProtected: privatePathMode(filepath.Join(dir, "controller.key"), false, 0o600),
-		RecoveryRequired:       recoveryRequired,
 	}
 }
 
@@ -183,13 +152,7 @@ func (a *App) SurgeLine(id string) (string, error) {
 func (a *App) AddProvider(provider Provider) (Provider, error) {
 	a.applyMu.Lock()
 	defer a.applyMu.Unlock()
-	if provider.StableID == "" {
-		id, err := randomID("p_", 12)
-		if err != nil {
-			return Provider{}, err
-		}
-		provider.StableID = id
-	}
+	assignProviderID(&provider)
 	if provider.Type == "" {
 		provider.Type = "http"
 	}
@@ -246,7 +209,7 @@ func (a *App) UpdateProvider(id string, provider Provider) (Provider, error) {
 			continue
 		}
 		existing := candidate.Providers[index]
-		provider.StableID = id
+		assignProviderID(&provider)
 		sameType := provider.Type == existing.Type
 		if provider.Type == "http" && !sameType {
 			if provider.RefreshSeconds == 0 {
@@ -379,25 +342,22 @@ func (a *App) UpdateSettings(settings Settings) error {
 	a.applyMu.Lock()
 	defer a.applyMu.Unlock()
 	a.mu.RLock()
-	if a.recoveryError != "" {
-		a.mu.RUnlock()
-		return errors.New("Projection Master Key 需要先完成全量轮换恢复")
-	}
 	previous := cloneConfig(a.config)
-	key := append([]byte(nil), a.masterKey...)
+	previousKey := append([]byte(nil), a.masterKey...)
 	a.mu.RUnlock()
 	candidate := cloneConfig(previous)
 	candidate.SetSettings(settings)
 	if err := ValidateConfig(candidate); err != nil {
 		return err
 	}
+	nextKey := projectionMasterKey(candidate.ProjectionKey)
 	wasRunning := a.manager.Status().State == "running"
 	if wasRunning {
-		if err := a.manager.ApplyProjectionSettings(candidate.SocksBind, candidate.VirtualHost, candidate.SocksPort, candidate.PrefixProvider, key); err != nil {
+		if err := a.manager.ApplyProjectionSettings(candidate.SocksBind, candidate.VirtualHost, candidate.SocksPort, candidate.PrefixProvider, nextKey); err != nil {
 			return err
 		}
 	} else {
-		if err := a.manager.ConfigureProjectionWhenStopped(candidate.SocksBind, candidate.VirtualHost, candidate.SocksPort, candidate.PrefixProvider, key); err != nil {
+		if err := a.manager.ConfigureProjectionWhenStopped(candidate.SocksBind, candidate.VirtualHost, candidate.SocksPort, candidate.PrefixProvider, nextKey); err != nil {
 			return err
 		}
 		if err := a.manager.StartWithProviders(definitions(candidate)); err != nil {
@@ -406,70 +366,23 @@ func (a *App) UpdateSettings(settings Settings) error {
 	}
 	if err := a.store.Save(candidate); err != nil {
 		if wasRunning {
-			_ = a.manager.ApplyProjectionSettings(previous.SocksBind, previous.VirtualHost, previous.SocksPort, previous.PrefixProvider, key)
+			_ = a.manager.ApplyProjectionSettings(previous.SocksBind, previous.VirtualHost, previous.SocksPort, previous.PrefixProvider, previousKey)
 		} else {
 			_ = a.manager.Stop()
-			_ = a.manager.ConfigureProjectionWhenStopped(previous.SocksBind, previous.VirtualHost, previous.SocksPort, previous.PrefixProvider, key)
+			_ = a.manager.ConfigureProjectionWhenStopped(previous.SocksBind, previous.VirtualHost, previous.SocksPort, previous.PrefixProvider, previousKey)
 			_ = a.manager.StartWithProviders(definitions(previous))
 		}
 		return err
 	}
 	a.mu.Lock()
 	a.config = candidate
+	a.masterKey = append([]byte(nil), nextKey...)
 	a.mu.Unlock()
 	a.addEvent("info", "部署与投影设置已原子应用；Mihomo 进程未重启")
 	return nil
 }
 
-func (a *App) RotateProjectionKey() error {
-	a.applyMu.Lock()
-	defer a.applyMu.Unlock()
-	newKey, err := M.GenerateMasterKey()
-	if err != nil {
-		return err
-	}
-	a.mu.RLock()
-	config := cloneConfig(a.config)
-	oldKey := append([]byte(nil), a.masterKey...)
-	recovering := a.recoveryError != ""
-	a.mu.RUnlock()
-	running := a.manager.Status().State == "running"
-	if running {
-		if err := a.manager.ApplyProjectionSettings(config.SocksBind, config.VirtualHost, config.SocksPort, config.PrefixProvider, newKey); err != nil {
-			return err
-		}
-	} else if err := a.manager.ConfigureProjectionWhenStopped(config.SocksBind, config.VirtualHost, config.SocksPort, config.PrefixProvider, newKey); err != nil {
-		return err
-	}
-	if err := M.ReplaceMasterKey(a.masterKeyPath, newKey); err != nil {
-		if running {
-			_ = a.manager.ApplyProjectionSettings(config.SocksBind, config.VirtualHost, config.SocksPort, config.PrefixProvider, oldKey)
-		} else {
-			_ = a.manager.ConfigureProjectionWhenStopped(config.SocksBind, config.VirtualHost, config.SocksPort, config.PrefixProvider, oldKey)
-		}
-		return err
-	}
-	a.mu.Lock()
-	a.masterKey = append([]byte(nil), newKey...)
-	a.recoveryError = ""
-	a.mu.Unlock()
-	if recovering {
-		if err := a.manager.StartWithProviders(definitions(config)); err != nil {
-			a.addEvent("error", "Projection Key 已恢复，但 Mihomo 数据面启动失败: "+err.Error())
-			return err
-		}
-	}
-	a.addEvent("warn", "Projection Master Key 已全量轮换；所有旧 Surge 节点凭据立即失效")
-	return nil
-}
-
 func (a *App) applyConfig(candidate Config) error {
-	a.mu.RLock()
-	recoveryRequired := a.recoveryError != ""
-	a.mu.RUnlock()
-	if recoveryRequired {
-		return errors.New("Projection Master Key 需要先完成全量轮换恢复")
-	}
 	if err := ValidateConfig(candidate); err != nil {
 		return err
 	}
@@ -539,7 +452,7 @@ var eventSecretPattern = regexp.MustCompile(`(?i)\b(token|password|passwd|secret
 var eventURLPattern = regexp.MustCompile(`https?://[^\s"'<>]+`)
 
 func (a *App) redactEventLocked(message string) string {
-	secrets := []string{a.config.ManagementToken, a.config.PolicyToken, a.store.Dir()}
+	secrets := []string{a.config.ManagementToken, a.config.PolicyToken, a.config.ProjectionKey, a.store.Dir()}
 	for _, provider := range a.config.Providers {
 		secrets = append(secrets, provider.URL, provider.FilePath)
 		for _, values := range provider.Headers {
@@ -590,6 +503,9 @@ func ValidateConfig(config Config) error {
 	if !isValidVirtualHost(config.VirtualHost) || isUnspecifiedHost(config.VirtualHost) {
 		return errors.New("virtual host must be a hostname or non-unspecified IP address without a port")
 	}
+	if len(config.ProjectionKey) < 16 || len(config.ProjectionKey) > 256 || config.ProjectionKey != strings.TrimSpace(config.ProjectionKey) || strings.ContainsAny(config.ProjectionKey, "\x00\r\n") {
+		return errors.New("projection key must contain 16-256 non-control characters without surrounding whitespace")
+	}
 	virtualIP := net.ParseIP(config.VirtualHost)
 	if config.ManagementToken != "" && len(config.ManagementToken) < 16 || config.PolicyToken != "" && len(config.PolicyToken) < 16 || config.ManagementToken != "" && config.ManagementToken == config.PolicyToken {
 		return errors.New("configured Management and Policy tokens must be distinct and at least 16 characters")
@@ -620,11 +536,21 @@ func ValidateConfig(config Config) error {
 		return errors.New("node test timeout must be between 1 and 120 seconds")
 	}
 	seen := map[string]bool{}
+	names := make([]string, 0, len(config.Providers))
 	for _, provider := range config.Providers {
+		if provider.StableID != stableProviderID(provider.Name) {
+			return fmt.Errorf("Provider %q: stable ID must be derived from its name", provider.Name)
+		}
 		if seen[provider.StableID] {
 			return errors.New("duplicate Provider stable ID")
 		}
 		seen[provider.StableID] = true
+		for _, name := range names {
+			if strings.EqualFold(name, provider.Name) {
+				return errors.New("duplicate Provider name")
+			}
+		}
+		names = append(names, provider.Name)
 		if err := validateProvider(provider); err != nil {
 			return fmt.Errorf("Provider %q: %w", provider.Name, err)
 		}
@@ -726,6 +652,27 @@ func cloneConfig(config Config) Config {
 	return clone
 }
 
+func assignProviderID(provider *Provider) {
+	provider.Name = strings.TrimSpace(provider.Name)
+	provider.StableID = stableProviderID(provider.Name)
+}
+
+func assignProviderIDs(config *Config) {
+	for index := range config.Providers {
+		assignProviderID(&config.Providers[index])
+	}
+}
+
+func stableProviderID(name string) string {
+	sum := sha256.Sum256([]byte("SurgeEB Provider v1\x00" + strings.TrimSpace(name)))
+	return "p_" + hex.EncodeToString(sum[:12])
+}
+
+func projectionMasterKey(key string) []byte {
+	sum := sha256.Sum256([]byte("SurgeEB Projection Key v1\x00" + key))
+	return append([]byte(nil), sum[:]...)
+}
+
 func isLoopbackHost(host string) bool {
 	host = strings.Trim(strings.TrimSuffix(host, "."), "[]")
 	if strings.EqualFold(host, "localhost") {
@@ -821,12 +768,4 @@ func isPrivateOrTrustedHost(host string) bool {
 	}
 	_, cgnat, _ := net.ParseCIDR("100.64.0.0/10")
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || cgnat.Contains(ip)
-}
-
-func randomID(prefix string, size int) (string, error) {
-	buffer := make([]byte, size)
-	if _, err := rand.Read(buffer); err != nil {
-		return "", err
-	}
-	return prefix + base64.RawURLEncoding.EncodeToString(buffer), nil
 }

@@ -11,15 +11,24 @@ import (
 func TestStoreCreatesFreshPrivateConfiguration(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "gateway")
 	store := NewStore(dir)
-	if err := store.Save(DefaultConfig()); err == nil {
+	unsaved, err := DefaultConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(unsaved); err == nil {
 		t.Fatal("Save unexpectedly succeeded before Store.Load created the data directory")
 	}
 	config, err := store.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(config, DefaultConfig()) {
+	want := mustDefaultConfig(t)
+	want.ProjectionKey = config.ProjectionKey
+	if !reflect.DeepEqual(config, want) {
 		t.Fatalf("fresh config = %#v, want defaults", config)
+	}
+	if len(config.ProjectionKey) != 64 {
+		t.Fatalf("generated projection key length=%d, want 64", len(config.ProjectionKey))
 	}
 	info, err := os.Stat(filepath.Join(dir, "gateway.json"))
 	if err != nil {
@@ -32,7 +41,7 @@ func TestStoreCreatesFreshPrivateConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(encoded), `"virtual_host"`) || strings.Contains(string(encoded), `"socks_advertise"`) || strings.Contains(string(encoded), `"policy_base_url"`) {
+	if !strings.Contains(string(encoded), `"virtual_host"`) || !strings.Contains(string(encoded), `"projection_key"`) || strings.Contains(string(encoded), `"stable_id"`) || strings.Contains(string(encoded), `"socks_advertise"`) || strings.Contains(string(encoded), `"policy_base_url"`) {
 		t.Fatalf("gateway.json does not use virtual_host as its single publication source: %s", encoded)
 	}
 	directory, err := os.Stat(dir)
@@ -83,7 +92,9 @@ func TestStoreDoesNotReadLegacyConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(config, DefaultConfig()) {
+	want := mustDefaultConfig(t)
+	want.ProjectionKey = config.ProjectionKey
+	if !reflect.DeepEqual(config, want) {
 		t.Fatalf("legacy file affected fresh configuration: %#v", config)
 	}
 }

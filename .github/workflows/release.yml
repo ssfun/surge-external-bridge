@@ -132,7 +132,7 @@ jobs:
             gh release upload "$tag" "${files[@]}" --clobber
           else
             gh release create "$tag" "${files[@]}" \
-              --title "Surge External Bridge ${{ steps.versions.outputs.version }}" \
+              --title "SurgeEB $tag" \
               --generate-notes \
               --notes "Embedded Mihomo Core: ${{ steps.versions.outputs.core_version }}"
           fi
