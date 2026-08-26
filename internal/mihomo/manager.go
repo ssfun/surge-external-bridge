@@ -224,7 +224,7 @@ func (m *Manager) Start() error {
 	clear(m.providerErrors)
 	m.mu.Unlock()
 	go m.watchProviders(ctx, done)
-	m.emit("info", fmt.Sprintf("Embedded Mihomo %s started with %d projected nodes", CoreVersion, len(m.store.Load().Entries())))
+	m.emit("info", fmt.Sprintf("网关已启动，加载 %d 个节点", len(m.store.Load().Entries())))
 	return nil
 }
 
@@ -500,7 +500,7 @@ func (m *Manager) Stop() error {
 	clear(m.providerErrors)
 	m.mu.Unlock()
 	m.releaseOwnership()
-	m.emit("info", "Embedded Mihomo stopped")
+	m.emit("info", "网关已停止")
 	return err
 }
 

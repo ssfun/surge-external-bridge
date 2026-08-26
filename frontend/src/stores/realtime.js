@@ -87,6 +87,10 @@ export const useRealtimeStore = defineStore('realtime', {
         this.sync(activeRoute)
       }
     },
+    clearLogs() {
+      this.logs.splice(0)
+      pendingPayloads.delete('logs')
+    },
     sync(routeName) {
       enabled = true
       activeRoute = routeName

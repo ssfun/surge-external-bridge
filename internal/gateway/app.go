@@ -317,17 +317,17 @@ func (a *App) RefreshProvider(id string) error {
 		a.addEvent("warn", fmt.Sprintf("Provider %s 刷新失败: %v", provider.Name, err))
 		return err
 	}
-	a.addEvent("info", fmt.Sprintf("Provider %s 已通过 Mihomo 原生 Update 刷新", provider.Name))
+	a.addEvent("info", fmt.Sprintf("Provider %s 已刷新", provider.Name))
 	return nil
 }
 
 func (a *App) HealthCheckProvider(id string) error {
 	provider, _ := a.Provider(id)
 	if err := a.manager.HealthCheckProvider(id); err != nil {
-		a.addEvent("warn", fmt.Sprintf("Provider %s 健康检查启动失败: %v", provider.Name, err))
+		a.addEvent("warn", fmt.Sprintf("Provider %s 节点检查启动失败: %v", provider.Name, err))
 		return err
 	}
-	a.addEvent("info", fmt.Sprintf("Provider %s 已启动 Mihomo 健康检查", provider.Name))
+	a.addEvent("info", fmt.Sprintf("Provider %s 已开始检查节点可用性", provider.Name))
 	return nil
 }
 
@@ -378,7 +378,7 @@ func (a *App) UpdateSettings(settings Settings) error {
 	a.config = candidate
 	a.masterKey = append([]byte(nil), nextKey...)
 	a.mu.Unlock()
-	a.addEvent("info", "部署与投影设置已原子应用；Mihomo 进程未重启")
+	a.addEvent("info", "使用范围与节点凭据设置已更新")
 	return nil
 }
 
@@ -412,7 +412,7 @@ func (a *App) applyConfig(candidate Config) error {
 		a.mu.Unlock()
 		return err
 	}
-	a.addEvent("info", "Provider 配置已通过进程内 ApplyConfig 生效")
+	a.addEvent("info", "Provider 配置已更新")
 	return nil
 }
 

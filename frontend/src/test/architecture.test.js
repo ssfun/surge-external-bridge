@@ -303,6 +303,42 @@ describe('component update boundaries', () => {
     wrapper.unmount()
   })
 
+  it('gives product events priority and keeps log filtering understandable', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const data = useDataStore()
+    const realtime = useRealtimeStore()
+    data.overview = sampleOverview()
+    data.providers = [{ stable_id: 'provider-1', name: '主力订阅', enabled: true }]
+    data.nodes = [{ id: 'node-1', name: '香港 HKG 01', proxy_name: 'HKG 01' }]
+    data.events = [{ time: '2026-08-26T10:00:00Z', level: 'info', message: '网关已启动，加载 1 个节点' }]
+    realtime.applyPayload('logs', { time: '10:00:00', level: 'info', message: 'provider ready' })
+    realtime.applyPayload('logs', { time: '10:00:01', level: 'warn', message: '主力订阅 HKG 01 latency high' })
+    realtime.applyPayload('logs', { time: '10:00:02', level: 'error', message: 'connection failed' })
+    const wrapper = mount(LogsView, { global: { plugins: [pinia] } })
+
+    expect(wrapper.get('h1').text()).toBe('日志')
+    expect(wrapper.get('[data-testid="log-summary"]').text()).toContain('3 条运行日志')
+    expect(wrapper.get('[data-testid="log-summary"]').text()).toContain('1 条错误')
+    expect(wrapper.get('[data-testid="log-summary"]').text()).toContain('1 条警告')
+    expect(wrapper.text()).toContain('最近事件')
+    expect(wrapper.text()).toContain('网关已启动，加载 1 个节点')
+    expect(wrapper.text()).not.toContain('结构化日志与产品事件')
+
+    await wrapper.get('select[aria-label="按日志级别过滤"]').setValue('warning')
+    expect(wrapper.findAll('[data-testid="log-row"]')).toHaveLength(1)
+    expect(wrapper.get('[data-testid="log-row"]').text()).toContain('警告')
+    await wrapper.get('select[aria-label="按 Provider 过滤"]').setValue('provider-1')
+    expect(wrapper.get('[data-testid="log-row"]').text()).toContain('主力订阅')
+    await wrapper.get('.log-filter-summary button').trigger('click')
+    expect(wrapper.findAll('[data-testid="log-row"]')).toHaveLength(3)
+
+    await wrapper.findAll('button').find((button) => button.text() === '清空当前日志').trigger('click')
+    expect(realtime.logs).toHaveLength(0)
+    expect(wrapper.text()).toContain('等待运行日志')
+    wrapper.unmount()
+  })
+
   it('keeps an existing log row and text selection when a new log arrives', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -312,8 +348,8 @@ describe('component update boundaries', () => {
     data.events = []
     realtime.applyPayload('logs', { time: '10:00:00', level: 'info', message: 'first stable log' })
     const wrapper = mount(LogsView, { attachTo: document.body, global: { plugins: [pinia] } })
-    const oldRow = wrapper.get('.event').element
-    const message = oldRow.querySelector('span:last-child')
+    const oldRow = wrapper.get('[data-testid="log-row"]').element
+    const message = oldRow.querySelector('.log-row-content p')
     const range = document.createRange()
     range.selectNodeContents(message)
     const selection = window.getSelection()
@@ -324,9 +360,34 @@ describe('component update boundaries', () => {
     realtime.applyPayload('logs', { time: '10:00:01', level: 'info', message: 'second log' })
     await nextTick()
 
-    const retained = wrapper.findAll('.event').find((row) => row.text().includes('first stable log'))
+    const retained = wrapper.findAll('[data-testid="log-row"]').find((row) => row.text().includes('first stable log'))
     expect(retained.element).toBe(oldRow)
     expect(window.getSelection().toString()).toBe(selectedText)
+    wrapper.unmount()
+  })
+
+  it('preserves the viewed log position and offers a return to the latest entry', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const data = useDataStore()
+    const realtime = useRealtimeStore()
+    data.overview = sampleOverview()
+    data.events = []
+    realtime.applyPayload('logs', { time: '10:00:00', level: 'info', message: 'first visible log' })
+    const wrapper = mount(LogsView, { global: { plugins: [pinia] } })
+    const viewport = wrapper.get('[data-testid="log-stream"]').element
+    Object.defineProperty(viewport, 'scrollHeight', { configurable: true, get: () => wrapper.findAll('[data-testid="log-row"]').length * 40 })
+    viewport.scrollTop = 20
+
+    realtime.applyPayload('logs', { time: '10:00:01', level: 'info', message: 'new unseen log' })
+    await nextTick()
+    await vi.waitFor(() => expect(wrapper.find('.log-new-indicator').exists()).toBe(true))
+
+    expect(viewport.scrollTop).toBe(60)
+    expect(wrapper.get('.log-new-indicator').text()).toContain('1 条新日志')
+    await wrapper.get('.log-new-indicator').trigger('click')
+    expect(viewport.scrollTop).toBe(0)
+    expect(wrapper.find('.log-new-indicator').exists()).toBe(false)
     wrapper.unmount()
   })
 })
