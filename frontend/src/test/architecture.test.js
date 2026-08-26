@@ -160,7 +160,10 @@ describe('component update boundaries', () => {
       },
       {
         stable_id: 'inline-on', name: '本地节点', type: 'inline', enabled: true, health_check: false,
-        runtime: { proxies: [{ name: '香港 01', type: 'Vless', alive: true, history: [{ delay: 42 }] }] },
+        runtime: { proxies: [
+          { name: '香港 01', type: 'Vless', alive: true, history: [{ delay: 42 }] },
+          { name: '新加坡 02', type: 'Trojan', alive: false, history: [] },
+        ] },
       },
     ]
     data.nodes = [{ id: 'node-1', provider_id: 'inline-on' }]
@@ -184,8 +187,14 @@ describe('component update boundaries', () => {
     expect(wrapper.get('.provider-menu-panel').text()).not.toContain('复制 URL / Header')
 
     await inline.get('.provider-disclosure').trigger('click')
-    expect(inline.get('.provider-node-row').text()).toContain('香港 01')
-    expect(inline.get('.provider-node-row').text()).toContain('42 ms')
+    const nodeCards = inline.findAll('[data-testid="provider-node-card"]')
+    expect(nodeCards).toHaveLength(2)
+    expect(nodeCards[0].text()).toContain('香港 01')
+    expect(nodeCards[0].text()).toContain('Vless')
+    expect(nodeCards[0].text()).toContain('42 ms')
+    expect(nodeCards[1].text()).toContain('新加坡 02')
+    expect(nodeCards[1].text()).toContain('未知 / 失败')
+    expect(nodeCards[1].text()).toContain('暂无数据')
     wrapper.unmount()
   })
 

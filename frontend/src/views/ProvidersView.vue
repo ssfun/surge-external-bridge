@@ -151,10 +151,16 @@ function runAction(provider, name) {
         <div v-if="loadingRuntime.has(provider.stable_id)" class="provider-detail-state">正在读取 Mihomo 节点…</div>
         <div v-else-if="provider.runtimeError" class="provider-detail-state bad">{{ provider.runtimeError }}</div>
         <div v-else-if="proxyList(provider).length" class="provider-node-list">
-          <div v-for="(proxy, index) in proxyList(provider)" :key="`${proxy.name}-${index}`" class="provider-node-row">
-            <div><b>{{ proxy.name || '未命名' }}</b><span>{{ proxy.type || '—' }}</span></div>
-            <div><span class="pill" :class="proxy.alive ? 'ok' : 'warn'">{{ proxy.alive ? '存活' : '未知 / 失败' }}</span><span>{{ lastDelay(proxy) ? `${lastDelay(proxy)} ms` : '暂无延迟' }}</span></div>
-          </div>
+          <article v-for="(proxy, index) in proxyList(provider)" :key="`${proxy.name}-${index}`" class="provider-node-card" data-testid="provider-node-card">
+            <div class="provider-node-card-head">
+              <div class="provider-node-name"><b :title="proxy.name || '未命名'">{{ proxy.name || '未命名' }}</b><span>节点</span></div>
+              <span class="pill" :class="proxy.alive ? 'ok' : 'warn'">{{ proxy.alive ? '存活' : '未知 / 失败' }}</span>
+            </div>
+            <dl class="provider-node-metrics">
+              <div><dt>类型</dt><dd>{{ proxy.type || '—' }}</dd></div>
+              <div><dt>延迟</dt><dd>{{ lastDelay(proxy) ? `${lastDelay(proxy)} ms` : '暂无数据' }}</dd></div>
+            </dl>
+          </article>
         </div>
         <div v-else class="provider-detail-state">当前没有可显示的 Mihomo 节点。</div>
       </div>
