@@ -82,7 +82,7 @@ describe('component update boundaries', () => {
     const data = useDataStore()
     const realtime = useRealtimeStore()
     data.settings = { mode: 'local', http_bind: '127.0.0.1:9090', socks_bind: '127.0.0.1', socks_port: 1080, virtual_host: 'surge.eb', projection_key: 'shared-projection-key-for-devices', projection_hash: 'abcdef', projection_count: 3, prefix_provider: false, node_test_url: 'https://example.com', node_test_udp_address: '1.1.1.1:53', node_test_timeout_seconds: 10 }
-    data.service = {}
+    data.service = { platform: 'darwin', installed: true, active: false }
     const router = testRouter(SettingsView, 'settings')
     await router.push('/')
     const wrapper = mount({ template: '<RouterView />' }, { global: { plugins: [router] } })
@@ -91,9 +91,11 @@ describe('component update boundaries', () => {
     expect(wrapper.get('input[placeholder="surge.eb"]').element.value).toBe('surge.eb')
     expect(wrapper.get('[data-testid="projection-key"]').element.value).toBe('shared-projection-key-for-devices')
     expect(wrapper.get('[data-testid="settings-deployment"]').text()).toContain('使用范围与地址')
-    expect(wrapper.get('[data-testid="settings-security"]').text()).toContain('访问密码')
+    expect(wrapper.get('[data-testid="settings-security"]').text()).toContain('访问 Token')
     expect(wrapper.get('[data-testid="settings-identity"]').text()).toContain('节点凭据')
     expect(wrapper.get('[data-testid="settings-diagnostics"]').element.open).toBe(false)
+    expect(wrapper.get('[data-testid="settings-service"] > .settings-card-head .pill').text()).toBe('已开启')
+    expect(wrapper.get('[data-testid="settings-service"]').text()).not.toContain('未运行')
     expect(wrapper.find('[data-testid="settings-save"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('可用节点3 个')
     expect(wrapper.text()).not.toContain('abcdef')
@@ -116,7 +118,7 @@ describe('component update boundaries', () => {
     data.settings = {
       mode: 'local', http_bind: '127.0.0.1:9090', socks_bind: '127.0.0.1', socks_port: 1080,
       virtual_host: 'surge.eb', projection_key: 'shared-projection-key-for-devices', prefix_provider: false,
-      management_token_configured: false, policy_token_configured: false,
+      management_token_configured: false, policy_token_configured: false, policy_token: '',
       node_test_url: 'https://example.com', node_test_udp_address: '1.1.1.1:53', node_test_timeout_seconds: 10,
     }
     data.service = {}
@@ -134,12 +136,12 @@ describe('component update boundaries', () => {
     const policy = wrapper.get('[data-testid="policy-token"]')
     const tokens = [management.element.value, policy.element.value]
     expect(tokens[0]).toMatch(/^[A-Za-z0-9_-]{24}$/)
-    expect(tokens[1]).toMatch(/^[A-Za-z0-9_-]{24}$/)
+    expect(tokens[1]).toBe('unsafe')
     expect(tokens[0]).not.toBe(tokens[1])
     expect(management.attributes('type')).toBe('text')
     expect(policy.attributes('type')).toBe('text')
-    expect(wrapper.get('[data-testid="generated-token-note"]').text()).toContain('新的 24 位 Token 已生成并显示')
-    expect(wrapper.get('[data-testid="settings-security"]').findAll('button').map((button) => button.text())).toEqual(['隐藏', '复制', '重新生成', '隐藏', '复制', '重新生成'])
+    expect(wrapper.get('[data-testid="generated-token-note"]').text()).toContain('Policy Token 已直接设为 unsafe')
+    expect(wrapper.get('[data-testid="settings-security"]').findAll('button').map((button) => button.text())).toEqual(['隐藏', '复制', '重新生成', '复制'])
 
     await wrapper.get('[data-testid="settings-identity"]').findAll('button').find((button) => button.text() === '重新生成').trigger('click')
     expect(wrapper.get('[data-testid="projection-key"]').element.value).toMatch(/^[A-Za-z0-9_-]{24}$/)

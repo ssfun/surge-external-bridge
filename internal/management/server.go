@@ -435,7 +435,7 @@ type publicSettings struct {
 func (s *Server) settings(w http.ResponseWriter, _ *http.Request) {
 	settings := s.app.Config().Settings()
 	managementConfigured, policyConfigured := settings.ManagementToken != "", settings.PolicyToken != ""
-	settings.ManagementToken, settings.PolicyToken = "", ""
+	settings.ManagementToken = ""
 	status := s.app.Status()
 	security := s.app.SecurityStatus()
 	writeJSON(w, http.StatusOK, publicSettings{

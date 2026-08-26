@@ -2,9 +2,10 @@ package service
 
 import (
 	"bytes"
+	"encoding/xml"
 	"errors"
 	"fmt"
-	"html/template"
+	"io"
 	"os"
 	"os/exec"
 	"os/user"
@@ -13,11 +14,14 @@ import (
 	"strconv"
 	"strings"
 	texttemplate "text/template"
+	"time"
 )
 
 const (
-	label       = "fun.ssfun.surgeeb"
-	systemdUnit = "surgeeb.service"
+	label                = "com.sfun.surgeeb"
+	legacyLabel          = "fun.ssfun.surgeeb"
+	systemdUnit          = "surgeeb.service"
+	darwinExecutablePath = "/usr/local/bin/SurgeEB"
 )
 
 type Info struct {
@@ -44,8 +48,7 @@ func Status() (Info, error) {
 func serviceActive() bool {
 	switch runtime.GOOS {
 	case "darwin":
-		target := "gui/" + strconv.Itoa(os.Getuid()) + "/" + label
-		return exec.Command("launchctl", "print", target).Run() == nil
+		return exec.Command("launchctl", "print", launchdTarget(os.Getuid(), label)).Run() == nil
 	case "linux":
 		return exec.Command("systemctl", "--user", "is-active", "--quiet", systemdUnit).Run() == nil
 	default:
@@ -66,11 +69,22 @@ func Register(dataDir string) (Info, error) {
 }
 
 func install(dataDir string, activate bool) (Info, error) {
+	if err := validateUserServiceContext(runtime.GOOS, os.Geteuid()); err != nil {
+		return Info{}, err
+	}
 	executable, err := os.Executable()
 	if err != nil {
 		return Info{}, err
 	}
 	executable, err = filepath.Abs(executable)
+	if err != nil {
+		return Info{}, err
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return Info{}, err
+	}
+	executable, err = installExecutableFor(runtime.GOOS, executable)
 	if err != nil {
 		return Info{}, err
 	}
@@ -89,14 +103,12 @@ func install(dataDir string, activate bool) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
-	if err := os.WriteFile(path, content, 0o600); err != nil {
+	if err := writeFileAtomic(path, content, 0o600); err != nil {
 		return Info{}, err
 	}
-	if runtime.GOOS == "darwin" && activate {
-		uid := os.Getuid()
-		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(uid), path).Run()
-		if output, err := exec.Command("launchctl", "bootstrap", "gui/"+strconv.Itoa(uid), path).CombinedOutput(); err != nil {
-			return Info{}, fmt.Errorf("launchctl bootstrap: %w: %s", err, bytes.TrimSpace(output))
+	if runtime.GOOS == "darwin" {
+		if err := configureLaunchAgent(home, path, activate); err != nil {
+			return Info{}, err
 		}
 	} else if runtime.GOOS == "linux" {
 		if output, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
@@ -108,6 +120,153 @@ func install(dataDir string, activate bool) (Info, error) {
 		}
 	}
 	return Status()
+}
+
+func validateUserServiceContext(goos string, euid int) error {
+	if (goos == "darwin" || goos == "linux") && euid == 0 {
+		return errors.New("user service installation must be run as the logged-in user without sudo")
+	}
+	return nil
+}
+
+func installExecutableFor(goos, source string) (string, error) {
+	if goos != "darwin" {
+		return source, nil
+	}
+	target := installedExecutablePath()
+	installed, err := installExecutableAt(source, target)
+	if err != nil {
+		return "", fmt.Errorf("prepare %s: %w; install SurgeEB there first if /usr/local/bin requires administrator access", target, err)
+	}
+	return installed, nil
+}
+
+func installExecutableAt(source, target string) (string, error) {
+	if filepath.Clean(source) == filepath.Clean(target) {
+		info, err := os.Stat(target)
+		if err != nil {
+			return "", fmt.Errorf("inspect installed executable: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			return "", errors.New("installed service executable must be a regular file")
+		}
+		return target, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return "", fmt.Errorf("create service executable directory: %w", err)
+	}
+	input, err := os.Open(source)
+	if err != nil {
+		return "", fmt.Errorf("open service executable: %w", err)
+	}
+	defer input.Close()
+	info, err := input.Stat()
+	if err != nil {
+		return "", fmt.Errorf("inspect service executable: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("service executable must be a regular file")
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(target), ".SurgeEB-install-*")
+	if err != nil {
+		return "", fmt.Errorf("create temporary service executable: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o755); err != nil {
+		_ = temporary.Close()
+		return "", fmt.Errorf("secure temporary service executable: %w", err)
+	}
+	if _, err := io.Copy(temporary, input); err != nil {
+		_ = temporary.Close()
+		return "", fmt.Errorf("copy service executable: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return "", fmt.Errorf("sync service executable: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return "", fmt.Errorf("close service executable: %w", err)
+	}
+	if err := os.Rename(temporaryPath, target); err != nil {
+		return "", fmt.Errorf("install service executable: %w", err)
+	}
+	return target, nil
+}
+
+func writeFileAtomic(path string, content []byte, mode os.FileMode) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".surgeeb-service-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(mode); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(content); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
+}
+
+func configureLaunchAgent(home, path string, activate bool) error {
+	uid := os.Getuid()
+	domain := launchdDomain(uid)
+	target := launchdTarget(uid, label)
+	if activate {
+		if err := bootoutAndWait(launchdTarget(uid, legacyLabel)); err != nil {
+			return err
+		}
+		if err := bootoutAndWait(target); err != nil {
+			return err
+		}
+	}
+	if err := os.Remove(launchAgentPath(home, legacyLabel)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove legacy LaunchAgent: %w", err)
+	}
+	if output, err := exec.Command("launchctl", "enable", target).CombinedOutput(); err != nil {
+		return fmt.Errorf("launchctl enable: %w: %s", err, bytes.TrimSpace(output))
+	}
+	if !activate {
+		return nil
+	}
+	if output, err := exec.Command("launchctl", "bootstrap", domain, path).CombinedOutput(); err != nil {
+		return fmt.Errorf("launchctl bootstrap: %w: %s", err, bytes.TrimSpace(output))
+	}
+	if output, err := exec.Command("launchctl", "kickstart", "-k", target).CombinedOutput(); err != nil {
+		return fmt.Errorf("launchctl kickstart: %w: %s", err, bytes.TrimSpace(output))
+	}
+	return nil
+}
+
+func bootoutAndWait(target string) error {
+	_ = exec.Command("launchctl", "bootout", target).Run()
+	deadline := time.Now().Add(3 * time.Second)
+	for exec.Command("launchctl", "print", target).Run() == nil {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("launchctl bootout did not unload %s", target)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return nil
+}
+
+func launchdDomain(uid int) string {
+	return "gui/" + strconv.Itoa(uid)
+}
+
+func launchdTarget(uid int, serviceLabel string) string {
+	return launchdDomain(uid) + "/" + serviceLabel
 }
 
 func systemdEnableArguments(activate bool) []string {
@@ -136,12 +295,23 @@ func prepareDataDir(dataDir string) (string, error) {
 }
 
 func Uninstall() (Info, error) {
+	if err := validateUserServiceContext(runtime.GOOS, os.Geteuid()); err != nil {
+		return Info{}, err
+	}
 	path, _, err := servicePath()
 	if err != nil {
 		return Info{}, err
 	}
 	if runtime.GOOS == "darwin" {
-		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid()), path).Run()
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			return Info{}, homeErr
+		}
+		_ = bootoutAndWait(launchdTarget(os.Getuid(), label))
+		_ = bootoutAndWait(launchdTarget(os.Getuid(), legacyLabel))
+		if err := os.Remove(launchAgentPath(home, legacyLabel)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return Info{}, err
+		}
 	} else if runtime.GOOS == "linux" {
 		_ = exec.Command("systemctl", "--user", "disable", "--now", systemdUnit).Run()
 	}
@@ -165,12 +335,20 @@ func servicePath() (string, string, error) {
 func servicePathFor(goos, home string) (string, string, error) {
 	switch goos {
 	case "darwin":
-		return filepath.Join(home, "Library", "LaunchAgents", label+".plist"), "LaunchAgent", nil
+		return launchAgentPath(home, label), "LaunchAgent", nil
 	case "linux":
 		return filepath.Join(home, ".config", "systemd", "user", systemdUnit), "systemd user", nil
 	default:
 		return "", "", fmt.Errorf("service management is unsupported on %s", goos)
 	}
+}
+
+func launchAgentPath(home, serviceLabel string) string {
+	return filepath.Join(home, "Library", "LaunchAgents", serviceLabel+".plist")
+}
+
+func installedExecutablePath() string {
+	return darwinExecutablePath
 }
 
 func render(executable, dataDir string) ([]byte, error) {
@@ -186,16 +364,16 @@ func renderFor(goos, executable, dataDir string) ([]byte, error) {
 		const source = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>Label</key><string>{{.Label}}</string>
-  <key>ProgramArguments</key><array><string>{{.Executable}}</string><string>serve</string><string>--data-dir</string><string>{{.DataDir}}</string></array>
+  <key>Label</key><string>{{xml .Label}}</string>
+  <key>ProgramArguments</key><array><string>{{xml .Executable}}</string><string>serve</string><string>--data-dir</string><string>{{xml .DataDir}}</string></array>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
   <key>ProcessType</key><string>Interactive</string>
   <key>Umask</key><integer>63</integer>
-  <key>StandardOutPath</key><string>{{.DataDir}}/service.stdout.log</string>
-  <key>StandardErrorPath</key><string>{{.DataDir}}/service.stderr.log</string>
+  <key>StandardOutPath</key><string>{{xml .DataDir}}/service.stdout.log</string>
+  <key>StandardErrorPath</key><string>{{xml .DataDir}}/service.stderr.log</string>
 </dict></plist>
 `
-		tmpl, err := template.New("launchd").Parse(source)
+		tmpl, err := texttemplate.New("launchd").Funcs(texttemplate.FuncMap{"xml": xmlText}).Parse(source)
 		if err != nil {
 			return nil, err
 		}
@@ -241,6 +419,12 @@ func systemdArg(value string) string {
 	value = strings.ReplaceAll(value, `\`, `\\`)
 	value = strings.ReplaceAll(value, `"`, `\"`)
 	return `"` + value + `"`
+}
+
+func xmlText(value string) string {
+	var output bytes.Buffer
+	_ = xml.EscapeText(&output, []byte(value))
+	return output.String()
 }
 
 func CurrentUser() string {

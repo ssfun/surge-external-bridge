@@ -15,38 +15,46 @@ const dirty = ref(false)
 const saving = ref(false)
 const appliedMessage = ref('')
 const form = reactive({ mode: 'local', http_bind: '', socks_bind: '', socks_port: 0, virtual_host: '', projection_key: '', prefix_provider: false, management_token: '', policy_token: '', node_test_url: '', node_test_udp_address: '', node_test_timeout_seconds: 10 })
-const credentialVisible = reactive({ management: false, policy: false })
-const generatedCredential = reactive({ management: false, policy: false })
+const credentialVisible = reactive({ management: false })
+const generatedCredential = reactive({ management: false })
 
 function populate(value) {
   if (!value) return
-  Object.assign(form, value, { management_token: '', policy_token: '' })
-  Object.assign(credentialVisible, { management: false, policy: false })
-  Object.assign(generatedCredential, { management: false, policy: false })
+  Object.assign(form, value, { management_token: '' })
+  credentialVisible.management = false
+  generatedCredential.management = false
 }
 watch(settings, (value) => { if (!dirty.value) populate(value) }, { immediate: true })
 const protectedState = computed(() => settings.value?.data_directory_protected && settings.value?.configuration_protected && settings.value?.controller_key_protected)
 
 function markDirty() { dirty.value = true; appliedMessage.value = '' }
 function generateProjectionKey() { form.projection_key = randomToken(); markDirty() }
-function generateCredential(kind, quiet = false) {
-  form[`${kind}_token`] = randomToken()
-  credentialVisible[kind] = true
-  generatedCredential[kind] = true
+function generateManagementToken(quiet = false) {
+  form.management_token = randomToken()
+  credentialVisible.management = true
+  generatedCredential.management = true
   markDirty()
-  if (!quiet) ui.toast(`${kind === 'management' ? 'Management' : 'Policy'} Token 已生成`)
+  if (!quiet) ui.toast('Management Token 已生成')
+}
+function useUnsafePolicyToken(quiet = false) {
+  form.policy_token = 'unsafe'
+  markDirty()
+  if (!quiet) ui.toast('Policy Token 已设为 unsafe')
 }
 function modeChanged(event) {
   form.mode = event.target.value
   if (form.mode === 'gateway') {
-    let generated = false
+    let managementGenerated = false
+    let policyDefaulted = false
     if (!settings.value?.management_token_configured && !form.management_token) {
-      generateCredential('management', true); generated = true
+      generateManagementToken(true); managementGenerated = true
     }
-    if (!settings.value?.policy_token_configured && !form.policy_token) {
-      generateCredential('policy', true); generated = true
+    if (!form.policy_token) {
+      useUnsafePolicyToken(true); policyDefaulted = true
     }
-    if (generated) ui.toast('新的 Token 已生成，请复制保存')
+    if (managementGenerated && policyDefaulted) ui.toast('Management Token 已生成，Policy Token 已设为 unsafe')
+    else if (managementGenerated) ui.toast('Management Token 已生成，请复制保存')
+    else if (policyDefaulted) ui.toast('Policy Token 已设为 unsafe')
   }
   markDirty()
 }
@@ -74,7 +82,6 @@ async function save() {
   }
   if (form.management_token) body.management_token = form.management_token
   if (form.policy_token) body.policy_token = form.policy_token
-  if (body.policy_token && !window.confirm('Policy Token 保存后不会再次显示，请先复制或记录好。确认保存？')) return
   if (body.projection_key !== settings.value?.projection_key && !window.confirm('修改后，现有 Surge 节点的用户名和密码会变化。确认保存？')) return
   saving.value = true
   try {
@@ -108,7 +115,7 @@ async function serviceAction(install) {
         <div class="card settings-card settings-deployment" data-testid="settings-deployment">
           <div class="settings-card-head"><div><h3>使用范围与地址</h3><p>选择只供本机使用，或允许同一局域网内的设备连接。</p></div><span class="pill" :class="form.mode === 'gateway' ? 'warn' : 'ok'">{{ form.mode === 'gateway' ? '局域网' : '仅本机' }}</span></div>
           <div class="settings-deployment-grid">
-            <label class="field"><span>使用范围</span><span class="select-control"><select :value="form.mode" data-testid="settings-mode" @change="modeChanged"><option value="local">仅本机</option><option value="gateway">局域网网关</option></select></span><small>{{ form.mode === 'gateway' ? '同一局域网内的设备可以访问，请保存下面两项 Token。' : '只有这台电脑可以访问配置台和 SOCKS。' }}</small></label>
+            <label class="field"><span>使用范围</span><span class="select-control"><select :value="form.mode" data-testid="settings-mode" @change="modeChanged"><option value="local">仅本机</option><option value="gateway">局域网网关</option></select></span><small>{{ form.mode === 'gateway' ? '同一局域网内的设备可以访问，请保存下面的 Management Token。' : '只有这台电脑可以访问配置台和 SOCKS。' }}</small></label>
             <label class="field"><span>Surge 访问地址</span><input v-model="form.virtual_host" spellcheck="false" placeholder="surge.eb"><small>填写 Surge 能访问到的域名或 IP，不要带 http:// 和端口。</small></label>
           </div>
           <div class="settings-subsection"><div class="settings-subsection-head"><b>本机监听地址</b><span>Surge 订阅地址使用与配置台相同的端口</span></div>
@@ -121,11 +128,11 @@ async function serviceAction(install) {
         </div>
         <div class="settings-secondary-grid">
           <div class="card settings-card" data-testid="settings-security">
-            <div class="settings-card-head"><div><h3>访问密码</h3><p>局域网模式需要两项不同的 Token，避免其他人访问配置或节点列表。</p></div></div>
-            <label class="field"><span class="settings-field-label">Management Token <i class="pill" :class="form.management_token ? 'warn' : settings.management_token_configured ? 'ok' : 'warn'">{{ form.management_token ? '待保存' : settings.management_token_configured ? '已配置' : '未配置' }}</i></span><span class="settings-secret-control"><input v-model="form.management_token" data-testid="management-token" :type="credentialVisible.management ? 'text' : 'password'" autocomplete="new-password" :placeholder="settings.management_token_configured ? '留空保持不变' : '输入新 Token'"><span class="settings-field-actions"><button v-if="form.management_token" class="button ghost compact" type="button" @click="credentialVisible.management = !credentialVisible.management">{{ credentialVisible.management ? '隐藏' : '显示' }}</button><button v-if="form.management_token" class="button ghost compact" type="button" @click="copyCredential('Management Token', form.management_token)">复制</button><button class="button ghost compact" type="button" @click="generateCredential('management')">{{ form.management_token ? '重新生成' : '生成' }}</button></span></span><small>在其他设备打开此配置台时使用。</small></label>
-            <label class="field"><span class="settings-field-label">Policy Token <i class="pill" :class="form.policy_token ? 'warn' : settings.policy_token_configured ? 'ok' : 'warn'">{{ form.policy_token ? '待保存' : settings.policy_token_configured ? '已配置' : '未配置' }}</i></span><span class="settings-secret-control"><input v-model="form.policy_token" data-testid="policy-token" :type="credentialVisible.policy ? 'text' : 'password'" autocomplete="new-password" :placeholder="settings.policy_token_configured ? '留空保持不变' : '输入新 Token'"><span class="settings-field-actions"><button v-if="form.policy_token" class="button ghost compact" type="button" @click="credentialVisible.policy = !credentialVisible.policy">{{ credentialVisible.policy ? '隐藏' : '显示' }}</button><button v-if="form.policy_token" class="button ghost compact" type="button" @click="copyCredential('Policy Token', form.policy_token)">复制</button><button class="button ghost compact" type="button" @click="generateCredential('policy')">{{ form.policy_token ? '重新生成' : '生成' }}</button></span></span><small>Surge 下载节点列表时使用，与管理 Token 分开更安全。</small></label>
-            <div v-if="generatedCredential.management || generatedCredential.policy" class="settings-note warn settings-generated-note" data-testid="generated-token-note"><b>新的 24 位 Token 已生成并显示</b><span>请分别复制保存。保存设置后，完整内容不会再次显示。</span></div>
-            <div v-else-if="form.mode === 'gateway'" class="settings-note">局域网模式需要两项不同的 Token。已配置的 Token 不会在页面中回显。</div>
+            <div class="settings-card-head"><div><h3>访问 Token</h3><p>Management Token 保护配置台；Policy Token 只是订阅地址中的固定参数。</p></div></div>
+            <label class="field"><span class="settings-field-label">Management Token <i class="pill" :class="form.management_token ? 'warn' : settings.management_token_configured ? 'ok' : 'warn'">{{ form.management_token ? '待保存' : settings.management_token_configured ? '已配置' : '未配置' }}</i></span><span class="settings-secret-control"><input v-model="form.management_token" data-testid="management-token" :type="credentialVisible.management ? 'text' : 'password'" autocomplete="new-password" :placeholder="settings.management_token_configured ? '留空保持不变' : '输入新 Token'"><span class="settings-field-actions"><button v-if="form.management_token" class="button ghost compact" type="button" @click="credentialVisible.management = !credentialVisible.management">{{ credentialVisible.management ? '隐藏' : '显示' }}</button><button v-if="form.management_token" class="button ghost compact" type="button" @click="copyCredential('Management Token', form.management_token)">复制</button><button class="button ghost compact" type="button" @click="generateManagementToken">{{ form.management_token ? '重新生成' : '生成' }}</button></span></span><small>在其他设备打开此配置台时使用；保存后不会再次显示完整内容。</small></label>
+            <label class="field"><span class="settings-field-label">Policy Token <i class="pill" :class="form.policy_token ? 'ok' : 'warn'">{{ form.policy_token ? '已设置' : '未设置' }}</i></span><span class="settings-secret-control"><input v-model="form.policy_token" data-testid="policy-token" type="text" autocomplete="off" placeholder="unsafe"><span class="settings-field-actions"><button v-if="form.policy_token" class="button ghost compact" type="button" @click="copyCredential('Policy Token', form.policy_token)">复制</button><button v-if="form.policy_token !== 'unsafe'" class="button ghost compact" type="button" @click="useUnsafePolicyToken">使用 unsafe</button></span></span><small>默认使用 unsafe，会直接显示在订阅地址中，不作为密码隐藏。</small></label>
+            <div v-if="generatedCredential.management" class="settings-note warn settings-generated-note" data-testid="generated-token-note"><b>新的 24 位 Management Token 已生成并显示</b><span>请复制保存。Policy Token 已直接设为 unsafe。</span></div>
+            <div v-else-if="form.mode === 'gateway'" class="settings-note">Management Token 保存后不会回显；Policy Token 会始终显示，默认值为 unsafe。</div>
           </div>
           <div class="card settings-card" data-testid="settings-identity">
             <div class="settings-card-head"><div><h3>节点凭据</h3><p>让多台 SurgeEB 为同一个节点生成相同的用户名和密码。</p></div></div>
@@ -158,7 +165,7 @@ async function serviceAction(install) {
           <div class="settings-boundary"><b>SurgeEB 不会接管系统网络</b><span>系统代理、TUN 和 DNS 等功能仍由 Surge 管理。</span></div>
         </div>
         <div class="card settings-card" data-testid="settings-service">
-          <div class="settings-card-head"><div><h3>开机自动启动</h3><p>让 SurgeEB 在登录系统后自动运行。</p></div><span class="pill" :class="service?.active ? 'ok' : 'warn'">{{ service?.active ? '运行中' : '未运行' }}</span></div>
+          <div class="settings-card-head"><div><h3>开机自动启动</h3><p>让 SurgeEB 在登录系统后自动运行；当前程序无需重复启动。</p></div><span class="pill" :class="service?.installed ? 'ok' : 'warn'">{{ service?.installed ? '已开启' : '未开启' }}</span></div>
           <dl class="kv settings-service-facts"><dt>运行平台</dt><dd>{{ service?.platform || '—' }}</dd><dt>自动启动</dt><dd>{{ service?.installed ? '已开启' : '未开启' }}</dd></dl>
           <div class="actions settings-service-actions"><button class="button" type="button" :disabled="service?.installed" @click="serviceAction(true)">开启自动启动</button><button class="button danger" type="button" :disabled="!service?.installed" @click="serviceAction(false)">关闭自动启动</button></div>
         </div>

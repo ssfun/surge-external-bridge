@@ -156,7 +156,7 @@ Surge External Bridge 采用全新数据目录和配置，不读取或迁移旧�
 ./SurgeEB service uninstall
 ```
 
-macOS 使用 `fun.ssfun.surgeeb` LaunchAgent，Linux 使用 `surgeeb.service` systemd user service。配置台注册服务时不会立即启动第二个进程；CLI `service install` 会立即启用。两者都使用 `0077` umask，不安装或管理外部 Mihomo，也不修改系统代理或网络栈。
+macOS 使用 `com.sfun.surgeeb` LaunchAgent，固定运行 `/usr/local/bin/SurgeEB`；如果当前二进制来自其他位置，安装服务时会尝试复制到该路径。Linux 使用 `surgeeb.service` systemd user service。配置台注册服务时不会立即启动第二个进程，下一次登录时自动运行；CLI `service install` 会立即启用。用户服务必须由当前登录用户执行，不要使用 `sudo`；如果当前用户无权写入 `/usr/local/bin`，请先将 SurgeEB 安装到该路径。两者都使用 `0077` umask，不安装或管理外部 Mihomo，也不修改系统代理或网络栈。
 
 ## 本地构建与验证
 

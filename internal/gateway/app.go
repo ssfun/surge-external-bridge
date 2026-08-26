@@ -507,8 +507,8 @@ func ValidateConfig(config Config) error {
 		return errors.New("projection key must contain 16-256 non-control characters without surrounding whitespace")
 	}
 	virtualIP := net.ParseIP(config.VirtualHost)
-	if config.ManagementToken != "" && len(config.ManagementToken) < 16 || config.PolicyToken != "" && len(config.PolicyToken) < 16 || config.ManagementToken != "" && config.ManagementToken == config.PolicyToken {
-		return errors.New("configured Management and Policy tokens must be distinct and at least 16 characters")
+	if config.ManagementToken != "" && len(config.ManagementToken) < 16 || !validPolicyToken(config.PolicyToken, false) || config.ManagementToken != "" && config.ManagementToken == config.PolicyToken {
+		return errors.New("Management Token must contain at least 16 characters; Policy Token must be unsafe or contain at least 16 characters, and the two values must differ")
 	}
 	if config.Mode == ModeLocal && (!isLoopbackHost(httpHost) || !isLoopbackHost(config.SocksBind)) {
 		return errors.New("local mode requires loopback HTTP and SOCKS bind addresses")
@@ -516,8 +516,8 @@ func ValidateConfig(config Config) error {
 	if config.Mode == ModeLocal && virtualIP != nil && !virtualIP.IsLoopback() {
 		return errors.New("local mode virtual host IP must be loopback")
 	}
-	if config.Mode == ModeGateway && (len(config.ManagementToken) < 16 || len(config.PolicyToken) < 16 || config.ManagementToken == config.PolicyToken) {
-		return errors.New("gateway mode requires distinct Management and Policy tokens of at least 16 characters")
+	if config.Mode == ModeGateway && (len(config.ManagementToken) < 16 || !validPolicyToken(config.PolicyToken, true) || config.ManagementToken == config.PolicyToken) {
+		return errors.New("gateway mode requires a Management Token of at least 16 characters and a Policy Token set to unsafe or at least 16 characters")
 	}
 	if config.Mode == ModeGateway && virtualIP != nil && !isPrivateOrTrustedHost(config.VirtualHost) {
 		return errors.New("gateway mode virtual host IP must be private or trusted")
@@ -556,6 +556,13 @@ func ValidateConfig(config Config) error {
 		}
 	}
 	return nil
+}
+
+func validPolicyToken(token string, required bool) bool {
+	if token == "" {
+		return !required
+	}
+	return token == "unsafe" || len(token) >= 16
 }
 
 func validateProvider(provider Provider) error {

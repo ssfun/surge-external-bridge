@@ -43,11 +43,17 @@ func TestRenderLaunchAgentEscapesPaths(t *testing.T) {
 		t.Fatalf("invalid LaunchAgent XML: %v\n%s", err, content)
 	}
 	text := string(content)
+	if !strings.HasPrefix(text, `<?xml version="1.0" encoding="UTF-8"?>`) || strings.HasPrefix(text, "&lt;?xml") {
+		t.Fatalf("LaunchAgent XML declaration was escaped: %s", text)
+	}
 	if !strings.Contains(text, "Surge &amp; Tools") || !strings.Contains(text, "Data &amp; State") {
 		t.Fatalf("LaunchAgent paths were not XML escaped: %s", text)
 	}
 	if !strings.Contains(text, "<key>Umask</key><integer>63</integer>") || !strings.Contains(text, "service.stderr.log") {
 		t.Fatalf("LaunchAgent does not protect or retain service logs: %s", text)
+	}
+	if !strings.Contains(text, "<string>com.sfun.surgeeb</string>") {
+		t.Fatalf("LaunchAgent does not use the public service label: %s", text)
 	}
 }
 
@@ -80,6 +86,79 @@ func TestServicePaths(t *testing.T) {
 	}
 	if _, _, err := servicePathFor("windows", home); err == nil {
 		t.Fatal("unsupported platform was accepted")
+	}
+}
+
+func TestDarwinServiceUsesStableExecutable(t *testing.T) {
+	home := t.TempDir()
+	source := filepath.Join(home, "Downloads", "SurgeEB")
+	targetPath := filepath.Join(home, "usr", "local", "bin", "SurgeEB")
+	if err := os.MkdirAll(filepath.Dir(source), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("test-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target, err := installExecutableAt(source, targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := targetPath
+	if target != want {
+		t.Fatalf("installed executable path=%q, want %q", target, want)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "test-binary" {
+		t.Fatalf("installed executable content=%q", content)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if permission := info.Mode().Perm(); permission != 0o755 {
+		t.Fatalf("installed executable permission=%o, want 755", permission)
+	}
+	if err := os.Chmod(target, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	if sameTarget, err := installExecutableAt(target, target); err != nil || sameTarget != target {
+		t.Fatalf("use existing canonical executable path=%q err=%v", sameTarget, err)
+	}
+	if info, err := os.Stat(target); err != nil || info.Mode().Perm() != 0o555 {
+		t.Fatalf("existing canonical executable permissions changed: info=%v err=%v", info, err)
+	}
+	if installedExecutablePath() != "/usr/local/bin/SurgeEB" {
+		t.Fatalf("darwin executable path=%q", installedExecutablePath())
+	}
+	linuxTarget, err := installExecutableFor("linux", source)
+	if err != nil || linuxTarget != source {
+		t.Fatalf("Linux executable path=%q err=%v, want source path", linuxTarget, err)
+	}
+}
+
+func TestLaunchAgentTargetsLoggedInUserDomain(t *testing.T) {
+	if got := launchdDomain(501); got != "gui/501" {
+		t.Fatalf("launchd domain=%q, want gui/501", got)
+	}
+	if got := launchdTarget(501, label); got != "gui/501/com.sfun.surgeeb" {
+		t.Fatalf("launchd target=%q", got)
+	}
+	if got := launchAgentPath("/Users/test", legacyLabel); got != "/Users/test/Library/LaunchAgents/fun.ssfun.surgeeb.plist" {
+		t.Fatalf("legacy LaunchAgent path=%q", got)
+	}
+}
+
+func TestRootCannotInstallUserService(t *testing.T) {
+	for _, goos := range []string{"darwin", "linux"} {
+		if err := validateUserServiceContext(goos, 0); err == nil || !strings.Contains(err.Error(), "without sudo") {
+			t.Fatalf("%s root context error=%v", goos, err)
+		}
+		if err := validateUserServiceContext(goos, 501); err != nil {
+			t.Fatalf("%s user context error=%v", goos, err)
+		}
 	}
 }
 

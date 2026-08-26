@@ -307,6 +307,11 @@ func TestControllerAllowlistUsesPrivateCredentialAndBlocksDangerousRoutes(t *tes
 	}
 	_ = response.Body.Close()
 
+	publicPolicySettings := application.Config().Settings()
+	publicPolicySettings.PolicyToken = "unsafe"
+	if err := application.UpdateSettings(publicPolicySettings); err != nil {
+		t.Fatal(err)
+	}
 	req, _ = http.NewRequest(http.MethodGet, endpoint+"/api/settings", nil)
 	req.Header.Set("Authorization", "Bearer management-token-1234567890")
 	response, err = http.DefaultClient.Do(req)
@@ -326,6 +331,12 @@ func TestControllerAllowlistUsesPrivateCredentialAndBlocksDangerousRoutes(t *tes
 	}
 	if settings["projection_key"] != application.Config().ProjectionKey {
 		t.Fatalf("settings DTO did not expose the configured projection key: %#v", settings)
+	}
+	if settings["policy_token"] != application.Config().PolicyToken {
+		t.Fatalf("settings DTO did not expose the configured Policy Token: %#v", settings)
+	}
+	if _, ok := settings["management_token"]; ok {
+		t.Fatalf("settings DTO exposed the Management Token: %#v", settings)
 	}
 	for _, removed := range []string{"socks_advertise", "policy_base_url"} {
 		if _, ok := settings[removed]; ok {
