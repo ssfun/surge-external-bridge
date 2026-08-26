@@ -122,6 +122,13 @@ func providerMapping(homeDir string, definition ProviderDefinition) (map[string]
 		providerType = "http"
 	}
 	mapping := map[string]any{"type": providerType}
+	headers := make(map[string][]string, len(definition.Headers)+1)
+	for name, values := range definition.Headers {
+		if strings.EqualFold(name, "Referer") {
+			continue
+		}
+		headers[name] = append([]string(nil), values...)
+	}
 	switch providerType {
 	case "http":
 		parsed, err := url.Parse(definition.URL)
@@ -129,6 +136,8 @@ func providerMapping(homeDir string, definition ProviderDefinition) (map[string]
 			return nil, errors.New("HTTP Provider URL must use http or https")
 		}
 		mapping["url"] = definition.URL
+		safeReferer := (&url.URL{Scheme: parsed.Scheme, Host: parsed.Host, Path: "/"}).String()
+		headers["Referer"] = []string{safeReferer}
 	case "file":
 		if definition.FilePath == "" {
 			return nil, errors.New("file Provider path is required")
@@ -176,8 +185,8 @@ func providerMapping(homeDir string, definition ProviderDefinition) (map[string]
 	// Mihomo v1.19.30's Fetcher pull loop reads updatedAt without the mutex
 	// used by its public Update method. Manager serializes both scheduled and
 	// manual native Update calls instead, so do not start the upstream ticker.
-	if len(definition.Headers) > 0 {
-		mapping["header"] = definition.Headers
+	if len(headers) > 0 {
+		mapping["header"] = headers
 	}
 	if definition.DownloadProxy != "" {
 		mapping["proxy"] = definition.DownloadProxy

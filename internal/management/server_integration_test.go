@@ -308,7 +308,7 @@ func TestControllerAllowlistUsesPrivateCredentialAndBlocksDangerousRoutes(t *tes
 	_ = response.Body.Close()
 
 	publicPolicySettings := application.Config().Settings()
-	publicPolicySettings.PolicyToken = "unsafe"
+	publicPolicySettings.PolicyToken = "policy-token-12345678"
 	if err := application.UpdateSettings(publicPolicySettings); err != nil {
 		t.Fatal(err)
 	}

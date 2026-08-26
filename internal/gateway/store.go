@@ -11,6 +11,7 @@ import (
 type Store struct {
 	dir        string
 	configPath string
+	notices    []string
 }
 
 func NewStore(dir string) *Store {
@@ -19,7 +20,10 @@ func NewStore(dir string) *Store {
 
 func (s *Store) Dir() string { return s.dir }
 
+func (s *Store) Notices() []string { return append([]string(nil), s.notices...) }
+
 func (s *Store) Load() (Config, error) {
+	s.notices = nil
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return Config{}, err
 	}
@@ -66,6 +70,30 @@ func (s *Store) Load() (Config, error) {
 		return Config{}, fmt.Errorf("unsupported gateway schema %d", config.SchemaVersion)
 	}
 	assignProviderIDs(&config)
+	migrated := false
+	if config.PolicyToken == "unsafe" {
+		for config.PolicyToken == "unsafe" || config.PolicyToken == config.ManagementToken {
+			config.PolicyToken, err = randomToken()
+			if err != nil {
+				return Config{}, fmt.Errorf("replace legacy unsafe Policy Token: %w", err)
+			}
+		}
+		s.notices = append(s.notices, "安全升级已将旧的 unsafe Policy Token 替换为强随机值；请更新 Surge Policy Path")
+		migrated = true
+	}
+	for index := range config.Providers {
+		provider := &config.Providers[index]
+		if provider.Enabled && providerHasRedirectSensitiveCredentials(*provider) {
+			provider.Enabled = false
+			s.notices = append(s.notices, fmt.Sprintf("安全升级已停用 Provider %s：请移除 Authorization、Cookie 或 URL userinfo 后再启用", provider.Name))
+			migrated = true
+		}
+	}
+	if migrated {
+		if err := s.Save(config); err != nil {
+			return Config{}, fmt.Errorf("persist security migration: %w", err)
+		}
+	}
 	return config, nil
 }
 

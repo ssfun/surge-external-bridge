@@ -113,7 +113,7 @@ listeners: []
 - 直接用 IP 作为 `virtual_host` 时，只允许回环、私网、Tailscale CGNAT 或链路本地地址；
 - 不支持把管理台、Policy 或 SOCKS 裸露到公网。
 
-`/proxies` 含 SOCKS 凭据，固定返回 `Cache-Control: no-store`，支持 ETag 和独立 Policy Token。敏感复制必须显式确认。
+`/proxies` 含 SOCKS 凭据，固定返回 `Cache-Control: no-store`，支持 ETag 和独立强随机 Policy Token；不提供可猜测的免密值。敏感复制必须显式确认。
 
 ## 多设备统一 Policy Path
 

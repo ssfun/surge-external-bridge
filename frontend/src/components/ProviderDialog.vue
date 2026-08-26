@@ -62,6 +62,7 @@ async function reveal() {
 }
 
 async function submit() {
+  if (props.provider && form.name.trim() !== String(props.provider.name || '').trim() && !window.confirm('修改 Provider 名称会更换其全部节点的用户名和密码。确认继续？')) return
   busy.value = true
   try {
     const headersText = form.headers.trim()
@@ -137,7 +138,7 @@ async function submit() {
             <div class="advanced-body">
               <section v-show="form.type === 'http'" class="advanced-group conditional" data-testid="provider-http-options">
                 <div class="advanced-group-title"><b>订阅请求</b><span>低频调整</span></div>
-                <label class="field"><span>请求 Header JSON{{ provider && provider.type === 'http' ? '（留空保持现有值）' : '' }}</span><textarea v-model="form.headers" spellcheck="false" placeholder='{"Authorization":["Bearer ..."]}' /><small>仅允许 Authorization、Cookie、User-Agent、Accept 与 Accept-Language。</small></label>
+                <label class="field"><span>请求 Header JSON{{ provider && provider.type === 'http' ? '（留空保持现有值）' : '' }}</span><textarea v-model="form.headers" spellcheck="false" placeholder='{"User-Agent":["SurgeEB"]}' /><small>仅允许 User-Agent、Accept 与 Accept-Language；Authorization、Cookie 和 URL userinfo 会因重定向泄密风险被拒绝。</small></label>
                 <button v-if="provider && provider.type === 'http'" type="button" class="button ghost compact" @click="reveal">读取现有 URL / Header</button>
                 <div class="form-grid advanced-grid">
                   <label class="field"><span>刷新间隔（秒）</span><input v-model="form.refresh_seconds" type="number" min="60"></label>

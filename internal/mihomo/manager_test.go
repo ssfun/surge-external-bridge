@@ -222,7 +222,7 @@ func TestNativeHTTPProviderDoesNotForwardSensitiveHeadersToUnrelatedRedirectHost
 	defer origin.Close()
 	// A hostname change is the trust boundary used by Mihomo's HTTP client.
 	// Both names still resolve to this local test process.
-	originURL := strings.Replace(origin.URL, "127.0.0.1", "localhost", 1)
+	originURL := strings.Replace(origin.URL, "127.0.0.1", "localhost", 1) + "/subscription?token=subscription-secret"
 	definition := ProviderDefinition{
 		StableID: "redirect-header", Name: "Redirect Header", Type: "http", URL: originURL, RefreshSeconds: 3600,
 		Headers: map[string][]string{"Authorization": {"Bearer subscription-secret"}, "Cookie": {"session=subscription-secret"}},
@@ -234,6 +234,9 @@ func TestNativeHTTPProviderDoesNotForwardSensitiveHeadersToUnrelatedRedirectHost
 	case header := <-received:
 		if header.Get("Authorization") != "" || header.Get("Cookie") != "" {
 			t.Fatalf("sensitive Provider Headers crossed an unrelated redirect host: %#v", header)
+		}
+		if referer := header.Get("Referer"); referer == "" || strings.Contains(referer, "subscription-secret") || strings.Contains(referer, "/subscription") {
+			t.Fatalf("Provider URL credentials crossed a redirect in Referer %q", referer)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("redirect target was not requested")

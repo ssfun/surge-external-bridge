@@ -53,6 +53,9 @@ func New(dataDir string) (*App, error) {
 	controllerSocket := filepath.Join(dataDir, "mihomo", "controller.sock")
 	controllerSecret := base64.RawURLEncoding.EncodeToString(controllerKey)
 	application := &App{store: store, config: config, masterKey: append([]byte(nil), masterKey...), controllerSocket: controllerSocket, controllerSecret: controllerSecret}
+	for _, notice := range store.Notices() {
+		application.addEvent("warn", notice)
+	}
 	manager, err := M.NewManager(M.ManagerOptions{
 		HomeDir: filepath.Join(dataDir, "mihomo"), ControllerSocket: controllerSocket,
 		ControllerSecret: controllerSecret,
@@ -508,7 +511,7 @@ func ValidateConfig(config Config) error {
 	}
 	virtualIP := net.ParseIP(config.VirtualHost)
 	if config.ManagementToken != "" && len(config.ManagementToken) < 16 || !validPolicyToken(config.PolicyToken, false) || config.ManagementToken != "" && config.ManagementToken == config.PolicyToken {
-		return errors.New("Management Token must contain at least 16 characters; Policy Token must be unsafe or contain at least 16 characters, and the two values must differ")
+		return errors.New("Management Token and Policy Token must each contain at least 16 characters when configured, and the two values must differ")
 	}
 	if config.Mode == ModeLocal && (!isLoopbackHost(httpHost) || !isLoopbackHost(config.SocksBind)) {
 		return errors.New("local mode requires loopback HTTP and SOCKS bind addresses")
@@ -517,7 +520,7 @@ func ValidateConfig(config Config) error {
 		return errors.New("local mode virtual host IP must be loopback")
 	}
 	if config.Mode == ModeGateway && (len(config.ManagementToken) < 16 || !validPolicyToken(config.PolicyToken, true) || config.ManagementToken == config.PolicyToken) {
-		return errors.New("gateway mode requires a Management Token of at least 16 characters and a Policy Token set to unsafe or at least 16 characters")
+		return errors.New("gateway mode requires distinct Management and Policy Tokens of at least 16 characters")
 	}
 	if config.Mode == ModeGateway && virtualIP != nil && !isPrivateOrTrustedHost(config.VirtualHost) {
 		return errors.New("gateway mode virtual host IP must be private or trusted")
@@ -562,7 +565,7 @@ func validPolicyToken(token string, required bool) bool {
 	if token == "" {
 		return !required
 	}
-	return token == "unsafe" || len(token) >= 16
+	return len(token) >= 16
 }
 
 func validateProvider(provider Provider) error {
@@ -579,6 +582,9 @@ func validateProvider(provider Provider) error {
 		parsed, err := url.Parse(provider.URL)
 		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 			return errors.New("URL must use http or https")
+		}
+		if provider.Enabled && parsed.User != nil {
+			return errors.New("URL userinfo is not allowed; use a token query parameter instead")
 		}
 	}
 	if provider.Type == "file" && strings.TrimSpace(provider.FilePath) == "" {
@@ -616,15 +622,12 @@ func validateProvider(provider Provider) error {
 			return errors.New("invalid Provider Header name")
 		}
 		switch strings.ToLower(name) {
-		case "authorization", "cookie", "user-agent", "accept", "accept-language":
+		case "user-agent", "accept", "accept-language":
 		default:
-			return fmt.Errorf("Provider Header %q is not allowed; use Authorization, Cookie, User-Agent, Accept, or Accept-Language", name)
-		}
-		if strings.EqualFold(name, "Authorization") || strings.EqualFold(name, "Cookie") {
-			parsed, _ := url.Parse(provider.URL)
-			if parsed == nil || parsed.Scheme != "https" {
-				return errors.New("Authorization and Cookie Headers require an HTTPS Provider URL")
+			if !provider.Enabled && (strings.EqualFold(name, "Authorization") || strings.EqualFold(name, "Cookie")) {
+				continue
 			}
+			return fmt.Errorf("Provider Header %q is not allowed; Authorization and Cookie are forbidden because redirects can leak them; use User-Agent, Accept, or Accept-Language", name)
 		}
 		for _, value := range values {
 			if strings.ContainsAny(value, "\r\n") {
@@ -633,6 +636,18 @@ func validateProvider(provider Provider) error {
 		}
 	}
 	return nil
+}
+
+func providerHasRedirectSensitiveCredentials(provider Provider) bool {
+	if parsed, err := url.Parse(provider.URL); err == nil && parsed.User != nil {
+		return true
+	}
+	for name := range provider.Headers {
+		if strings.EqualFold(name, "Authorization") || strings.EqualFold(name, "Cookie") {
+			return true
+		}
+	}
+	return false
 }
 
 func cloneConfig(config Config) Config {

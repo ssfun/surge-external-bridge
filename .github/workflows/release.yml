@@ -129,10 +129,10 @@ jobs:
             LICENSES/mihomo.txt
           )
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "${files[@]}" --clobber
-          else
-            gh release create "$tag" "${files[@]}" \
-              --title "SurgeEB $tag" \
-              --generate-notes \
-              --notes "Embedded Mihomo Core: ${{ steps.versions.outputs.core_version }}"
+            echo "Release $tag already exists; published assets are immutable" >&2
+            exit 1
           fi
+          gh release create "$tag" "${files[@]}" \
+            --title "SurgeEB $tag" \
+            --generate-notes \
+            --notes "Embedded Mihomo Core: ${{ steps.versions.outputs.core_version }}"

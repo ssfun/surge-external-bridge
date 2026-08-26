@@ -32,7 +32,7 @@ func TestValidateConfigNetworkBoundaries(t *testing.T) {
 	validGateway.SocksBind = "0.0.0.0"
 	validGateway.VirtualHost = "192.168.50.10"
 	validGateway.ManagementToken = "management-token-1234"
-	validGateway.PolicyToken = "unsafe"
+	validGateway.PolicyToken = "policy-token-12345678"
 
 	tests := []struct {
 		name    string
@@ -51,6 +51,7 @@ func TestValidateConfigNetworkBoundaries(t *testing.T) {
 		{name: "local public HTTP bind", config: func() Config { c := validLocal; c.HTTPBind = "0.0.0.0:18080"; return c }(), wantErr: true},
 		{name: "local public virtual IP", config: func() Config { c := validLocal; c.VirtualHost = "8.8.8.8"; return c }(), wantErr: true},
 		{name: "gateway missing tokens", config: func() Config { c := validGateway; c.ManagementToken, c.PolicyToken = "", ""; return c }(), wantErr: true},
+		{name: "gateway unsafe policy token", config: func() Config { c := validGateway; c.PolicyToken = "unsafe"; return c }(), wantErr: true},
 		{name: "gateway short custom policy token", config: func() Config { c := validGateway; c.PolicyToken = "short"; return c }(), wantErr: true},
 		{name: "gateway shared token", config: func() Config { c := validGateway; c.PolicyToken = c.ManagementToken; return c }(), wantErr: true},
 		{name: "gateway public virtual IP", config: func() Config { c := validGateway; c.VirtualHost = "8.8.8.8"; return c }(), wantErr: true},
@@ -119,17 +120,26 @@ func TestValidateProviderHeaderBoundary(t *testing.T) {
 		StableID: "provider-1", Name: "Provider", Type: "http",
 		URL: "https://example.com/subscription", Enabled: true, SizeLimit: 16 << 20,
 	}
-	provider.Headers = map[string][]string{"Cookie": {"session=secret"}}
+	provider.Headers = map[string][]string{"User-Agent": {"SurgeEB-test"}}
 	if err := validateProvider(provider); err != nil {
-		t.Fatalf("HTTPS Cookie Header rejected: %v", err)
+		t.Fatalf("safe Provider Header rejected: %v", err)
 	}
-	provider.URL = "http://example.com/subscription"
+	provider.Headers = map[string][]string{"Cookie": {"session=secret"}}
 	if err := validateProvider(provider); err == nil {
-		t.Fatal("sensitive Provider Header was accepted over HTTP")
+		t.Fatal("Cookie Header was accepted despite redirect leakage risk")
 	}
-	provider.URL = "https://example.com/subscription"
+	provider.Enabled = false
+	if err := validateProvider(provider); err != nil {
+		t.Fatalf("disabled legacy Provider cannot be opened for repair: %v", err)
+	}
+	provider.Enabled = true
 	provider.Headers = map[string][]string{"X-Subscription-Token": {"secret"}}
 	if err := validateProvider(provider); err == nil {
 		t.Fatal("non-allowlisted Header was accepted")
+	}
+	provider.Headers = nil
+	provider.URL = "https://user:password@example.com/subscription"
+	if err := validateProvider(provider); err == nil {
+		t.Fatal("URL userinfo was accepted despite redirect leakage risk")
 	}
 }

@@ -30,7 +30,11 @@ export function providerTypeLabel(type) {
 
 export function nodeConnectionStats(node, connections) {
   const names = new Set([node.name, node.proxy_name].filter(Boolean))
-  const matches = (connections || []).filter((connection) => (connection.chains || []).some((name) => names.has(name)))
+  const matches = (connections || []).filter((connection) => {
+    const providerIDs = Array.isArray(connection.providerIDs) ? connection.providerIDs : []
+    const providerMatches = !providerIDs.length || providerIDs.includes(node.provider_id)
+    return providerMatches && (connection.chains || []).some((name) => names.has(name))
+  })
   return {
     count: matches.length,
     upload: matches.reduce((total, item) => total + (Number(item.upload) || 0), 0),

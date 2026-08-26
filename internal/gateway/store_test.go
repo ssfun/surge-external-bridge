@@ -140,3 +140,77 @@ func TestStoreRejectsIncompleteCurrentSchemaInsteadOfNormalizing(t *testing.T) {
 		t.Fatal("legacy independent publish fields were accepted or normalized")
 	}
 }
+
+func TestStoreMigratesUnsafeGatewayCredentialsToRepairableState(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	config, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Mode = ModeGateway
+	config.HTTPBind = "0.0.0.0:18080"
+	config.SocksBind = "0.0.0.0"
+	config.VirtualHost = "192.168.50.10"
+	config.ManagementToken = "management-token-1234"
+	config.PolicyToken = "unsafe"
+	config.Providers = []Provider{{
+		Name: "Legacy Auth", Type: "http", URL: "https://example.com/subscription", Enabled: true,
+		Headers: map[string][]string{"Authorization": {"Bearer legacy-secret"}}, RefreshSeconds: 21600, SizeLimit: 16 << 20,
+	}}
+	assignProviderIDs(&config)
+	if err := store.Save(config); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.PolicyToken == "unsafe" || len(loaded.PolicyToken) != 24 {
+		t.Fatalf("legacy Policy Token was not replaced: %q", loaded.PolicyToken)
+	}
+	if loaded.Providers[0].Enabled {
+		t.Fatal("Provider with redirect-sensitive credentials remained enabled")
+	}
+	if got := len(store.Notices()); got != 2 {
+		t.Fatalf("security migration notices=%d, want 2", got)
+	}
+	if err := ValidateConfig(loaded); err != nil {
+		t.Fatalf("migrated configuration is not repairable: %v", err)
+	}
+	encoded, err := os.ReadFile(filepath.Join(dir, "gateway.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"policy_token": "unsafe"`) || strings.Contains(string(encoded), `"enabled": true`) {
+		t.Fatalf("security migration was not persisted: %s", encoded)
+	}
+}
+
+func TestStoreMigratesUnsafePolicyTokenInLocalMode(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	config, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.PolicyToken = "unsafe"
+	if err := store.Save(config); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.PolicyToken == "unsafe" || len(loaded.PolicyToken) != 24 {
+		t.Fatalf("legacy local Policy Token was not replaced: %q", loaded.PolicyToken)
+	}
+	if got := len(store.Notices()); got != 1 {
+		t.Fatalf("security migration notices=%d, want 1", got)
+	}
+	if err := ValidateConfig(loaded); err != nil {
+		t.Fatalf("migrated local configuration is invalid: %v", err)
+	}
+}

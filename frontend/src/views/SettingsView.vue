@@ -16,16 +16,23 @@ const saving = ref(false)
 const appliedMessage = ref('')
 const form = reactive({ mode: 'local', http_bind: '', socks_bind: '', socks_port: 0, virtual_host: '', projection_key: '', prefix_provider: false, management_token: '', policy_token: '', node_test_url: '', node_test_udp_address: '', node_test_timeout_seconds: 10 })
 const credentialVisible = reactive({ management: false })
-const generatedCredential = reactive({ management: false })
+const generatedCredential = reactive({ management: false, policy: false })
 
 function populate(value) {
   if (!value) return
   Object.assign(form, value, { management_token: '' })
   credentialVisible.management = false
   generatedCredential.management = false
+  generatedCredential.policy = false
 }
 watch(settings, (value) => { if (!dirty.value) populate(value) }, { immediate: true })
 const protectedState = computed(() => settings.value?.data_directory_protected && settings.value?.configuration_protected && settings.value?.controller_key_protected)
+const generatedCredentialTitle = computed(() => generatedCredential.management && generatedCredential.policy
+  ? '两个独立的 24 位 Token 已生成并显示'
+  : generatedCredential.management ? '新的 24 位 Management Token 已生成并显示' : '新的 24 位 Policy Token 已生成并显示')
+const generatedCredentialHelp = computed(() => generatedCredential.management && generatedCredential.policy
+  ? '请分别保存 Management Token，并将 Policy Token 复制到 Surge 配置。'
+  : generatedCredential.management ? '请复制保存；Policy Token 没有改变。' : '请复制到 Surge Policy Path；Management Token 没有改变。')
 
 function markDirty() { dirty.value = true; appliedMessage.value = '' }
 function generateProjectionKey() { form.projection_key = randomToken(); markDirty() }
@@ -36,10 +43,11 @@ function generateManagementToken(quiet = false) {
   markDirty()
   if (!quiet) ui.toast('Management Token 已生成')
 }
-function useUnsafePolicyToken(quiet = false) {
-  form.policy_token = 'unsafe'
+function generatePolicyToken(quiet = false) {
+  form.policy_token = randomToken()
+  generatedCredential.policy = true
   markDirty()
-  if (!quiet) ui.toast('Policy Token 已设为 unsafe')
+  if (!quiet) ui.toast('Policy Token 已生成')
 }
 function modeChanged(event) {
   form.mode = event.target.value
@@ -50,11 +58,11 @@ function modeChanged(event) {
       generateManagementToken(true); managementGenerated = true
     }
     if (!form.policy_token) {
-      useUnsafePolicyToken(true); policyDefaulted = true
+      generatePolicyToken(true); policyDefaulted = true
     }
-    if (managementGenerated && policyDefaulted) ui.toast('Management Token 已生成，Policy Token 已设为 unsafe')
+    if (managementGenerated && policyDefaulted) ui.toast('Management Token 与 Policy Token 已分别生成')
     else if (managementGenerated) ui.toast('Management Token 已生成，请复制保存')
-    else if (policyDefaulted) ui.toast('Policy Token 已设为 unsafe')
+    else if (policyDefaulted) ui.toast('Policy Token 已生成，请复制到 Surge 配置')
   }
   markDirty()
 }
@@ -128,11 +136,11 @@ async function serviceAction(install) {
         </div>
         <div class="settings-secondary-grid">
           <div class="card settings-card" data-testid="settings-security">
-            <div class="settings-card-head"><div><h3>访问 Token</h3><p>Management Token 保护配置台；Policy Token 只是订阅地址中的固定参数。</p></div></div>
+            <div class="settings-card-head"><div><h3>访问 Token</h3><p>Management Token 保护配置台；Policy Token 保护包含节点凭据的 Policy Path。</p></div></div>
             <label class="field"><span class="settings-field-label">Management Token <i class="pill" :class="form.management_token ? 'warn' : settings.management_token_configured ? 'ok' : 'warn'">{{ form.management_token ? '待保存' : settings.management_token_configured ? '已配置' : '未配置' }}</i></span><span class="settings-secret-control"><input v-model="form.management_token" data-testid="management-token" :type="credentialVisible.management ? 'text' : 'password'" autocomplete="new-password" :placeholder="settings.management_token_configured ? '留空保持不变' : '输入新 Token'"><span class="settings-field-actions"><button v-if="form.management_token" class="button ghost compact" type="button" @click="credentialVisible.management = !credentialVisible.management">{{ credentialVisible.management ? '隐藏' : '显示' }}</button><button v-if="form.management_token" class="button ghost compact" type="button" @click="copyCredential('Management Token', form.management_token)">复制</button><button class="button ghost compact" type="button" @click="generateManagementToken">{{ form.management_token ? '重新生成' : '生成' }}</button></span></span><small>在其他设备打开此配置台时使用；保存后不会再次显示完整内容。</small></label>
-            <label class="field"><span class="settings-field-label">Policy Token <i class="pill" :class="form.policy_token ? 'ok' : 'warn'">{{ form.policy_token ? '已设置' : '未设置' }}</i></span><span class="settings-secret-control"><input v-model="form.policy_token" data-testid="policy-token" type="text" autocomplete="off" placeholder="unsafe"><span class="settings-field-actions"><button v-if="form.policy_token" class="button ghost compact" type="button" @click="copyCredential('Policy Token', form.policy_token)">复制</button><button v-if="form.policy_token !== 'unsafe'" class="button ghost compact" type="button" @click="useUnsafePolicyToken">使用 unsafe</button></span></span><small>默认使用 unsafe，会直接显示在订阅地址中，不作为密码隐藏。</small></label>
-            <div v-if="generatedCredential.management" class="settings-note warn settings-generated-note" data-testid="generated-token-note"><b>新的 24 位 Management Token 已生成并显示</b><span>请复制保存。Policy Token 已直接设为 unsafe。</span></div>
-            <div v-else-if="form.mode === 'gateway'" class="settings-note">Management Token 保存后不会回显；Policy Token 会始终显示，默认值为 unsafe。</div>
+            <label class="field"><span class="settings-field-label">Policy Token <i class="pill" :class="form.policy_token ? 'ok' : 'warn'">{{ form.policy_token ? '已设置' : '未设置' }}</i></span><span class="settings-secret-control"><input v-model="form.policy_token" data-testid="policy-token" type="text" autocomplete="off" minlength="16" placeholder="至少 16 位"><span class="settings-field-actions"><button v-if="form.policy_token" class="button ghost compact" type="button" @click="copyCredential('Policy Token', form.policy_token)">复制</button><button class="button ghost compact" type="button" @click="generatePolicyToken">{{ form.policy_token ? '重新生成' : '生成' }}</button></span></span><small>会显示在 Surge 的订阅地址中；至少 16 位，并且必须与 Management Token 不同。</small></label>
+            <div v-if="generatedCredential.management || generatedCredential.policy" class="settings-note warn settings-generated-note" data-testid="generated-token-note"><b>{{ generatedCredentialTitle }}</b><span>{{ generatedCredentialHelp }}</span></div>
+            <div v-else-if="form.mode === 'gateway'" class="settings-note">Management Token 保存后不会回显；Policy Token 会保留显示，便于配置 Surge Policy Path。</div>
           </div>
           <div class="card settings-card" data-testid="settings-identity">
             <div class="settings-card-head"><div><h3>节点凭据</h3><p>让多台 SurgeEB 为同一个节点生成相同的用户名和密码。</p></div></div>

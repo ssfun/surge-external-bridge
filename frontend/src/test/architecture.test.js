@@ -14,6 +14,7 @@ import appRouter, { finalizeNavigation } from '@/router.js'
 import { backgroundResources, routeResources, useDataStore } from '@/stores/data.js'
 import { routeStreams, useRealtimeStore } from '@/stores/realtime.js'
 import { shouldRefreshInBackground } from '@/refreshPolicy.js'
+import { nodeConnectionStats } from '@/utils.js'
 
 function sampleOverview() {
   return { version: '0.3.1', core_version: 'test', provider_count: 1, projection_count: 1, policy_url: 'http://127.0.0.1/proxies', process_rule: 'PROCESS-NAME,SurgeEB,DIRECT', gateway: { state: 'running', socks_address: '127.0.0.1:1080', projection_hash: 'abcdef', projection_count: 1 } }
@@ -128,20 +129,25 @@ describe('component update boundaries', () => {
     await router.push('/')
     const wrapper = mount({ template: '<RouterView />' }, { global: { plugins: [router] } })
 
+    await wrapper.get('[data-testid="settings-security"]').findAll('button').find((button) => button.text() === '生成').trigger('click')
+    const management = wrapper.get('[data-testid="management-token"]')
+    expect(management.element.value).toMatch(/^[A-Za-z0-9_-]{24}$/)
+    expect(wrapper.get('[data-testid="generated-token-note"]').text()).toContain('新的 24 位 Management Token')
+    expect(wrapper.get('[data-testid="generated-token-note"]').text()).not.toContain('两个独立的 24 位 Token')
+
     const mode = wrapper.get('[data-testid="settings-mode"]')
     await mode.setValue('gateway')
     expect(mode.element.value).toBe('gateway')
     expect(wrapper.get('[data-testid="settings-deployment"] > .settings-card-head .pill').text()).toBe('局域网')
-    const management = wrapper.get('[data-testid="management-token"]')
     const policy = wrapper.get('[data-testid="policy-token"]')
     const tokens = [management.element.value, policy.element.value]
     expect(tokens[0]).toMatch(/^[A-Za-z0-9_-]{24}$/)
-    expect(tokens[1]).toBe('unsafe')
+    expect(tokens[1]).toMatch(/^[A-Za-z0-9_-]{24}$/)
     expect(tokens[0]).not.toBe(tokens[1])
     expect(management.attributes('type')).toBe('text')
     expect(policy.attributes('type')).toBe('text')
-    expect(wrapper.get('[data-testid="generated-token-note"]').text()).toContain('Policy Token 已直接设为 unsafe')
-    expect(wrapper.get('[data-testid="settings-security"]').findAll('button').map((button) => button.text())).toEqual(['隐藏', '复制', '重新生成', '复制'])
+    expect(wrapper.get('[data-testid="generated-token-note"]').text()).toContain('两个独立的 24 位 Token')
+    expect(wrapper.get('[data-testid="settings-security"]').findAll('button').map((button) => button.text())).toEqual(['隐藏', '复制', '重新生成', '复制', '重新生成'])
 
     await wrapper.get('[data-testid="settings-identity"]').findAll('button').find((button) => button.text() === '重新生成').trigger('click')
     expect(wrapper.get('[data-testid="projection-key"]').element.value).toMatch(/^[A-Za-z0-9_-]{24}$/)
@@ -203,6 +209,35 @@ describe('component update boundaries', () => {
     expect(field('[data-testid="provider-file-path"]').attributes()).toHaveProperty('required')
     expect(field('[data-testid="provider-http-options"]').isVisible()).toBe(false)
     wrapper.unmount()
+  })
+
+  it('requires confirmation before a Provider rename rotates node credentials', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const data = useDataStore()
+    data.saveProvider = vi.fn(async () => {})
+    const provider = {
+      stable_id: 'provider-1', name: '原名称', type: 'http', enabled: true,
+      refresh_seconds: 21600, size_limit: 16777216, health_check: false,
+    }
+    window.confirm.mockReturnValue(false)
+    const wrapper = mount(ProviderDialog, { props: { open: true, provider }, global: { plugins: [pinia] } })
+    await nextTick()
+    await new DOMWrapper(document.querySelector('[data-testid="provider-primary"] input')).setValue('新名称')
+    document.querySelector('[role="dialog"]').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await nextTick()
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('用户名和密码'))
+    expect(data.saveProvider).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('uses Provider IDs to disambiguate same-name node connection totals', () => {
+    const connections = [
+      { chains: ['香港 01', 'GLOBAL'], providerIDs: ['provider-a'], upload: 10, download: 20 },
+      { chains: ['香港 01', 'GLOBAL'], providerIDs: ['provider-b'], upload: 30, download: 40 },
+    ]
+    expect(nodeConnectionStats({ name: '香港 01', proxy_name: '香港 01', provider_id: 'provider-a' }, connections)).toMatchObject({ count: 1, upload: 10, download: 20 })
+    expect(nodeConnectionStats({ name: '香港 01', proxy_name: '香港 01', provider_id: 'provider-b' }, connections)).toMatchObject({ count: 1, upload: 30, download: 40 })
   })
 
   it('keeps Provider cards focused on actionable state and gates source-specific actions', async () => {
