@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -268,6 +269,266 @@ func TestScheduledRefreshUsesSerializedNativeProviderUpdate(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("scheduled native Update did not publish the new Provider content: %#v", manager.Snapshot().Entries())
+}
+
+func TestManagerOwnedProviderHealthChecksDoNotRaceRefresh(t *testing.T) {
+	manager := runtimeManager(t)
+	health := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer health.Close()
+	var contentMu sync.RWMutex
+	content := "proxies:\n  - name: Direct 0\n    type: direct\n"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		contentMu.RLock()
+		defer contentMu.RUnlock()
+		_, _ = w.Write([]byte(content))
+	}))
+	defer upstream.Close()
+	definition := ProviderDefinition{
+		StableID: "refresh-health-race", Name: "Refresh Health Race", Type: "http", URL: upstream.URL, RefreshSeconds: 3600,
+		HealthCheck: true, HealthCheckURL: health.URL, HealthCheckSeconds: 60, HealthCheckTimeout: 1000, ExpectedStatus: "200-399",
+	}
+	if err := manager.ApplyProviders([]ProviderDefinition{definition}); err != nil {
+		t.Fatal(err)
+	}
+	key, _ := ProviderKey(definition.StableID)
+	if got := manager.config.Providers[key].HealthCheckURL(); got != health.URL {
+		t.Fatalf("disabling Mihomo's automatic ticker lost health-check URL %q", got)
+	}
+	for index := 1; index <= 20; index++ {
+		contentMu.Lock()
+		content = fmt.Sprintf("proxies:\n  - name: Direct %d\n    type: direct\n", index)
+		contentMu.Unlock()
+		start := make(chan struct{})
+		errorsFound := make(chan error, 2)
+		var wait sync.WaitGroup
+		wait.Add(2)
+		go func() {
+			defer wait.Done()
+			<-start
+			errorsFound <- manager.RefreshProvider(definition.StableID)
+		}()
+		go func() {
+			defer wait.Done()
+			<-start
+			errorsFound <- manager.HealthCheckProvider(definition.StableID)
+		}()
+		close(start)
+		wait.Wait()
+		close(errorsFound)
+		for err := range errorsFound {
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	waitForHealthTasks(t, manager)
+}
+
+func TestFileProviderWatcherCannotRaceManagerOwnedHealthChecks(t *testing.T) {
+	manager := runtimeManager(t)
+	health := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer health.Close()
+	path := filepath.Join(sharedRuntime.home, "file-health-race.yaml")
+	write := func(index int) {
+		t.Helper()
+		content := fmt.Sprintf("proxies:\n  - name: Direct %d\n    type: direct\n", index)
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(0)
+	definition := ProviderDefinition{
+		StableID: "file-health-race", Name: "File Health Race", Type: "file", FilePath: path,
+		HealthCheck: true, HealthCheckURL: health.URL, HealthCheckSeconds: 60, HealthCheckTimeout: 1000, ExpectedStatus: "200-399",
+	}
+	if err := manager.ApplyProviders([]ProviderDefinition{definition}); err != nil {
+		t.Fatal(err)
+	}
+	key, _ := ProviderKey(definition.StableID)
+	initialVersion := manager.config.Providers[key].Version()
+	for index := 1; index <= 40; index++ {
+		write(index)
+		if err := manager.HealthCheckProvider(definition.StableID); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && manager.config.Providers[key].Version() == initialVersion {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if manager.config.Providers[key].Version() == initialVersion {
+		t.Fatal("File Provider watcher did not update proxies during the race regression")
+	}
+	waitForHealthTasks(t, manager)
+}
+
+func TestLazyHealthCheckRequiresRealProviderActivityAfterInitialRun(t *testing.T) {
+	manager := runtimeManager(t)
+	var requests atomic.Int32
+	health := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer health.Close()
+	definition := ProviderDefinition{
+		StableID: "lazy-health", Name: "Lazy Health", Type: "inline",
+		Payload:     []map[string]any{{"name": "Direct", "type": "direct"}},
+		HealthCheck: true, HealthCheckURL: health.URL, HealthCheckSeconds: 60, HealthCheckTimeout: 1000,
+		HealthCheckLazy: true, ExpectedStatus: "200-399",
+	}
+	if err := manager.ApplyProviders([]ProviderDefinition{definition}); err != nil {
+		t.Fatal(err)
+	}
+	forceHealthDue(manager, definition.StableID)
+	manager.pollProviders()
+	waitForRequestCount(t, &requests, 1)
+	waitForHealthTasks(t, manager)
+
+	forceHealthDue(manager, definition.StableID)
+	manager.pollProviders()
+	time.Sleep(50 * time.Millisecond)
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("idle Lazy Provider ran another health check: requests=%d", got)
+	}
+
+	manager.store.TouchProvider(definition.StableID)
+	forceHealthDue(manager, definition.StableID)
+	manager.pollProviders()
+	waitForRequestCount(t, &requests, 2)
+	waitForHealthTasks(t, manager)
+}
+
+func TestHealthCheckNetworkWorkDoesNotBlockProviderRefresh(t *testing.T) {
+	manager := runtimeManager(t)
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseHealth := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseHealth()
+	health := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer health.Close()
+	definition := ProviderDefinition{
+		StableID: "nonblocking-health", Name: "Nonblocking Health", Type: "inline",
+		Payload:     []map[string]any{{"name": "Direct", "type": "direct"}},
+		HealthCheck: true, HealthCheckURL: health.URL, HealthCheckSeconds: 60, HealthCheckTimeout: 5000, ExpectedStatus: "200-399",
+	}
+	if err := manager.ApplyProviders([]ProviderDefinition{definition}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.HealthCheckProvider(definition.StableID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("health check did not start")
+	}
+	started := time.Now()
+	if err := manager.RefreshProvider(definition.StableID); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("Provider refresh waited for health-check network work: %v", elapsed)
+	}
+	releaseHealth()
+	waitForHealthTasks(t, manager)
+}
+
+func TestApplyProvidersCancelsHealthTasksBeforeReplacingProxies(t *testing.T) {
+	manager := runtimeManager(t)
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseHealth := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseHealth()
+	health := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer health.Close()
+	definition := ProviderDefinition{
+		StableID: "replace-health", Name: "Replace Health", Type: "inline",
+		Payload:     []map[string]any{{"name": "Old Direct", "type": "direct"}},
+		HealthCheck: true, HealthCheckURL: health.URL, HealthCheckSeconds: 60, HealthCheckTimeout: 5000, ExpectedStatus: "200-399",
+	}
+	if err := manager.ApplyProviders([]ProviderDefinition{definition}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.HealthCheckProvider(definition.StableID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("health check did not start")
+	}
+	replacement := definition
+	replacement.Payload = []map[string]any{{"name": "New Direct", "type": "direct"}}
+	replacement.HealthCheck = false
+	started := time.Now()
+	if err := manager.ApplyProviders([]ProviderDefinition{replacement}); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("Provider replacement did not promptly cancel health work: %v", elapsed)
+	}
+	manager.healthMu.Lock()
+	active := len(manager.healthTasks)
+	manager.healthMu.Unlock()
+	if active != 0 {
+		t.Fatalf("Provider replacement retained %d health tasks", active)
+	}
+	releaseHealth()
+}
+
+func forceHealthDue(manager *Manager, stableID string) {
+	key, _ := ProviderKey(stableID)
+	manager.mu.Lock()
+	manager.nextHealth[key] = time.Now().Add(-time.Second)
+	manager.mu.Unlock()
+}
+
+func waitForRequestCount(t *testing.T, requests *atomic.Int32, want int32) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if requests.Load() >= want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("health-check requests=%d, want at least %d", requests.Load(), want)
+}
+
+func waitForHealthTasks(t *testing.T, manager *Manager) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		manager.healthMu.Lock()
+		active := len(manager.healthTasks)
+		manager.healthMu.Unlock()
+		if active == 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("Provider health-check tasks did not finish")
 }
 
 func TestProjectionSettingsRotateCredentialsAndRebindListenerWithoutCoreRestart(t *testing.T) {

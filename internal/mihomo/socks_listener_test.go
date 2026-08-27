@@ -141,6 +141,125 @@ func TestRuntimeAuthenticationProbeSupportsEmptyProjection(t *testing.T) {
 	}
 }
 
+func TestSOCKSListenerTimesOutSilentAuthenticationHandshake(t *testing.T) {
+	snapshot := EmptySnapshot()
+	listener, err := BindSOCKSListener("127.0.0.1:0", &captureTunnel{tcp: make(chan *C.Metadata, 1), udp: make(chan *C.Metadata, 1)}, NewAuthenticator(NewSnapshotStore(snapshot)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener.handshakeTimeout = 50 * time.Millisecond
+	listener.Start()
+	defer listener.Close()
+
+	connection, err := net.DialTimeout("tcp", listener.Address(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if err := connection.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]byte, 1)
+	if _, err := connection.Read(buffer); err == nil {
+		t.Fatal("silent authentication connection remained open past its deadline")
+	} else if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+		t.Fatalf("client timed out before the listener closed the silent handshake: %v", err)
+	}
+}
+
+func TestSOCKSListenerLimitsUnauthenticatedConnectionsAndStillAcceptsValidIdentity(t *testing.T) {
+	proxy := &fakeProxy{name: "node", adapterType: C.Vless, udp: true}
+	snapshot := mustProjection(t, make([]byte, 32), []ProviderView{{StableID: "p", Name: "Provider", Proxies: []C.Proxy{proxy}}})
+	entry := snapshot.Entries()[0]
+	tunnel := &captureTunnel{tcp: make(chan *C.Metadata, 1), udp: make(chan *C.Metadata, 1)}
+	listener, err := BindSOCKSListener("127.0.0.1:0", tunnel, NewAuthenticator(NewSnapshotStore(snapshot)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener.handshakes = newHandshakeLimiter(1, 1)
+	listener.handshakeTimeout = time.Second
+	listener.Start()
+	defer listener.Close()
+
+	first, err := net.DialTimeout("tcp", listener.Address(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitHandshakeCount(t, listener.handshakes, 1)
+	second, err := net.DialTimeout("tcp", listener.Address(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := second.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.Read(make([]byte, 1)); err == nil {
+		t.Fatal("connection above the unauthenticated limit remained open")
+	} else if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+		t.Fatalf("over-limit connection was not rejected promptly: %v", err)
+	}
+	_ = second.Close()
+	_ = first.Close()
+	waitHandshakeCount(t, listener.handshakes, 0)
+
+	valid, err := net.DialTimeout("tcp", listener.Address(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer valid.Close()
+	if _, err := socks5.ClientHandshake(valid, socks5.ParseAddr("example.com:443"), socks5.CmdConnect, &socks5.User{Username: entry.Username, Password: entry.Password}); err != nil {
+		t.Fatalf("valid authentication failed after limiter capacity was released: %v", err)
+	}
+	select {
+	case metadata := <-tunnel.tcp:
+		if metadata.InUser != entry.Username {
+			t.Fatalf("valid authentication propagated user %q", metadata.InUser)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("valid authenticated connection was not delivered")
+	}
+}
+
+func TestHandshakeLimiterEnforcesGlobalAndPerIPCapacity(t *testing.T) {
+	limiter := newHandshakeLimiter(2, 1)
+	releaseFirst, ok := limiter.acquire(tcpAddress("192.0.2.1", 40000))
+	if !ok {
+		t.Fatal("first handshake was rejected")
+	}
+	if _, ok := limiter.acquire(tcpAddress("192.0.2.1", 40001)); ok {
+		t.Fatal("per-IP handshake limit was not enforced")
+	}
+	releaseSecond, ok := limiter.acquire(tcpAddress("192.0.2.2", 40002))
+	if !ok {
+		t.Fatal("second IP handshake was rejected before global capacity")
+	}
+	if _, ok := limiter.acquire(tcpAddress("192.0.2.3", 40003)); ok {
+		t.Fatal("global handshake limit was not enforced")
+	}
+	releaseFirst()
+	releaseThird, ok := limiter.acquire(tcpAddress("192.0.2.3", 40003))
+	if !ok {
+		t.Fatal("released global handshake capacity was not reusable")
+	}
+	releaseSecond()
+	releaseThird()
+}
+
+func waitHandshakeCount(t *testing.T, limiter *handshakeLimiter, want int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		limiter.mu.Lock()
+		active := limiter.active
+		limiter.mu.Unlock()
+		if active == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("active authentication handshakes did not reach %d", want)
+}
+
 func TestAssociationRegistryBindsExactEndpointToAuthenticatedUser(t *testing.T) {
 	registry := newAssociationRegistry(10, 10, time.Minute)
 	association, err := registry.add("user-a", tcpAddress("192.0.2.1", 40000), udpAddress("0.0.0.0", 50000))

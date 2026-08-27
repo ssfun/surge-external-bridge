@@ -107,6 +107,32 @@ func TestBuildControlledConfigCreatesNativeInlineProvider(t *testing.T) {
 	}
 }
 
+func TestProviderMappingLeavesHealthCheckExecutionToManager(t *testing.T) {
+	home := shortTempDir(t)
+	mapping, err := providerMapping(home, ProviderDefinition{
+		StableID: "health", Name: "Health", Type: "inline",
+		Payload:     []map[string]any{{"name": "Direct", "type": "direct"}},
+		HealthCheck: true, HealthCheckURL: "https://example.com/generate_204", HealthCheckSeconds: 300,
+		HealthCheckTimeout: 5000, HealthCheckLazy: true, ExpectedStatus: "200-399",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	health, ok := mapping["health-check"].(map[string]any)
+	if !ok {
+		t.Fatalf("health-check mapping = %#v", mapping["health-check"])
+	}
+	if enabled, _ := health["enable"].(bool); enabled {
+		t.Fatal("Mihomo automatic health-check ticker remained enabled")
+	}
+	if health["url"] != "https://example.com/generate_204" || health["timeout"] != 5000 || health["expected-status"] != "200-399" {
+		t.Fatalf("Manager-owned health check lost Mihomo execution settings: %#v", health)
+	}
+	if _, exists := health["interval"]; exists {
+		t.Fatalf("Mihomo automatic health-check interval remained configured: %#v", health)
+	}
+}
+
 func TestBuildControlledConfigCreatesRealityVisionVLESSProvider(t *testing.T) {
 	privateKey, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {

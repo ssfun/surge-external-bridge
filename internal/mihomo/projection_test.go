@@ -7,6 +7,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/metacubex/mihomo/common/utils"
 	C "github.com/metacubex/mihomo/constant"
@@ -74,6 +75,26 @@ func TestProjectionIdentityIsStableAcrossProxyReplacement(t *testing.T) {
 	}
 }
 
+func TestProjectionEntryAtomicallyCarriesPublishedSOCKSEndpoint(t *testing.T) {
+	proxy := &fakeProxy{name: "node", adapterType: C.Vless}
+	providers := []ProviderView{{StableID: "p", Name: "Provider", Proxies: []C.Proxy{proxy}}}
+	first, err := BuildProjection(providers, BuildOptions{MasterKey: make([]byte, 32), SocksAdvertise: "old.example", SocksPort: 1080})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := BuildProjection(providers, BuildOptions{MasterKey: make([]byte, 32), SocksAdvertise: "new.example", SocksPort: 2080})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := second.Entries()[0]
+	if entry.SocksHost != "new.example" || entry.SocksPort != 2080 {
+		t.Fatalf("published endpoint was not carried by the Snapshot Entry: %#v", entry)
+	}
+	if first.Revision() == second.Revision() {
+		t.Fatal("publication endpoint change did not change the Snapshot revision")
+	}
+}
+
 func TestProjectionFiltersWithoutMutatingProvider(t *testing.T) {
 	key := make([]byte, 32)
 	all := []C.Proxy{
@@ -121,8 +142,12 @@ func TestAuthenticatorAndRouterFailClosedAfterSnapshotChange(t *testing.T) {
 		t.Fatal("invalid identity was accepted")
 	}
 	metadata := &C.Metadata{InUser: entry.Username}
+	beforeTouch := time.Now()
 	if _, err := router.DialContext(context.Background(), metadata); !errors.Is(err, errDialMarker) || proxy.dials != 1 {
 		t.Fatalf("TCP was not delegated to selected proxy: err=%v calls=%d", err, proxy.dials)
+	}
+	if !store.ProviderTouchedSince("p", beforeTouch) {
+		t.Fatal("actual routed traffic did not mark its Provider active for Lazy health checks")
 	}
 	if _, err := router.ListenPacketContext(context.Background(), metadata); !errors.Is(err, errPacketMarker) || proxy.packets != 1 {
 		t.Fatalf("UDP was not delegated to selected proxy: err=%v calls=%d", err, proxy.packets)

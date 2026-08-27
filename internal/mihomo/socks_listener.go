@@ -23,19 +23,24 @@ const (
 	defaultMaxAssociations      = 512
 	defaultMaxAssociationsPerIP = 64
 	defaultAssociationIdle      = 5 * time.Minute
+	defaultMaxHandshakes        = 256
+	defaultMaxHandshakesPerIP   = 32
+	defaultHandshakeTimeout     = 10 * time.Second
 )
 
 type SOCKSListener struct {
-	tcp      net.Listener
-	udp      net.PacketConn
-	tunnel   C.Tunnel
-	auth     auth.Authenticator
-	registry *associationRegistry
-	closed   atomic.Bool
-	started  atomic.Bool
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wait     sync.WaitGroup
+	tcp              net.Listener
+	udp              net.PacketConn
+	tunnel           C.Tunnel
+	auth             auth.Authenticator
+	registry         *associationRegistry
+	handshakes       *handshakeLimiter
+	handshakeTimeout time.Duration
+	closed           atomic.Bool
+	started          atomic.Bool
+	ctx              context.Context
+	cancel           context.CancelFunc
+	wait             sync.WaitGroup
 }
 
 func NewSOCKSListener(address string, tunnel C.Tunnel, authenticator auth.Authenticator) (*SOCKSListener, error) {
@@ -66,13 +71,15 @@ func BindSOCKSListener(address string, tunnel C.Tunnel, authenticator auth.Authe
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	listener := &SOCKSListener{
-		tcp:      tcpListener,
-		udp:      udpListener,
-		tunnel:   tunnel,
-		auth:     authenticator,
-		registry: newAssociationRegistry(defaultMaxAssociations, defaultMaxAssociationsPerIP, defaultAssociationIdle),
-		ctx:      ctx,
-		cancel:   cancel,
+		tcp:              tcpListener,
+		udp:              udpListener,
+		tunnel:           tunnel,
+		auth:             authenticator,
+		registry:         newAssociationRegistry(defaultMaxAssociations, defaultMaxAssociationsPerIP, defaultAssociationIdle),
+		handshakes:       newHandshakeLimiter(defaultMaxHandshakes, defaultMaxHandshakesPerIP),
+		handshakeTimeout: defaultHandshakeTimeout,
+		ctx:              ctx,
+		cancel:           cancel,
 	}
 	return listener, nil
 }
@@ -232,11 +239,25 @@ func (l *SOCKSListener) acceptTCP() {
 			}
 			continue
 		}
-		go l.handleTCP(conn)
+		release, ok := l.handshakes.acquire(conn.RemoteAddr())
+		if !ok {
+			_ = conn.Close()
+			continue
+		}
+		go l.handleTCP(conn, release)
 	}
 }
 
-func (l *SOCKSListener) handleTCP(conn net.Conn) {
+func (l *SOCKSListener) handleTCP(conn net.Conn, releaseHandshake func()) {
+	defer func() {
+		if releaseHandshake != nil {
+			releaseHandshake()
+		}
+	}()
+	if err := conn.SetDeadline(time.Now().Add(l.handshakeTimeout)); err != nil {
+		_ = conn.Close()
+		return
+	}
 	buffered := N.NewBufferedConn(conn)
 	version, err := buffered.Peek(1)
 	if err != nil || len(version) != 1 || version[0] != socks5.Version {
@@ -248,6 +269,14 @@ func (l *SOCKSListener) handleTCP(conn net.Conn) {
 		_ = conn.Close()
 		return
 	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		_ = conn.Close()
+		return
+	}
+	// Authenticated TCP tunnels and UDP control associations have their own
+	// lifecycle. Only pre-authentication work consumes handshake capacity.
+	releaseHandshake()
+	releaseHandshake = nil
 	additions := []I.Addition{
 		I.WithInName("surgeeb-socks"),
 		I.WithInUser(user),
@@ -268,6 +297,45 @@ func (l *SOCKSListener) handleTCP(conn net.Conn) {
 	default:
 		_ = conn.Close()
 	}
+}
+
+type handshakeLimiter struct {
+	mu       sync.Mutex
+	active   int
+	byIP     map[netip.Addr]int
+	maxTotal int
+	maxPerIP int
+}
+
+func newHandshakeLimiter(maxTotal, maxPerIP int) *handshakeLimiter {
+	return &handshakeLimiter{byIP: make(map[netip.Addr]int), maxTotal: maxTotal, maxPerIP: maxPerIP}
+}
+
+func (l *handshakeLimiter) acquire(remote net.Addr) (func(), bool) {
+	ip, err := addressIP(remote)
+	if err != nil {
+		return nil, false
+	}
+	l.mu.Lock()
+	if l.active >= l.maxTotal || l.byIP[ip] >= l.maxPerIP {
+		l.mu.Unlock()
+		return nil, false
+	}
+	l.active++
+	l.byIP[ip]++
+	l.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			l.mu.Lock()
+			l.active--
+			l.byIP[ip]--
+			if l.byIP[ip] == 0 {
+				delete(l.byIP, ip)
+			}
+			l.mu.Unlock()
+		})
+	}, true
 }
 
 func (l *SOCKSListener) acceptUDP() {

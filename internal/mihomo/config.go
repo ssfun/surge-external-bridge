@@ -196,7 +196,10 @@ func providerMapping(homeDir string, definition ProviderDefinition) (map[string]
 	}
 	if definition.HealthCheck {
 		mapping["health-check"] = map[string]any{
-			"enable": true, "url": definition.HealthCheckURL, "interval": definition.HealthCheckSeconds,
+			// Preserve Mihomo's URL, timeout, and result tracking, but do not
+			// start its unsynchronised health-check ticker. Manager runs checks
+			// from stable proxy snapshots under its own lifecycle.
+			"enable": false, "url": definition.HealthCheckURL,
 			"timeout": definition.HealthCheckTimeout, "lazy": definition.HealthCheckLazy,
 			"expected-status": definition.ExpectedStatus,
 		}

@@ -152,7 +152,7 @@ func (a *App) SurgeLine(id string) (string, error) {
 	if !ok {
 		return "", errors.New("Node not found")
 	}
-	return formatSurgeLine(entry, a.Config()), nil
+	return formatSurgeLine(entry), nil
 }
 
 func (a *App) AddProvider(provider Provider) (Provider, error) {
@@ -382,14 +382,13 @@ func (a *App) UpdateSettings(settings Settings) error {
 		}
 	}
 	if err := a.store.Save(candidate); err != nil {
+		var rollbackErr error
 		if wasRunning {
-			_ = a.manager.ApplyProjectionSettings(previous.SocksBind, previous.SocksHost, previous.SocksPort, previous.PrefixProvider, previousKey)
+			rollbackErr = a.manager.ApplyProjectionSettings(previous.SocksBind, previous.SocksHost, previous.SocksPort, previous.PrefixProvider, previousKey)
 		} else {
-			_ = a.manager.Stop()
-			_ = a.manager.ConfigureProjectionWhenStopped(previous.SocksBind, previous.SocksHost, previous.SocksPort, previous.PrefixProvider, previousKey)
-			_ = a.manager.StartWithProviders(definitions(previous))
+			rollbackErr = a.restoreStoppedSettings(previous, previousKey)
 		}
-		return err
+		return rollbackAfterPersistenceFailure(err, rollbackErr, a.manager.Stop)
 	}
 	a.mu.Lock()
 	a.config = candidate
@@ -413,22 +412,21 @@ func (a *App) applyConfig(candidate Config) error {
 	if applyErr != nil {
 		return applyErr
 	}
+	a.mu.RLock()
+	previous := cloneConfig(a.config)
+	a.mu.RUnlock()
+	if err := a.store.Save(candidate); err != nil {
+		var rollbackErr error
+		if wasRunning {
+			rollbackErr = a.manager.ApplyProviders(definitions(previous))
+		} else {
+			rollbackErr = errors.Join(a.manager.Stop(), a.manager.StartWithProviders(definitions(previous)))
+		}
+		return rollbackAfterPersistenceFailure(err, rollbackErr, a.manager.Stop)
+	}
 	a.mu.Lock()
-	previous := a.config
 	a.config = cloneConfig(candidate)
 	a.mu.Unlock()
-	if err := a.store.Save(candidate); err != nil {
-		if wasRunning {
-			_ = a.manager.ApplyProviders(definitions(previous))
-		} else {
-			_ = a.manager.Stop()
-			_ = a.manager.StartWithProviders(definitions(previous))
-		}
-		a.mu.Lock()
-		a.config = previous
-		a.mu.Unlock()
-		return err
-	}
 	a.addEvent("info", "Provider 配置已更新")
 	return nil
 }
@@ -442,16 +440,47 @@ func (a *App) Proxies() (string, string, error) {
 	if len(entries) == 0 {
 		return "", snapshot.Revision(), nil
 	}
-	config := a.Config()
 	lines := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		lines = append(lines, formatSurgeLine(entry, config))
+		lines = append(lines, formatSurgeLine(entry))
 	}
 	return strings.Join(lines, "\n") + "\n", snapshot.Revision(), nil
 }
 
-func formatSurgeLine(entry M.Entry, config Config) string {
-	return fmt.Sprintf("%s = socks5, %s, %d, username=%s, password=%s, udp-relay=%t", entry.DisplayName, config.SocksHost, config.SocksPort, entry.Username, entry.Password, entry.SupportUDP)
+func formatSurgeLine(entry M.Entry) string {
+	return fmt.Sprintf("%s = socks5, %s, %d, username=%s, password=%s, udp-relay=%t", entry.DisplayName, entry.SocksHost, entry.SocksPort, entry.Username, entry.Password, entry.SupportUDP)
+}
+
+func (a *App) restoreStoppedSettings(previous Config, previousKey []byte) error {
+	if err := a.manager.Stop(); err != nil {
+		return fmt.Errorf("stop unpersisted runtime: %w", err)
+	}
+	if err := a.manager.ConfigureProjectionWhenStopped(previous.SocksBind, previous.SocksHost, previous.SocksPort, previous.PrefixProvider, previousKey); err != nil {
+		return fmt.Errorf("restore previous projection settings: %w", err)
+	}
+	if err := a.manager.StartWithProviders(definitions(previous)); err != nil {
+		return fmt.Errorf("restart previous runtime: %w", err)
+	}
+	return nil
+}
+
+func rollbackAfterPersistenceFailure(persistErr, rollbackErr error, stop func() error) error {
+	if rollbackErr == nil {
+		return persistErr
+	}
+	stopErr := stop()
+	return errors.Join(
+		persistErr,
+		fmt.Errorf("runtime rollback failed; data plane stopped: %w", rollbackErr),
+		wrapStopAfterRollbackError(stopErr),
+	)
+}
+
+func wrapStopAfterRollbackError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("stop runtime after rollback failure: %w", err)
 }
 
 func (a *App) addEvent(level, message string) {

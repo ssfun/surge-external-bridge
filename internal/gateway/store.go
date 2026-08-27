@@ -151,5 +151,8 @@ func (s *Store) Save(config Config) error {
 	if err := os.Rename(temporaryPath, s.configPath); err != nil {
 		return err
 	}
-	return os.Chmod(s.configPath, 0o600)
+	// The temporary file was already chmodded before publication. Returning an
+	// error after rename would falsely tell callers persistence failed even
+	// though gateway.json already contains the candidate configuration.
+	return nil
 }

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	U "github.com/metacubex/mihomo/common/utils"
 	MConfig "github.com/metacubex/mihomo/config"
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
@@ -64,8 +65,17 @@ type Manager struct {
 	done           chan struct{}
 	versions       map[string]uint32
 	nextPull       map[string]time.Time
+	nextHealth     map[string]time.Time
+	lastHealth     map[string]time.Time
 	providerErrors map[string]string
 	status         ManagerStatus
+	healthMu       sync.Mutex
+	healthTasks    map[string]*providerHealthTask
+}
+
+type providerHealthTask struct {
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 func NewManager(options ManagerOptions) (*Manager, error) {
@@ -83,8 +93,11 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 		store:          NewSnapshotStore(nil),
 		versions:       make(map[string]uint32),
 		nextPull:       make(map[string]time.Time),
+		nextHealth:     make(map[string]time.Time),
+		lastHealth:     make(map[string]time.Time),
 		providerErrors: make(map[string]string),
 		status:         ManagerStatus{State: "stopped", CoreVersion: CoreVersion},
+		healthTasks:    make(map[string]*providerHealthTask),
 	}, nil
 }
 
@@ -134,6 +147,7 @@ func (m *Manager) Start() error {
 		return err
 	}
 	if coreReady {
+		m.stopHealthChecks()
 		if err := applyProviderConfig(cfg); err != nil {
 			m.fail(err)
 			return err
@@ -291,6 +305,7 @@ func (m *Manager) ApplyProviders(definitions []ProviderDefinition) error {
 	// actually change. Besides avoiding a needless Controller restart, this
 	// avoids Mihomo v1.19.30's unsynchronised global log-level write while old
 	// outbound finalizers may still be logging.
+	m.stopHealthChecks()
 	replaceProviderConfig(candidate)
 	if err := ValidateRuntimeInvariants(candidate, m.options.HomeDir); err != nil {
 		m.failClosed(candidate, err)
@@ -450,20 +465,33 @@ func (m *Manager) RefreshProvider(stableID string) error {
 }
 
 func (m *Manager) HealthCheckProvider(stableID string) error {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if m.config == nil {
+	cfg := m.config
+	definitions := append([]ProviderDefinition(nil), m.options.Providers...)
+	m.mu.RUnlock()
+	if cfg == nil {
 		return errors.New("Mihomo manager is not running")
 	}
 	key, err := ProviderKey(stableID)
 	if err != nil {
 		return err
 	}
-	provider := m.config.Providers[key]
+	provider := cfg.Providers[key]
 	if provider == nil {
 		return errors.New("Provider not found")
 	}
-	provider.HealthCheck()
+	definition, ok := findProviderDefinition(stableID, definitions)
+	if !ok {
+		return errors.New("Provider definition not found")
+	}
+	if err := m.startProviderHealthCheckLocked(key, definition, provider); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.scheduleHealthProviderLocked(stableID, definitions, time.Now())
+	m.mu.Unlock()
 	return nil
 }
 
@@ -487,6 +515,7 @@ func (m *Manager) Stop() error {
 	if done != nil {
 		<-done
 	}
+	m.stopHealthChecks()
 	var err error
 	if listener != nil {
 		err = listener.Close()
@@ -549,18 +578,21 @@ func (m *Manager) pollProviders() {
 	defer m.applyMu.Unlock()
 	m.mu.RLock()
 	cfg := m.config
+	definitions := append([]ProviderDefinition(nil), m.options.Providers...)
+	m.mu.RUnlock()
 	if cfg == nil {
-		m.mu.RUnlock()
 		return
 	}
-	definitions := append([]ProviderDefinition(nil), m.options.Providers...)
 	now := time.Now()
 	changed := false
 	for _, definition := range definitions {
 		key, _ := ProviderKey(definition.StableID)
-		if definition.Type == "http" && definition.RefreshSeconds > 0 && !now.Before(m.nextPull[key]) {
-			provider := cfg.Providers[key]
-			m.mu.RUnlock()
+		m.mu.RLock()
+		refreshDue := definition.Type == "http" && definition.RefreshSeconds > 0 && !now.Before(m.nextPull[key])
+		healthDue := definition.HealthCheck && definition.HealthCheckSeconds > 0 && !now.Before(m.nextHealth[key])
+		m.mu.RUnlock()
+		provider := cfg.Providers[key]
+		if refreshDue {
 			if provider != nil {
 				if err := provider.Update(); err != nil {
 					m.mu.Lock()
@@ -583,14 +615,27 @@ func (m *Manager) pollProviders() {
 			m.mu.Lock()
 			m.scheduleProviderLocked(definition.StableID, definitions, now)
 			m.mu.Unlock()
+		}
+		if healthDue && provider != nil {
 			m.mu.RLock()
+			lastHealth := m.lastHealth[key]
+			m.mu.RUnlock()
+			shouldCheck := !definition.HealthCheckLazy || lastHealth.IsZero() || m.store.ProviderTouchedSince(definition.StableID, lastHealth)
+			if shouldCheck {
+				if err := m.startProviderHealthCheckLocked(key, definition, provider); err != nil {
+					m.emit("warn", fmt.Sprintf("scheduled Provider %s health check failed to start: %v", definition.Name, err))
+				}
+			}
+			m.mu.Lock()
+			m.scheduleHealthProviderLocked(definition.StableID, definitions, now)
+			m.mu.Unlock()
 		}
-		if provider := cfg.Providers[key]; provider != nil && m.versions[key] != provider.Version() {
+		m.mu.RLock()
+		if provider != nil && m.versions[key] != provider.Version() {
 			changed = true
-			break
 		}
+		m.mu.RUnlock()
 	}
-	m.mu.RUnlock()
 	if !changed {
 		return
 	}
@@ -624,8 +669,11 @@ func (m *Manager) captureVersionsLocked(cfg *MConfig.Config, definitions []Provi
 
 func (m *Manager) scheduleProvidersLocked(definitions []ProviderDefinition, now time.Time) {
 	clear(m.nextPull)
+	clear(m.nextHealth)
+	clear(m.lastHealth)
 	for _, definition := range definitions {
 		m.scheduleProviderLocked(definition.StableID, definitions, now)
+		m.scheduleInitialHealthProviderLocked(definition.StableID, definitions, now)
 	}
 }
 
@@ -641,6 +689,136 @@ func (m *Manager) scheduleProviderLocked(stableID string, definitions []Provider
 		}
 		m.nextPull[key] = now.Add(time.Duration(definition.RefreshSeconds) * time.Second)
 		return
+	}
+}
+
+func (m *Manager) scheduleInitialHealthProviderLocked(stableID string, definitions []ProviderDefinition, now time.Time) {
+	for _, definition := range definitions {
+		if definition.StableID != stableID {
+			continue
+		}
+		key, _ := ProviderKey(stableID)
+		if !definition.HealthCheck || definition.HealthCheckSeconds <= 0 {
+			delete(m.nextHealth, key)
+			return
+		}
+		// Mihomo performs one health check immediately when its automatic
+		// worker starts. Preserve that startup behavior in the Manager watcher.
+		m.nextHealth[key] = now
+		return
+	}
+}
+
+func (m *Manager) scheduleHealthProviderLocked(stableID string, definitions []ProviderDefinition, now time.Time) {
+	for _, definition := range definitions {
+		if definition.StableID != stableID {
+			continue
+		}
+		key, _ := ProviderKey(stableID)
+		if !definition.HealthCheck || definition.HealthCheckSeconds <= 0 {
+			delete(m.nextHealth, key)
+			return
+		}
+		m.nextHealth[key] = now.Add(time.Duration(definition.HealthCheckSeconds) * time.Second)
+		m.lastHealth[key] = now
+		return
+	}
+}
+
+func findProviderDefinition(stableID string, definitions []ProviderDefinition) (ProviderDefinition, bool) {
+	for _, definition := range definitions {
+		if definition.StableID == stableID {
+			return definition, true
+		}
+	}
+	return ProviderDefinition{}, false
+}
+
+func (m *Manager) startProviderHealthCheckLocked(key string, definition ProviderDefinition, provider P.ProxyProvider) error {
+	if !definition.HealthCheck || strings.TrimSpace(definition.HealthCheckURL) == "" {
+		return nil
+	}
+	expectedStatus, err := U.NewUnsignedRanges[uint16](definition.ExpectedStatus)
+	if err != nil {
+		return fmt.Errorf("parse Provider health-check expected status: %w", err)
+	}
+	proxies := append([]C.Proxy(nil), provider.Proxies()...)
+	if len(proxies) == 0 {
+		return nil
+	}
+	timeout := time.Duration(definition.HealthCheckTimeout) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	m.healthMu.Lock()
+	if m.healthTasks[key] != nil {
+		m.healthMu.Unlock()
+		return nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	task := &providerHealthTask{cancel: cancel, done: make(chan struct{})}
+	m.healthTasks[key] = task
+	m.healthMu.Unlock()
+	go m.runProviderHealthCheck(ctx, key, task, proxies, definition.HealthCheckURL, expectedStatus, timeout)
+	return nil
+}
+
+func (m *Manager) runProviderHealthCheck(parent context.Context, key string, task *providerHealthTask, proxies []C.Proxy, url string, expectedStatus U.IntRanges[uint16], timeout time.Duration) {
+	defer func() {
+		m.healthMu.Lock()
+		if m.healthTasks[key] == task {
+			delete(m.healthTasks, key)
+		}
+		m.healthMu.Unlock()
+		close(task.done)
+	}()
+	jobs := make(chan C.Proxy)
+	workers := 10
+	if len(proxies) < workers {
+		workers = len(proxies)
+	}
+	var wait sync.WaitGroup
+	wait.Add(workers)
+	for range workers {
+		go func() {
+			defer wait.Done()
+			for {
+				select {
+				case <-parent.Done():
+					return
+				case proxy, ok := <-jobs:
+					if !ok {
+						return
+					}
+					ctx, cancel := context.WithTimeout(parent, timeout)
+					_, _ = proxy.URLTest(ctx, url, expectedStatus)
+					cancel()
+				}
+			}
+		}()
+	}
+sendLoop:
+	for _, proxy := range proxies {
+		select {
+		case <-parent.Done():
+			break sendLoop
+		case jobs <- proxy:
+		}
+	}
+	close(jobs)
+	wait.Wait()
+}
+
+func (m *Manager) stopHealthChecks() {
+	m.healthMu.Lock()
+	tasks := make([]*providerHealthTask, 0, len(m.healthTasks))
+	for _, task := range m.healthTasks {
+		task.cancel()
+		tasks = append(tasks, task)
+	}
+	m.healthMu.Unlock()
+	for _, task := range tasks {
+		<-task.done
 	}
 }
 
@@ -740,6 +918,7 @@ func (m *Manager) failClosed(cfg *MConfig.Config, err error) {
 	if done != nil {
 		<-done
 	}
+	m.stopHealthChecks()
 	if listener != nil {
 		_ = listener.Close()
 	}

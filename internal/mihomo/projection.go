@@ -13,7 +13,9 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	A "github.com/metacubex/mihomo/adapter"
 	C "github.com/metacubex/mihomo/constant"
@@ -48,6 +50,8 @@ type Entry struct {
 	ProxyName    string
 	PublicID     string
 	DisplayName  string
+	SocksHost    string
+	SocksPort    uint16
 	Username     string
 	Password     string
 	Proxy        C.Proxy
@@ -99,11 +103,13 @@ func (s *Snapshot) EntryByID(id string) (Entry, bool) {
 }
 
 type SnapshotStore struct {
-	current atomic.Pointer[Snapshot]
+	current         atomic.Pointer[Snapshot]
+	touchMu         sync.Mutex
+	providerTouches map[string]time.Time
 }
 
 func NewSnapshotStore(initial *Snapshot) *SnapshotStore {
-	store := &SnapshotStore{}
+	store := &SnapshotStore{providerTouches: make(map[string]time.Time)}
 	store.Store(initial)
 	return store
 }
@@ -120,6 +126,25 @@ func (s *SnapshotStore) Store(snapshot *Snapshot) {
 		snapshot = EmptySnapshot()
 	}
 	s.current.Store(snapshot)
+}
+
+func (s *SnapshotStore) TouchProvider(stableID string) {
+	if stableID == "" {
+		return
+	}
+	s.touchMu.Lock()
+	if s.providerTouches == nil {
+		s.providerTouches = make(map[string]time.Time)
+	}
+	s.providerTouches[stableID] = time.Now()
+	s.touchMu.Unlock()
+}
+
+func (s *SnapshotStore) ProviderTouchedSince(stableID string, since time.Time) bool {
+	s.touchMu.Lock()
+	touched := s.providerTouches[stableID]
+	s.touchMu.Unlock()
+	return !touched.IsZero() && touched.After(since)
 }
 
 func BuildProjection(providers []ProviderView, options BuildOptions) (*Snapshot, error) {
@@ -174,6 +199,8 @@ func BuildProjection(providers []ProviderView, options BuildOptions) (*Snapshot,
 				ProviderName: provider.Name,
 				ProxyName:    proxy.Name(),
 				PublicID:     "n_" + digest(nodeKey)[:22],
+				SocksHost:    options.SocksAdvertise,
+				SocksPort:    options.SocksPort,
 				Username:     "surgeeb_" + keyedDigest(options.MasterKey, "user:"+nodeKey)[:22],
 				Password:     keyedDigest(options.MasterKey, "pass:"+nodeKey),
 				Proxy:        proxy,
@@ -207,7 +234,7 @@ func BuildProjection(providers []ProviderView, options BuildOptions) (*Snapshot,
 	}
 	published := make([][6]string, 0, len(entries))
 	for _, entry := range entries {
-		published = append(published, [6]string{entry.DisplayName, options.SocksAdvertise, fmt.Sprint(options.SocksPort), entry.Username, entry.Password, fmt.Sprint(entry.SupportUDP)})
+		published = append(published, [6]string{entry.DisplayName, entry.SocksHost, fmt.Sprint(entry.SocksPort), entry.Username, entry.Password, fmt.Sprint(entry.SupportUDP)})
 	}
 	encoded, err := json.Marshal(published)
 	if err != nil {
@@ -365,6 +392,7 @@ func (r *Router) entry(metadata *C.Metadata) (Entry, error) {
 	if !ok {
 		return Entry{}, ErrUnknownIdentity
 	}
+	r.store.TouchProvider(entry.ProviderID)
 	return entry, nil
 }
 
