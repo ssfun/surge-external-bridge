@@ -53,3 +53,43 @@ export function randomToken() {
   crypto.getRandomValues(bytes)
   return [...bytes].map((value) => alphabet[value & 63]).join('')
 }
+
+function legacyCopyText(value) {
+  const activeElement = document.activeElement
+  const selection = document.getSelection()
+  const ranges = selection ? Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index).cloneRange()) : []
+  const textarea = document.createElement('textarea')
+  textarea.value = value
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+
+  let copied = false
+  try {
+    textarea.focus({ preventScroll: true })
+    textarea.select()
+    textarea.setSelectionRange(0, textarea.value.length)
+    copied = document.execCommand?.('copy') === true
+  } finally {
+    textarea.remove()
+    try { activeElement?.focus?.({ preventScroll: true }) } catch {}
+    if (selection) {
+      selection.removeAllRanges()
+      for (const range of ranges) selection.addRange(range)
+    }
+  }
+  return copied
+}
+
+export async function copyText(value) {
+  const text = String(value ?? '')
+  if (window.isSecureContext && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return
+    } catch {}
+  }
+  if (!legacyCopyText(text)) throw new Error('复制失败，请手动选择并复制')
+}

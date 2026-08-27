@@ -294,24 +294,27 @@ func TestRenderRejectsUnitInjectionInPaths(t *testing.T) {
 }
 
 func TestConfigurationConsoleRegistrationDoesNotStartSecondProcess(t *testing.T) {
-	deferred := strings.Join(systemdEnableArguments(1000, false), " ")
-	immediate := strings.Join(systemdEnableArguments(1000, true), " ")
-	if strings.Contains(deferred, "--now") {
-		t.Fatalf("deferred service registration would start a competing process: %s", deferred)
+	deferred := systemdInstallCommands(1000, false)
+	if len(deferred) != 1 || deferred[0].action != "enable" || strings.Join(deferred[0].arguments, " ") != "--user enable "+systemdUnit {
+		t.Fatalf("deferred service registration would start a competing process: %#v", deferred)
 	}
-	if !strings.Contains(immediate, "--now") {
-		t.Fatalf("CLI service installation no longer activates the service: %s", immediate)
+	immediate := systemdInstallCommands(1000, true)
+	if len(immediate) != 2 || immediate[0].action != "enable" || immediate[1].action != "restart" {
+		t.Fatalf("CLI service installation does not enable then restart: %#v", immediate)
+	}
+	if strings.Join(immediate[1].arguments, " ") != "--user restart "+systemdUnit {
+		t.Fatalf("CLI service reinstall does not restart the user service: %#v", immediate[1])
 	}
 }
 
 func TestRootUsesSystemSystemdManager(t *testing.T) {
-	root := strings.Join(systemdEnableArguments(0, true), " ")
-	if strings.Contains(root, "--user") || root != "enable --now "+systemdUnit {
-		t.Fatalf("root systemd arguments=%q", root)
+	root := systemdInstallCommands(0, true)
+	if len(root) != 2 || strings.Join(root[0].arguments, " ") != "enable "+systemdUnit || strings.Join(root[1].arguments, " ") != "restart "+systemdUnit {
+		t.Fatalf("root systemd commands=%#v", root)
 	}
-	user := strings.Join(systemdEnableArguments(1000, true), " ")
-	if !strings.HasPrefix(user, "--user ") {
-		t.Fatalf("user systemd arguments=%q", user)
+	user := systemdInstallCommands(1000, true)
+	if len(user) != 2 || !strings.HasPrefix(strings.Join(user[0].arguments, " "), "--user ") || !strings.HasPrefix(strings.Join(user[1].arguments, " "), "--user ") {
+		t.Fatalf("user systemd commands=%#v", user)
 	}
 
 	content, err := renderForContext("linux", "/usr/local/bin/SurgeEB", "/root/.surge-external-bridge", 0)

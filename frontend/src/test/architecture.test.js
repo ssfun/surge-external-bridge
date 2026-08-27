@@ -181,6 +181,7 @@ describe('component update boundaries', () => {
     expect(wrapper.get('[data-testid="settings-socks-host"]').element.value).toBe('192.168.50.10')
     expect(wrapper.get('[data-testid="settings-policy-host"]').element.value).toBe('192.168.50.10')
     expect(wrapper.get('[data-testid="settings-deployment"] > .settings-card-head .pill').text()).toBe('局域网')
+    expect(wrapper.get('[data-testid="settings-deployment"]').text()).toContain('不能填写 peer 地址')
     const policy = wrapper.get('[data-testid="policy-token"]')
     const tokens = [management.element.value, policy.element.value]
     expect(tokens[0]).toMatch(/^[A-Za-z0-9_-]{24}$/)

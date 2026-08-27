@@ -1,11 +1,28 @@
 package management
 
 import (
+	"errors"
 	"net"
+	"strings"
+	"syscall"
 	"testing"
 
 	serviceManager "github.com/ssfun/surge-external-bridge/internal/service"
 )
+
+func TestHTTPRebindErrorExplainsNonLocalAddress(t *testing.T) {
+	err := httpRebindError("100.100.110.10:18080", syscall.EADDRNOTAVAIL)
+	for _, text := range []string{"0.0.0.0:18080", "Tailscale IP", "peer"} {
+		if !strings.Contains(err.Error(), text) {
+			t.Fatalf("httpRebindError()=%q, want %q", err, text)
+		}
+	}
+
+	original := errors.New("address already in use")
+	if got := httpRebindError("0.0.0.0:18080", original); !errors.Is(got, original) {
+		t.Fatalf("httpRebindError()=%v, want original error", got)
+	}
+}
 
 func TestPublicServiceInfoExposesRepairStateWithoutLocalPath(t *testing.T) {
 	public := makePublicServiceInfo(serviceManager.Info{

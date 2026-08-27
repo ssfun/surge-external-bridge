@@ -6,7 +6,7 @@ import ProviderDialog from '@/components/ProviderDialog.vue'
 import { api, encodeID } from '@/api.js'
 import { useDataStore } from '@/stores/data.js'
 import { useUIStore } from '@/stores/ui.js'
-import { formatDateTime, formatDuration, providerTypeLabel } from '@/utils.js'
+import { copyText, formatDateTime, formatDuration, providerTypeLabel } from '@/utils.js'
 
 const data = useDataStore()
 const ui = useUIStore()
@@ -82,7 +82,7 @@ async function copySecrets(provider) {
   if (!window.confirm(`读取并复制 Provider“${provider.name}”的订阅 URL 与 Header？`)) return
   try {
     const secrets = await api(`/api/providers/${encodeID(provider.stable_id)}/secrets`, { headers: { 'X-SurgeEB-Confirm': 'reveal-provider-secrets' } })
-    await navigator.clipboard.writeText(JSON.stringify(secrets, null, 2))
+    await copyText(JSON.stringify(secrets, null, 2))
     ui.toast('敏感字段已复制')
   } catch (error) { ui.toast(error.message, true) }
 }

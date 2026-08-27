@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/ssfun/surge-external-bridge/internal/gateway"
@@ -651,7 +652,7 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	prepared, err := s.prepareHTTPRebind(next.HTTPBind)
 	if err != nil {
-		writeError(w, http.StatusConflict, "new HTTP listener is unavailable: "+s.publicError(err))
+		writeError(w, http.StatusConflict, "新的 HTTP 监听地址不可用："+s.publicError(err))
 		return
 	}
 	if err := s.app.UpdateSettings(next); err != nil {
@@ -720,7 +721,22 @@ func (s *Server) prepareHTTPRebind(address string) (net.Listener, error) {
 	if s.listener == nil || s.listener.Addr().String() == address {
 		return nil, nil
 	}
-	return net.Listen("tcp", address)
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return nil, httpRebindError(address, err)
+	}
+	return listener, nil
+}
+
+func httpRebindError(address string, err error) error {
+	if !errors.Is(err, syscall.EADDRNOTAVAIL) {
+		return err
+	}
+	_, port, splitErr := net.SplitHostPort(address)
+	if splitErr != nil || port == "" {
+		return errors.New("HTTP 监听地址不是本机可用地址；只能绑定本机网卡地址或 0.0.0.0")
+	}
+	return fmt.Errorf("HTTP 监听地址不是本机可用地址；请使用 0.0.0.0:%s 监听所有网卡，并通过本机的局域网或 Tailscale IP 访问，不能绑定 peer 地址", port)
 }
 
 func (s *Server) publicError(err error) string {

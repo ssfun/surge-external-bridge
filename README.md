@@ -159,7 +159,7 @@ Surge External Bridge 采用全新数据目录和配置，不读取或迁移旧�
 ./SurgeEB service uninstall
 ```
 
-macOS 使用 `com.sfun.surgeeb` LaunchAgent，并把服务副本安装到当前用户的 `~/Library/Application Support/SurgeEB/bin/SurgeEB`，全程不需要也不允许 `sudo`。Linux 普通用户安装到 `~/.config/systemd/user/surgeeb.service`，由 `systemd --user` 管理并继续引用当前二进制；root 会把二进制原子复制到 `/usr/local/bin/SurgeEB`，把服务安装到 `/etc/systemd/system/surgeeb.service`，并由系统级 systemd 管理。配置台注册服务时不会立即启动第二个进程；CLI `service install` 会立即启用。`service stop` 会等待进程退出，`service restart` 会等待新进程进入运行状态。`service uninstall` 只卸载服务定义，不删除二进制。两种平台都使用 `0077` umask，不安装或管理外部 Mihomo，也不修改系统代理或网络栈。
+macOS 使用 `com.sfun.surgeeb` LaunchAgent，并把服务副本安装到当前用户的 `~/Library/Application Support/SurgeEB/bin/SurgeEB`，全程不需要也不允许 `sudo`。Linux 普通用户安装到 `~/.config/systemd/user/surgeeb.service`，由 `systemd --user` 管理并继续引用当前二进制；root 会把二进制原子复制到 `/usr/local/bin/SurgeEB`，把服务安装到 `/etc/systemd/system/surgeeb.service`，并由系统级 systemd 管理。配置台注册服务时不会立即启动第二个进程；Linux CLI `service install` 会启用并重启服务，使重新安装的二进制和 unit 立即生效。`service stop` 会等待进程退出，`service restart` 会等待新进程进入运行状态。`service uninstall` 只卸载服务定义，不删除二进制。两种平台都使用 `0077` umask，不安装或管理外部 Mihomo，也不修改系统代理或网络栈。
 
 ## 本地构建与验证
 

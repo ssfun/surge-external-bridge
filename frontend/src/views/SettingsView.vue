@@ -6,7 +6,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import { api } from '@/api.js'
 import { useDataStore } from '@/stores/data.js'
 import { useUIStore } from '@/stores/ui.js'
-import { randomToken } from '@/utils.js'
+import { copyText, randomToken } from '@/utils.js'
 
 const data = useDataStore()
 const ui = useUIStore()
@@ -85,7 +85,7 @@ function modeChanged() {
 async function copyCredential(label, value) {
   if (!value) return
   try {
-    await navigator.clipboard.writeText(value)
+    await copyText(value)
     ui.toast(`${label} 已复制`)
   } catch { ui.toast('复制失败，请手动选择并复制', true) }
 }
@@ -145,7 +145,7 @@ async function serviceAction(install) {
           </div>
           <div class="settings-subsection"><div class="settings-subsection-head"><b>监听地址</b><span>切换使用范围时自动生成，仍可按需精确绑定网卡</span></div>
             <div class="settings-listener-grid">
-              <label class="field"><span>配置台监听</span><input v-model="form.http_bind" data-testid="settings-http-bind" spellcheck="false"><small>{{ form.mode === 'gateway' ? '0.0.0.0 表示监听所有网卡；访问仍使用上方具体地址。' : '仅供本机访问。' }}</small></label>
+              <label class="field"><span>配置台监听</span><input v-model="form.http_bind" data-testid="settings-http-bind" spellcheck="false"><small>{{ form.mode === 'gateway' ? '0.0.0.0 同时监听局域网与 Tailscale 等本机网卡；精确绑定只能填写本机实际地址，不能填写 peer 地址。' : '仅供本机访问。' }}</small></label>
               <label class="field"><span>SOCKS 监听</span><input v-model="form.socks_bind" data-testid="settings-socks-bind" spellcheck="false"><small>{{ form.mode === 'gateway' ? '0.0.0.0 可由局域网 IP 访问。' : '只监听本机回环。' }}</small></label>
               <label class="field"><span>SOCKS 端口</span><input v-model="form.socks_port" type="number" min="1" max="65535"></label>
             </div>

@@ -7,7 +7,7 @@ import ProviderDialog from '@/components/ProviderDialog.vue'
 import { useDataStore } from '@/stores/data.js'
 import { useRealtimeStore } from '@/stores/realtime.js'
 import { useUIStore } from '@/stores/ui.js'
-import { formatBytes, formatRate } from '@/utils.js'
+import { copyText, formatBytes, formatRate } from '@/utils.js'
 
 const router = useRouter()
 const data = useDataStore()
@@ -24,8 +24,10 @@ const snippet = computed(() => `[Proxy Group]\nExternal = select, policy-path=${
 
 async function copyPolicy() {
   if (!window.confirm('内容包含 Policy URL，确认复制到剪贴板？')) return
-  await navigator.clipboard.writeText(snippet.value)
-  ui.toast('已复制 Surge 配置')
+  try {
+    await copyText(snippet.value)
+    ui.toast('已复制 Surge 配置')
+  } catch (error) { ui.toast(error.message, true) }
 }
 </script>
 

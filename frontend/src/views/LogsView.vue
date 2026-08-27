@@ -6,7 +6,7 @@ import LiveControls from '@/components/LiveControls.vue'
 import { useDataStore } from '@/stores/data.js'
 import { useRealtimeStore } from '@/stores/realtime.js'
 import { useUIStore } from '@/stores/ui.js'
-import { logText } from '@/utils.js'
+import { copyText, logText } from '@/utils.js'
 
 const data = useDataStore()
 const realtime = useRealtimeStore()
@@ -105,7 +105,7 @@ async function copyDiagnostic() {
     logs: logs.value.slice(-50).map(({ _ui_id, ...item }) => item),
   }
   try {
-    await navigator.clipboard.writeText(JSON.stringify(summary, null, 2))
+    await copyText(JSON.stringify(summary, null, 2))
     ui.toast('脱敏诊断信息已复制')
   } catch {
     ui.toast('复制失败，请检查浏览器剪贴板权限', true)

@@ -8,7 +8,7 @@ import { api, encodeID } from '@/api.js'
 import { useDataStore } from '@/stores/data.js'
 import { useRealtimeStore } from '@/stores/realtime.js'
 import { useUIStore } from '@/stores/ui.js'
-import { formatBytes, nodeConnectionStats } from '@/utils.js'
+import { copyText, formatBytes, nodeConnectionStats } from '@/utils.js'
 
 const router = useRouter()
 const data = useDataStore()
@@ -71,7 +71,7 @@ async function nodeAction(node, action) {
     } else if (action === 'copy') {
       if (!window.confirm('单节点行包含 SOCKS 密码，确认复制？')) return
       const result = await api(`/api/nodes/${encodeID(node.id)}/surge-line`, { headers: { 'X-SurgeEB-Confirm': 'reveal-node-credential' } })
-      await navigator.clipboard.writeText(result.line)
+      await copyText(result.line)
       ui.toast('Surge 节点行已复制')
     }
   } catch (error) {

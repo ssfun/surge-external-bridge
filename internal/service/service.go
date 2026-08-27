@@ -123,9 +123,10 @@ func install(dataDir string, activate bool) (Info, error) {
 		if output, err := exec.Command("systemctl", systemctlArguments(os.Geteuid(), "daemon-reload")...).CombinedOutput(); err != nil {
 			return Info{}, fmt.Errorf("systemctl daemon-reload: %w: %s", err, bytes.TrimSpace(output))
 		}
-		arguments := systemdEnableArguments(os.Geteuid(), activate)
-		if output, err := exec.Command("systemctl", arguments...).CombinedOutput(); err != nil {
-			return Info{}, fmt.Errorf("systemctl enable: %w: %s", err, bytes.TrimSpace(output))
+		for _, command := range systemdInstallCommands(os.Geteuid(), activate) {
+			if output, err := exec.Command("systemctl", command.arguments...).CombinedOutput(); err != nil {
+				return Info{}, fmt.Errorf("systemctl %s: %w: %s", command.action, err, bytes.TrimSpace(output))
+			}
 		}
 	}
 	return Status()
@@ -404,12 +405,21 @@ func systemctlArguments(euid int, arguments ...string) []string {
 	return append([]string{"--user"}, arguments...)
 }
 
-func systemdEnableArguments(euid int, activate bool) []string {
-	arguments := systemctlArguments(euid, "enable")
+type systemdInstallCommand struct {
+	action    string
+	arguments []string
+}
+
+func systemdInstallCommands(euid int, activate bool) []systemdInstallCommand {
+	actions := []string{"enable"}
 	if activate {
-		arguments = append(arguments, "--now")
+		actions = append(actions, "restart")
 	}
-	return append(arguments, systemdUnit)
+	commands := make([]systemdInstallCommand, 0, len(actions))
+	for _, action := range actions {
+		commands = append(commands, systemdInstallCommand{action: action, arguments: systemctlArguments(euid, action, systemdUnit)})
+	}
+	return commands
 }
 
 func prepareDataDir(dataDir string) (string, error) {
