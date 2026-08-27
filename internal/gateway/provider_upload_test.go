@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,7 +32,9 @@ func TestStoreProviderUploadUsesPrivateManagedPath(t *testing.T) {
 	if err != nil || string(encoded) != content {
 		t.Fatalf("upload content = %q, err=%v", encoded, err)
 	}
-	app.DiscardProviderUpload(relative)
+	if err := app.DiscardProviderUpload(relative); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
 		t.Fatalf("managed upload was not removed: %v", err)
 	}
@@ -66,9 +69,61 @@ func TestDiscardProviderUploadNeverRemovesUnmanagedPaths(t *testing.T) {
 	if err := os.WriteFile(external, []byte("proxies: []\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	app.DiscardProviderUpload(external)
-	app.DiscardProviderUpload("../external.yaml")
+	if err := app.DiscardProviderUpload(external); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DiscardProviderUpload("../external.yaml"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(external); err != nil {
+		t.Fatalf("unmanaged file was removed: %v", err)
+	}
+}
+
+func TestDiscardProviderUploadReportsCleanupFailure(t *testing.T) {
+	dir := t.TempDir()
+	app := &App{store: NewStore(dir)}
+	blocked := filepath.Join(dir, "mihomo", "uploads", "provider-blocked.yaml")
+	if err := os.MkdirAll(filepath.Join(blocked, "child"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DiscardProviderUpload("uploads/provider-blocked.yaml"); err == nil {
+		t.Fatal("non-empty managed upload directory was removed without an error")
+	}
+	events := app.Events()
+	if len(events) != 1 || events[0].Level != "warn" || !strings.Contains(events[0].Message, "上传文件清理失败") {
+		t.Fatalf("cleanup failure was not exposed as a warning event: %#v", events)
+	}
+}
+
+func TestReconcileProviderUploadsRemovesOnlyUnreferencedManagedFiles(t *testing.T) {
+	dir := t.TempDir()
+	app := &App{store: NewStore(dir)}
+	active, err := app.StoreProviderUpload(strings.NewReader("proxies:\n  - name: Active\n    type: direct\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphan, err := app.StoreProviderUpload(strings.NewReader("proxies:\n  - name: Orphan\n    type: direct\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unmanaged := filepath.Join(dir, "mihomo", "uploads", "manual.yaml")
+	if err := os.WriteFile(unmanaged, []byte("proxies: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := Config{Providers: []Provider{{Type: "file", FilePath: active}}}
+	if err := app.reconcileProviderUploads(config); err != nil {
+		t.Fatal(err)
+	}
+	activePath, _ := app.managedProviderUploadPath(active)
+	orphanPath, _ := app.managedProviderUploadPath(orphan)
+	if _, err := os.Stat(activePath); err != nil {
+		t.Fatalf("active managed upload was removed: %v", err)
+	}
+	if _, err := os.Stat(orphanPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("orphaned managed upload was not removed: %v", err)
+	}
+	if _, err := os.Stat(unmanaged); err != nil {
 		t.Fatalf("unmanaged file was removed: %v", err)
 	}
 }

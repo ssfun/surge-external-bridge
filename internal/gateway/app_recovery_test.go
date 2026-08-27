@@ -100,6 +100,50 @@ func TestConfiguredProjectionIdentityMatchesAcrossIndependentApps(t *testing.T) 
 	}
 }
 
+func TestNewReconcilesOrphanedProviderUploads(t *testing.T) {
+	dir := t.TempDir()
+	config := mustDefaultConfig(t)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.SocksPort = uint16(listener.Addr().(*net.TCPAddr).Port)
+	_ = listener.Close()
+	config.Providers = []Provider{{
+		Name: "Active Upload", Type: "file", FilePath: "uploads/provider-active.yaml", Enabled: false,
+	}}
+	uploads := filepath.Join(dir, "mihomo", "uploads")
+	if err := os.MkdirAll(uploads, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	active := filepath.Join(uploads, "provider-active.yaml")
+	orphan := filepath.Join(uploads, "provider-orphan.yaml")
+	for path, name := range map[string]string{active: "Active", orphan: "Orphan"} {
+		content := "proxies:\n  - name: " + name + "\n    type: direct\n"
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := NewStore(dir)
+	if _, err := store.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(config); err != nil {
+		t.Fatal(err)
+	}
+	application, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	if _, err := os.Stat(active); err != nil {
+		t.Fatalf("startup removed the configured upload: %v", err)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatalf("startup did not remove the orphaned upload: %v", err)
+	}
+}
+
 func TestProductEventsRedactConfiguredAndRedirectSecrets(t *testing.T) {
 	application := &App{
 		store: NewStore("/private/surge-external-bridge"),

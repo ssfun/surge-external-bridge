@@ -56,6 +56,9 @@ func New(dataDir string) (*App, error) {
 	for _, notice := range store.Notices() {
 		application.addEvent("warn", notice)
 	}
+	if err := application.reconcileProviderUploads(config); err != nil {
+		application.addEvent("warn", "Provider 上传目录对账失败，将在下次启动重试: "+err.Error())
+	}
 	manager, err := M.NewManager(M.ManagerOptions{
 		HomeDir: filepath.Join(dataDir, "mihomo"), ControllerSocket: controllerSocket,
 		ControllerSecret: controllerSecret,
@@ -266,7 +269,7 @@ func (a *App) UpdateProvider(id string, provider Provider) (Provider, error) {
 		return Provider{}, err
 	}
 	if previousFilePath != provider.FilePath {
-		a.DiscardProviderUpload(previousFilePath)
+		_ = a.DiscardProviderUpload(previousFilePath)
 	}
 	return provider, nil
 }
@@ -320,7 +323,7 @@ func (a *App) DeleteProvider(id string) error {
 	if err := a.applyConfig(candidate); err != nil {
 		return err
 	}
-	a.DiscardProviderUpload(filePath)
+	_ = a.DiscardProviderUpload(filePath)
 	return nil
 }
 

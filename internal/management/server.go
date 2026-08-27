@@ -286,7 +286,7 @@ func (s *Server) addProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	created, err := s.app.AddProvider(provider)
 	if err != nil {
-		s.app.DiscardProviderUpload(uploadPath)
+		_ = s.app.DiscardProviderUpload(uploadPath)
 		writeError(w, http.StatusBadRequest, s.publicError(err))
 		return
 	}
@@ -305,7 +305,7 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	updated, err := s.app.UpdateProvider(r.PathValue("id"), provider)
 	if err != nil {
-		s.app.DiscardProviderUpload(uploadPath)
+		_ = s.app.DiscardProviderUpload(uploadPath)
 		writeError(w, http.StatusBadRequest, s.publicError(err))
 		return
 	}
@@ -319,7 +319,7 @@ func (s *Server) readProviderMutation(w http.ResponseWriter, r *http.Request) (p
 	}
 	defer func() {
 		if err != nil && uploadPath != "" {
-			s.app.DiscardProviderUpload(uploadPath)
+			_ = s.app.DiscardProviderUpload(uploadPath)
 			uploadPath = ""
 		}
 	}()
