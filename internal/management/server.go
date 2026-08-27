@@ -215,7 +215,7 @@ func (s *Server) overview(w http.ResponseWriter, _ *http.Request) {
 		"version": gateway.Version, "core_version": status.CoreVersion, "gateway": status,
 		"provider_count": len(config.Providers), "projection_count": status.ProjectionCount,
 		"policy_url": policyURL(config), "process_rule": "PROCESS-NAME,SurgeEB,DIRECT",
-		"socks_advertise": net.JoinHostPort(config.VirtualHost, fmt.Sprint(config.SocksPort)),
+		"socks_advertise": net.JoinHostPort(config.SocksHost, fmt.Sprint(config.SocksPort)),
 	})
 }
 
@@ -613,7 +613,8 @@ type settingsRequest struct {
 	HTTPBind        string   `json:"http_bind"`
 	SocksBind       string   `json:"socks_bind"`
 	SocksPort       uint16   `json:"socks_port"`
-	VirtualHost     string   `json:"virtual_host"`
+	SocksHost       string   `json:"socks_host"`
+	PolicyHost      string   `json:"policy_host"`
 	ProjectionKey   string   `json:"projection_key"`
 	ManagementToken *string  `json:"management_token"`
 	PolicyToken     *string  `json:"policy_token"`
@@ -637,7 +638,7 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
 	current := s.app.Config().Settings()
 	next := gateway.Settings{
 		Mode: request.Mode, HTTPBind: request.HTTPBind, SocksBind: request.SocksBind, SocksPort: request.SocksPort,
-		VirtualHost: request.VirtualHost, ProjectionKey: request.ProjectionKey,
+		SocksHost: request.SocksHost, PolicyHost: request.PolicyHost, ProjectionKey: request.ProjectionKey,
 		ManagementToken: current.ManagementToken, PolicyToken: current.PolicyToken,
 		PrefixProvider: request.PrefixProvider, ProjectionTypes: request.ProjectionTypes,
 		NodeTestURL: request.NodeTestURL, NodeTestUDP: request.NodeTestUDP, NodeTestTimeout: request.NodeTestTimeout,

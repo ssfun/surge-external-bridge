@@ -14,7 +14,7 @@ const { settings, service } = storeToRefs(data)
 const dirty = ref(false)
 const saving = ref(false)
 const appliedMessage = ref('')
-const form = reactive({ mode: 'local', http_bind: '', socks_bind: '', socks_port: 0, virtual_host: '', projection_key: '', prefix_provider: false, management_token: '', policy_token: '', node_test_url: '', node_test_udp_address: '', node_test_timeout_seconds: 10 })
+const form = reactive({ mode: 'local', http_bind: '', socks_bind: '', socks_port: 0, socks_host: '', policy_host: '', projection_key: '', prefix_provider: false, management_token: '', policy_token: '', node_test_url: '', node_test_udp_address: '', node_test_timeout_seconds: 10 })
 const credentialVisible = reactive({ management: false })
 const generatedCredential = reactive({ management: false, policy: false })
 
@@ -59,9 +59,9 @@ function modeChanged() {
   if (form.mode === 'gateway') {
     form.http_bind = `0.0.0.0:${port}`
     form.socks_bind = '0.0.0.0'
-    if (!form.virtual_host || /^(127\.0\.0\.1|localhost|0\.0\.0\.0|::1)$/.test(form.virtual_host)) {
-      form.virtual_host = settings.value?.suggested_gateway_host || ''
-    }
+    const suggestedHost = settings.value?.suggested_gateway_host || ''
+    if (!form.socks_host || /^(127\.0\.0\.1|localhost|0\.0\.0\.0|::1)$/.test(form.socks_host)) form.socks_host = suggestedHost
+    if (!form.policy_host || /^(127\.0\.0\.1|localhost|0\.0\.0\.0|::1)$/.test(form.policy_host)) form.policy_host = suggestedHost
     let managementGenerated = false
     let policyDefaulted = false
     if (!settings.value?.management_token_configured && !form.management_token) {
@@ -76,7 +76,8 @@ function modeChanged() {
   } else {
     form.http_bind = `127.0.0.1:${port}`
     form.socks_bind = '127.0.0.1'
-    form.virtual_host = '127.0.0.1'
+    form.socks_host = '127.0.0.1'
+    form.policy_host = '127.0.0.1'
   }
   markDirty()
 }
@@ -98,7 +99,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
 async function save() {
   const body = {
     mode: form.mode, http_bind: form.http_bind, socks_bind: form.socks_bind, socks_port: Number(form.socks_port),
-    virtual_host: form.virtual_host, projection_key: form.projection_key, prefix_provider: form.prefix_provider,
+    socks_host: form.socks_host, policy_host: form.policy_host, projection_key: form.projection_key, prefix_provider: form.prefix_provider,
     projection_types: ['*'], node_test_url: form.node_test_url, node_test_udp_address: form.node_test_udp_address,
     node_test_timeout_seconds: Number(form.node_test_timeout_seconds),
   }
@@ -139,7 +140,8 @@ async function serviceAction(install) {
           <div class="settings-card-head"><div><h3>使用范围与地址</h3><p>选择只供本机使用，或允许同一局域网内的设备连接。</p></div><span class="pill" :class="form.mode === 'gateway' ? 'warn' : 'ok'">{{ form.mode === 'gateway' ? '局域网' : '仅本机' }}</span></div>
           <div class="settings-deployment-grid">
             <label class="field"><span>使用范围</span><span class="select-control"><select v-model="form.mode" data-testid="settings-mode" @change="modeChanged"><option value="local">仅本机</option><option value="gateway">局域网网关</option></select></span><small>{{ form.mode === 'gateway' ? '自动监听所有本机网卡；同一局域网内的设备可通过下方访问地址连接。' : '自动限制为 127.0.0.1，只有这台电脑可以访问。' }}</small></label>
-            <label class="field"><span>Surge 访问地址</span><input v-model="form.virtual_host" spellcheck="false" placeholder="surge.eb"><small>填写 Surge 能访问到的域名或 IP，不要带 http:// 和端口。</small></label>
+            <label class="field"><span>SOCKS 发布主机</span><input v-model="form.socks_host" data-testid="settings-socks-host" spellcheck="false" placeholder="192.168.50.10"><small>写入投影节点的 SOCKS 主机，不要带协议和端口。</small></label>
+            <label class="field"><span>Policy Path 发布主机</span><input v-model="form.policy_host" data-testid="settings-policy-host" spellcheck="false" placeholder="surge.eb"><small>用于生成 policy-path URL，可与 SOCKS 主机不同，不要带协议和端口。</small></label>
           </div>
           <div class="settings-subsection"><div class="settings-subsection-head"><b>监听地址</b><span>切换使用范围时自动生成，仍可按需精确绑定网卡</span></div>
             <div class="settings-listener-grid">

@@ -13,8 +13,8 @@ func TestFormatSurgeLineUsesValidatedKeywordAuthenticationSyntax(t *testing.T) {
 		Username:    "surgeeb_user",
 		Password:    "password_value",
 		SupportUDP:  true,
-	}, Config{VirtualHost: "surge.eb", SocksPort: 1080})
-	want := "Provider · Node = socks5, surge.eb, 1080, username=surgeeb_user, password=password_value, udp-relay=true"
+	}, Config{SocksHost: "socks.surge.eb", PolicyHost: "policy.surge.eb", SocksPort: 1080})
+	want := "Provider · Node = socks5, socks.surge.eb, 1080, username=surgeeb_user, password=password_value, udp-relay=true"
 	if line != want {
 		t.Fatalf("Surge line = %q, want %q", line, want)
 	}

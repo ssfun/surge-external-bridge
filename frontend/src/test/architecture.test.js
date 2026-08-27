@@ -113,14 +113,15 @@ describe('component update boundaries', () => {
   it('keeps a dirty Settings draft across unrelated store updates', async () => {
     const data = useDataStore()
     const realtime = useRealtimeStore()
-    data.settings = { mode: 'local', http_bind: '127.0.0.1:9090', socks_bind: '127.0.0.1', socks_port: 1080, virtual_host: 'surge.eb', projection_key: 'shared-projection-key-for-devices', projection_hash: 'abcdef', projection_count: 3, prefix_provider: false, node_test_url: 'https://example.com', node_test_udp_address: '1.1.1.1:53', node_test_timeout_seconds: 10 }
+    data.settings = { mode: 'local', http_bind: '127.0.0.1:9090', socks_bind: '127.0.0.1', socks_port: 1080, socks_host: 'socks.surge.eb', policy_host: 'policy.surge.eb', projection_key: 'shared-projection-key-for-devices', projection_hash: 'abcdef', projection_count: 3, prefix_provider: false, node_test_url: 'https://example.com', node_test_udp_address: '1.1.1.1:53', node_test_timeout_seconds: 10 }
     data.service = { platform: 'darwin', installed: true, active: false, repair_needed: false }
     const router = testRouter(SettingsView, 'settings')
     await router.push('/')
     const wrapper = mount({ template: '<RouterView />' }, { global: { plugins: [router] } })
     const deploymentModes = wrapper.get('select').findAll('option').map((option) => [option.attributes('value'), option.text()])
     expect(deploymentModes).toEqual([['local', '仅本机'], ['gateway', '局域网网关']])
-    expect(wrapper.get('input[placeholder="surge.eb"]').element.value).toBe('surge.eb')
+    expect(wrapper.get('[data-testid="settings-socks-host"]').element.value).toBe('socks.surge.eb')
+    expect(wrapper.get('[data-testid="settings-policy-host"]').element.value).toBe('policy.surge.eb')
     expect(wrapper.get('[data-testid="projection-key"]').element.value).toBe('shared-projection-key-for-devices')
     expect(wrapper.get('[data-testid="settings-deployment"]').text()).toContain('使用范围与地址')
     expect(wrapper.get('[data-testid="settings-security"]').text()).toContain('访问 Token')
@@ -155,7 +156,7 @@ describe('component update boundaries', () => {
     const data = useDataStore()
     data.settings = {
       mode: 'local', http_bind: '127.0.0.1:9090', socks_bind: '127.0.0.1', socks_port: 1080,
-      virtual_host: 'surge.eb', projection_key: 'shared-projection-key-for-devices', prefix_provider: false,
+      socks_host: '127.0.0.1', policy_host: '127.0.0.1', projection_key: 'shared-projection-key-for-devices', prefix_provider: false,
       management_token_configured: false, policy_token_configured: false, policy_token: '',
       suggested_gateway_host: '192.168.50.10', node_test_url: 'https://example.com', node_test_udp_address: '1.1.1.1:53', node_test_timeout_seconds: 10,
     }
@@ -177,6 +178,8 @@ describe('component update boundaries', () => {
     expect(mode.element.value).toBe('gateway')
     expect(wrapper.get('[data-testid="settings-http-bind"]').element.value).toBe('0.0.0.0:9090')
     expect(wrapper.get('[data-testid="settings-socks-bind"]').element.value).toBe('0.0.0.0')
+    expect(wrapper.get('[data-testid="settings-socks-host"]').element.value).toBe('192.168.50.10')
+    expect(wrapper.get('[data-testid="settings-policy-host"]').element.value).toBe('192.168.50.10')
     expect(wrapper.get('[data-testid="settings-deployment"] > .settings-card-head .pill').text()).toBe('局域网')
     const policy = wrapper.get('[data-testid="policy-token"]')
     const tokens = [management.element.value, policy.element.value]
@@ -188,13 +191,18 @@ describe('component update boundaries', () => {
     expect(wrapper.get('[data-testid="generated-token-note"]').text()).toContain('两个独立的 24 位 Token')
     expect(wrapper.get('[data-testid="settings-security"]').findAll('button').map((button) => button.text())).toEqual(['隐藏', '复制', '重新生成', '复制', '重新生成'])
 
-    await wrapper.get('input[placeholder="surge.eb"]').setValue('192.168.99.9')
+    await wrapper.get('[data-testid="settings-socks-host"]').setValue('192.168.99.9')
+    await wrapper.get('[data-testid="settings-policy-host"]').setValue('policy.surge.eb')
     await mode.setValue('local')
-    expect(wrapper.get('input[placeholder="surge.eb"]').element.value).toBe('127.0.0.1')
+    expect(wrapper.get('[data-testid="settings-socks-host"]').element.value).toBe('127.0.0.1')
+    expect(wrapper.get('[data-testid="settings-policy-host"]').element.value).toBe('127.0.0.1')
     expect(wrapper.get('[data-testid="settings-http-bind"]').element.value).toBe('127.0.0.1:9090')
     expect(wrapper.get('[data-testid="settings-socks-bind"]').element.value).toBe('127.0.0.1')
     await mode.setValue('gateway')
-    expect(wrapper.get('input[placeholder="surge.eb"]').element.value).toBe('192.168.50.10')
+    expect(wrapper.get('[data-testid="settings-socks-host"]').element.value).toBe('192.168.50.10')
+    expect(wrapper.get('[data-testid="settings-policy-host"]').element.value).toBe('192.168.50.10')
+    await wrapper.get('[data-testid="settings-socks-host"]').setValue('192.168.99.9')
+    await wrapper.get('[data-testid="settings-policy-host"]').setValue('policy.surge.eb')
 
     await wrapper.get('[data-testid="settings-identity"]').findAll('button').find((button) => button.text() === '重新生成').trigger('click')
     expect(wrapper.get('[data-testid="projection-key"]').element.value).toMatch(/^[A-Za-z0-9_-]{24}$/)
@@ -204,6 +212,8 @@ describe('component update boundaries', () => {
       mode: 'gateway',
       management_token: tokens[0],
       policy_token: tokens[1],
+      socks_host: '192.168.99.9',
+      policy_host: 'policy.surge.eb',
       projection_types: ['*'],
       node_test_timeout_seconds: 10,
     }))
@@ -213,7 +223,7 @@ describe('component update boundaries', () => {
 
   it('shows service status failures instead of reporting autostart as disabled', async () => {
     const data = useDataStore()
-    data.settings = { mode: 'local', http_bind: '127.0.0.1:9090', socks_bind: '127.0.0.1', socks_port: 1080, virtual_host: '127.0.0.1', projection_key: 'shared-projection-key-for-devices' }
+    data.settings = { mode: 'local', http_bind: '127.0.0.1:9090', socks_bind: '127.0.0.1', socks_port: 1080, socks_host: '127.0.0.1', policy_host: '127.0.0.1', projection_key: 'shared-projection-key-for-devices' }
     data.service = { error: 'HOME is not defined' }
     const router = testRouter(SettingsView, 'settings')
     await router.push('/')

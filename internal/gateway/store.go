@@ -14,6 +14,11 @@ type Store struct {
 	notices    []string
 }
 
+type configV1 struct {
+	Config
+	VirtualHost string `json:"virtual_host"`
+}
+
 func NewStore(dir string) *Store {
 	return &Store{dir: dir, configPath: filepath.Join(dir, "gateway.json")}
 }
@@ -63,14 +68,32 @@ func (s *Store) Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if err := json.Unmarshal(data, &config); err != nil {
+	var schema struct {
+		SchemaVersion int `json:"schema_version"`
+	}
+	if err := json.Unmarshal(data, &schema); err != nil {
 		return Config{}, fmt.Errorf("decode gateway.json: %w", err)
 	}
-	if config.SchemaVersion != SchemaVersion {
-		return Config{}, fmt.Errorf("unsupported gateway schema %d", config.SchemaVersion)
+	migrated := false
+	switch schema.SchemaVersion {
+	case 1:
+		var legacy configV1
+		if err := json.Unmarshal(data, &legacy); err != nil {
+			return Config{}, fmt.Errorf("decode gateway.json schema 1: %w", err)
+		}
+		config = legacy.Config
+		config.SchemaVersion = SchemaVersion
+		config.SocksHost = legacy.VirtualHost
+		config.PolicyHost = legacy.VirtualHost
+		migrated = true
+	case SchemaVersion:
+		if err := json.Unmarshal(data, &config); err != nil {
+			return Config{}, fmt.Errorf("decode gateway.json: %w", err)
+		}
+	default:
+		return Config{}, fmt.Errorf("unsupported gateway schema %d", schema.SchemaVersion)
 	}
 	assignProviderIDs(&config)
-	migrated := false
 	if config.PolicyToken == "unsafe" {
 		for config.PolicyToken == "unsafe" || config.PolicyToken == config.ManagementToken {
 			config.PolicyToken, err = randomToken()
@@ -91,7 +114,7 @@ func (s *Store) Load() (Config, error) {
 	}
 	if migrated {
 		if err := s.Save(config); err != nil {
-			return Config{}, fmt.Errorf("persist security migration: %w", err)
+			return Config{}, fmt.Errorf("persist gateway configuration migration: %w", err)
 		}
 	}
 	return config, nil

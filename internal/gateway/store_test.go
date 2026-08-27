@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -44,8 +45,8 @@ func TestStoreCreatesFreshPrivateConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(encoded), `"virtual_host"`) || !strings.Contains(string(encoded), `"projection_key"`) || strings.Contains(string(encoded), `"stable_id"`) || strings.Contains(string(encoded), `"socks_advertise"`) || strings.Contains(string(encoded), `"policy_base_url"`) {
-		t.Fatalf("gateway.json does not use virtual_host as its single publication source: %s", encoded)
+	if !strings.Contains(string(encoded), `"socks_host"`) || !strings.Contains(string(encoded), `"policy_host"`) || !strings.Contains(string(encoded), `"projection_key"`) || strings.Contains(string(encoded), `"stable_id"`) || strings.Contains(string(encoded), `"virtual_host"`) || strings.Contains(string(encoded), `"policy_base_url"`) {
+		t.Fatalf("gateway.json does not persist independent publication hosts: %s", encoded)
 	}
 	directory, err := os.Stat(dir)
 	if err != nil {
@@ -104,7 +105,7 @@ func TestStoreDoesNotReadLegacyConfiguration(t *testing.T) {
 
 func TestStoreRejectsUnsupportedSchemaWithoutMigration(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "gateway.json"), []byte(`{"schema_version":2}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "gateway.json"), []byte(`{"schema_version":3}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := NewStore(dir).Load(); err == nil {
@@ -112,10 +113,40 @@ func TestStoreRejectsUnsupportedSchemaWithoutMigration(t *testing.T) {
 	}
 }
 
+func TestStoreMigratesSingleVirtualHostToIndependentPublishedHosts(t *testing.T) {
+	dir := t.TempDir()
+	legacy := mustDefaultConfig(t)
+	legacy.SchemaVersion = 1
+	legacy.SocksHost = ""
+	legacy.PolicyHost = ""
+	data, err := json.Marshal(configV1{Config: legacy, VirtualHost: "legacy.surge.eb"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gateway.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := NewStore(dir).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.SchemaVersion != SchemaVersion || loaded.SocksHost != "legacy.surge.eb" || loaded.PolicyHost != "legacy.surge.eb" {
+		t.Fatalf("migrated hosts = schema %d, SOCKS %q, Policy %q", loaded.SchemaVersion, loaded.SocksHost, loaded.PolicyHost)
+	}
+	persisted, err := os.ReadFile(filepath.Join(dir, "gateway.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(persisted), `"virtual_host"`) || !strings.Contains(string(persisted), `"socks_host": "legacy.surge.eb"`) || !strings.Contains(string(persisted), `"policy_host": "legacy.surge.eb"`) {
+		t.Fatalf("schema migration was not persisted with independent hosts: %s", persisted)
+	}
+}
+
 func TestStoreRejectsIncompleteCurrentSchemaInsteadOfNormalizing(t *testing.T) {
 	dir := t.TempDir()
 	data := []byte(`{
-  "schema_version":1,
+  "schema_version":2,
   "mode":"local",
   "http_bind":"127.0.0.1:18080",
   "socks_bind":"127.0.0.1",
@@ -151,7 +182,8 @@ func TestStoreMigratesUnsafeGatewayCredentialsToRepairableState(t *testing.T) {
 	config.Mode = ModeGateway
 	config.HTTPBind = "0.0.0.0:18080"
 	config.SocksBind = "0.0.0.0"
-	config.VirtualHost = "192.168.50.10"
+	config.SocksHost = "192.168.50.10"
+	config.PolicyHost = "policy.surge.eb"
 	config.ManagementToken = "management-token-1234"
 	config.PolicyToken = "unsafe"
 	config.Providers = []Provider{{

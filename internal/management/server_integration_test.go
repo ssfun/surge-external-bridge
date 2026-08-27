@@ -381,7 +381,7 @@ func TestControllerAllowlistUsesPrivateCredentialAndBlocksDangerousRoutes(t *tes
 		t.Fatal(err)
 	}
 	_ = response.Body.Close()
-	for _, required := range []string{"virtual_host", "projection_key", "version", "core_version", "gateway_state", "data_directory_protected", "configuration_protected", "controller_key_protected"} {
+	for _, required := range []string{"socks_host", "policy_host", "projection_key", "version", "core_version", "gateway_state", "data_directory_protected", "configuration_protected", "controller_key_protected"} {
 		if _, ok := settings[required]; !ok {
 			t.Fatalf("settings DTO omitted %q: %#v", required, settings)
 		}
@@ -395,7 +395,7 @@ func TestControllerAllowlistUsesPrivateCredentialAndBlocksDangerousRoutes(t *tes
 	if _, ok := settings["management_token"]; ok {
 		t.Fatalf("settings DTO exposed the Management Token: %#v", settings)
 	}
-	for _, removed := range []string{"socks_advertise", "policy_base_url"} {
+	for _, removed := range []string{"virtual_host", "socks_advertise", "policy_base_url"} {
 		if _, ok := settings[removed]; ok {
 			t.Fatalf("settings DTO retained independent publication field %q: %#v", removed, settings)
 		}
@@ -441,21 +441,39 @@ func TestControllerAllowlistUsesPrivateCredentialAndBlocksDangerousRoutes(t *tes
 	}
 }
 
-func TestConfiguredVirtualHostPassesHTTPHostBoundary(t *testing.T) {
+func TestConfiguredPolicyHostPassesHTTPHostBoundaryIndependently(t *testing.T) {
 	application, _, endpoint := testManagementServer(t, "")
 	defer application.Close()
 	settings := application.Config().Settings()
-	settings.VirtualHost = "surge.eb"
+	settings.SocksHost = "socks.surge.eb"
+	settings.PolicyHost = "policy.surge.eb"
 	if err := application.UpdateSettings(settings); err != nil {
 		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodGet, endpoint+"/api/overview", nil)
+	req.Host = "policy.surge.eb:18080"
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var overview map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&overview); err != nil {
+		_ = response.Body.Close()
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	wantSOCKS := net.JoinHostPort("socks.surge.eb", fmt.Sprint(application.Config().SocksPort))
+	if overview["policy_url"] != "http://policy.surge.eb:18080/proxies" || overview["socks_advertise"] != wantSOCKS {
+		t.Fatalf("independent published addresses were not projected: %#v", overview)
 	}
 
 	tests := []struct {
 		host string
 		want int
 	}{
-		{host: "surge.eb:18080", want: http.StatusOK},
-		{host: "SURGE.EB.:18080", want: http.StatusOK},
+		{host: "policy.surge.eb:18080", want: http.StatusOK},
+		{host: "POLICY.SURGE.EB.:18080", want: http.StatusOK},
+		{host: "socks.surge.eb:18080", want: http.StatusMisdirectedRequest},
 		{host: "127.0.0.1:18080", want: http.StatusOK},
 		{host: "other.eb:18080", want: http.StatusMisdirectedRequest},
 	}

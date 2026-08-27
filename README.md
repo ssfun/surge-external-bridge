@@ -72,7 +72,7 @@ PROCESS-NAME,SurgeEB,DIRECT
 - 节点：协议、能力、Mihomo 延迟历史、TCP/UDP 诊断和 Surge 行复制。
 - 连接：实时目标、节点链、规则、流量，以及关闭单个或全部连接。
 - 日志：Mihomo 结构化实时日志与产品事件，敏感字段二次脱敏。
-- 设置：仅本机/局域网网关模式、HTTP/SOCKS 监听、统一发布主机、Token、诊断目标、Projection Key 和用户级系统服务。
+- 设置：仅本机/局域网网关模式、HTTP/SOCKS 监听、独立 SOCKS/Policy 发布主机、Token、诊断目标、Projection Key 和用户级系统服务。
 
 浏览器只访问产品 allowlist。允许的 Mihomo 能力包括版本、只读配置、Provider/节点健康、连接、流量、内存和结构化日志。`PUT/PATCH /configs`、restart、upgrade、debug 和未来未列入清单的 Controller 路由均不暴露。
 
@@ -100,28 +100,28 @@ listeners: []
 
 ## 仅本机与局域网网关边界
 
-`virtual_host` 是投影节点和 Policy Path 的唯一发布主机。Policy 基础 URL 固定根据它与 HTTP 监听端口生成，避免 SOCKS 发布地址、Policy URL 和 HTTP Host 白名单相互漂移。它可以是 `surge.eb` 这样的显式虚拟域名，但不能包含协议、端口、路径或通配符。
+`socks_host` 和 `policy_host` 分别控制投影节点中的 SOCKS 主机与 Policy Path URL 主机。Policy 基础 URL 由 `policy_host` 和 HTTP 监听端口生成，HTTP Host 白名单也只精确放行 `policy_host`；`socks_host` 不会被误当作管理台或 Policy 的 Host。两个值都可以使用显式域名或 IP，但不能包含协议、端口、路径或通配符。
 
-仅本机模式要求 HTTP 与 SOCKS 真实监听地址都是回环地址，同时允许回环 Host 和精确配置的 `virtual_host`。因此服务仍只对本机开放，但 `http://surge.eb:18080` 可以在 `surge.eb` 解析到本机时使用。
+仅本机模式要求 HTTP 与 SOCKS 真实监听地址都是回环地址；若发布主机直接填写 IP，也必须是回环 IP。仍可分别使用解析到本机的显式域名，例如 SOCKS 节点使用 `socks.surge.eb`，Policy Path 使用 `http://policy.surge.eb:18080`。
 
 局域网网关模式同时适用于 macOS 与 Linux，并要求：
 
 - Management Token 与 Policy Token 不同且都至少 16 字符；
 - HTTP 写操作执行 Token、同源、方法和请求体大小检查；
 - SOCKS 每个节点强制认证；
-- `virtual_host` 会写入所有投影节点并作为 HTTP Host 精确放行；不会因为配置了 `surge.eb` 而信任整个 `.eb` 后缀；
-- 直接用 IP 作为 `virtual_host` 时，只允许回环、私网、Tailscale CGNAT 或链路本地地址；
+- `socks_host` 只写入投影节点，`policy_host` 只生成 Policy URL 并作为 HTTP Host 精确放行；不会因为配置了某个 `.eb` 域名而信任整个后缀；
+- 两个发布主机直接使用 IP 时，只允许回环、私网、Tailscale CGNAT 或链路本地地址；
 - 不支持把管理台、Policy 或 SOCKS 裸露到公网。
 
 `/proxies` 含 SOCKS 凭据，固定返回 `Cache-Control: no-store`，支持 ETag 和独立强随机 Policy Token；不提供可猜测的免密值。敏感复制必须显式确认。
 
 ## 多设备统一 Policy Path
 
-所有 SurgeEB 实例配置相同的 `virtual_host` 与 `projection_key`，并保持 Provider 名称和 Mihomo 节点名一致，即可发布相同的节点凭据和 Policy Path：
+所有 SurgeEB 实例配置相同的 `socks_host`、`policy_host` 与 `projection_key`，并保持 Provider 名称和 Mihomo 节点名一致，即可发布相同的节点凭据和 Policy Path：
 
 ```ini
 [Proxy Group]
-External = select, policy-path=http://surge.eb:18080/proxies?token=POLICY_TOKEN, update-interval=3600
+External = select, policy-path=http://policy.surge.eb:18080/proxies?token=POLICY_TOKEN, update-interval=3600
 ```
 
 实际入口由 DNS 决定：MacBook 本机可解析到 `127.0.0.1`；家庭网络解析到 Mac mini 的局域网地址；iPhone 离开家庭网络后解析到 Linux 网关的可达地址。iPhone 可以通过 Surge 的 `[SSID Setting]` 在家庭 Wi-Fi 下切换 DNS：
