@@ -18,10 +18,12 @@ import (
 )
 
 const (
-	label                = "com.sfun.surgeeb"
-	legacyLabel          = "fun.ssfun.surgeeb"
-	systemdUnit          = "surgeeb.service"
-	darwinExecutableName = "SurgeEB"
+	label                     = "com.sfun.surgeeb"
+	legacyLabel               = "fun.ssfun.surgeeb"
+	systemdUnit               = "surgeeb.service"
+	systemdSystemPath         = "/etc/systemd/system/surgeeb.service"
+	linuxSystemExecutablePath = "/usr/local/bin/SurgeEB"
+	darwinExecutableName      = "SurgeEB"
 )
 
 type Info struct {
@@ -53,7 +55,7 @@ func serviceActive() bool {
 		output, err := exec.Command("launchctl", "print", launchdTarget(os.Getuid(), label)).CombinedOutput()
 		return err == nil && launchAgentActive(output)
 	case "linux":
-		return exec.Command("systemctl", "--user", "is-active", "--quiet", systemdUnit).Run() == nil
+		return exec.Command("systemctl", systemctlArguments(os.Geteuid(), "is-active", "--quiet", systemdUnit)...).Run() == nil
 	default:
 		return false
 	}
@@ -63,16 +65,17 @@ func Install(dataDir string) (Info, error) {
 	return install(dataDir, true)
 }
 
-// Register installs the user service without starting a second SurgeEB
+// Register installs the service definition without starting a second SurgeEB
 // process. It is used by the running configuration console, which already owns
-// the configured HTTP and SOCKS ports. The service will start at the next user
-// login; CLI installation can still activate it immediately via Install.
+// the configured HTTP and SOCKS ports. The service will start when its service
+// manager next activates the configured target; CLI installation can still
+// activate it immediately via Install.
 func Register(dataDir string) (Info, error) {
 	return install(dataDir, false)
 }
 
 func install(dataDir string, activate bool) (Info, error) {
-	if err := validateUserServiceContext(runtime.GOOS, os.Geteuid()); err != nil {
+	if err := validateServiceContext(runtime.GOOS, os.Geteuid()); err != nil {
 		return Info{}, err
 	}
 	executable, err := os.Executable()
@@ -87,7 +90,7 @@ func install(dataDir string, activate bool) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
-	executable, err = installExecutableFor(runtime.GOOS, executable)
+	executable, err = installExecutableFor(runtime.GOOS, os.Geteuid(), executable)
 	if err != nil {
 		return Info{}, err
 	}
@@ -114,10 +117,10 @@ func install(dataDir string, activate bool) (Info, error) {
 			return Info{}, err
 		}
 	} else if runtime.GOOS == "linux" {
-		if output, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
+		if output, err := exec.Command("systemctl", systemctlArguments(os.Geteuid(), "daemon-reload")...).CombinedOutput(); err != nil {
 			return Info{}, fmt.Errorf("systemctl daemon-reload: %w: %s", err, bytes.TrimSpace(output))
 		}
-		arguments := systemdEnableArguments(activate)
+		arguments := systemdEnableArguments(os.Geteuid(), activate)
 		if output, err := exec.Command("systemctl", arguments...).CombinedOutput(); err != nil {
 			return Info{}, fmt.Errorf("systemctl enable: %w: %s", err, bytes.TrimSpace(output))
 		}
@@ -125,26 +128,37 @@ func install(dataDir string, activate bool) (Info, error) {
 	return Status()
 }
 
-func validateUserServiceContext(goos string, euid int) error {
-	if (goos == "darwin" || goos == "linux") && euid == 0 {
+func validateServiceContext(goos string, euid int) error {
+	if goos == "darwin" && euid == 0 {
 		return errors.New("user service installation must be run as the logged-in user without sudo")
 	}
 	return nil
 }
 
-func installExecutableFor(goos, source string) (string, error) {
-	if goos != "darwin" {
-		return source, nil
-	}
-	target := installedExecutablePath()
-	if target == "" {
+func installExecutableFor(goos string, euid int, source string) (string, error) {
+	target := serviceExecutableTarget(goos, euid)
+	if goos == "darwin" && target == "" {
 		return "", errors.New("resolve the current user's service executable path")
+	}
+	if target == "" {
+		return source, nil
 	}
 	installed, err := installExecutableAt(source, target)
 	if err != nil {
-		return "", fmt.Errorf("prepare user service executable %s: %w", target, err)
+		return "", fmt.Errorf("prepare service executable %s: %w", target, err)
 	}
 	return installed, nil
+}
+
+func serviceExecutableTarget(goos string, euid int) string {
+	switch {
+	case goos == "darwin":
+		return installedExecutablePath()
+	case goos == "linux" && euid == 0:
+		return linuxSystemExecutablePath
+	default:
+		return ""
+	}
 }
 
 func installExecutableAt(source, target string) (string, error) {
@@ -293,7 +307,7 @@ func Stop() (Info, error)    { return control("stop") }
 func Restart() (Info, error) { return control("restart") }
 
 func control(action string) (Info, error) {
-	if err := validateUserServiceContext(runtime.GOOS, os.Geteuid()); err != nil {
+	if err := validateServiceContext(runtime.GOOS, os.Geteuid()); err != nil {
 		return Info{}, err
 	}
 	info, err := Status()
@@ -301,7 +315,7 @@ func control(action string) (Info, error) {
 		return Info{}, err
 	}
 	if !info.Installed {
-		return Info{}, errors.New("user service is not installed")
+		return Info{}, errors.New("service is not installed")
 	}
 	switch runtime.GOOS {
 	case "darwin":
@@ -312,7 +326,7 @@ func control(action string) (Info, error) {
 		if action != "start" && action != "stop" && action != "restart" {
 			return Info{}, fmt.Errorf("unsupported service action %q", action)
 		}
-		if output, err := exec.Command("systemctl", "--user", action, systemdUnit).CombinedOutput(); err != nil {
+		if output, err := exec.Command("systemctl", systemctlArguments(os.Geteuid(), action, systemdUnit)...).CombinedOutput(); err != nil {
 			return Info{}, fmt.Errorf("systemctl %s: %w: %s", action, err, bytes.TrimSpace(output))
 		}
 	default:
@@ -380,8 +394,15 @@ func launchdTarget(uid int, serviceLabel string) string {
 	return launchdDomain(uid) + "/" + serviceLabel
 }
 
-func systemdEnableArguments(activate bool) []string {
-	arguments := []string{"--user", "enable"}
+func systemctlArguments(euid int, arguments ...string) []string {
+	if euid == 0 {
+		return arguments
+	}
+	return append([]string{"--user"}, arguments...)
+}
+
+func systemdEnableArguments(euid int, activate bool) []string {
+	arguments := systemctlArguments(euid, "enable")
 	if activate {
 		arguments = append(arguments, "--now")
 	}
@@ -406,7 +427,7 @@ func prepareDataDir(dataDir string) (string, error) {
 }
 
 func Uninstall() (Info, error) {
-	if err := validateUserServiceContext(runtime.GOOS, os.Geteuid()); err != nil {
+	if err := validateServiceContext(runtime.GOOS, os.Geteuid()); err != nil {
 		return Info{}, err
 	}
 	path, _, err := servicePath()
@@ -425,7 +446,7 @@ func Uninstall() (Info, error) {
 			return Info{}, err
 		}
 	} else if runtime.GOOS == "linux" {
-		if output, err := exec.Command("systemctl", "--user", "disable", "--now", systemdUnit).CombinedOutput(); err != nil {
+		if output, err := exec.Command("systemctl", systemctlArguments(os.Geteuid(), "disable", "--now", systemdUnit)...).CombinedOutput(); err != nil {
 			return Info{}, fmt.Errorf("systemctl disable: %w: %s", err, bytes.TrimSpace(output))
 		}
 	}
@@ -433,7 +454,7 @@ func Uninstall() (Info, error) {
 		return Info{}, err
 	}
 	if runtime.GOOS == "linux" {
-		if output, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
+		if output, err := exec.Command("systemctl", systemctlArguments(os.Geteuid(), "daemon-reload")...).CombinedOutput(); err != nil {
 			return Info{}, fmt.Errorf("systemctl daemon-reload: %w: %s", err, bytes.TrimSpace(output))
 		}
 	}
@@ -454,14 +475,17 @@ func servicePath() (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	return servicePathFor(runtime.GOOS, home)
+	return servicePathFor(runtime.GOOS, home, os.Geteuid())
 }
 
-func servicePathFor(goos, home string) (string, string, error) {
+func servicePathFor(goos, home string, euid int) (string, string, error) {
 	switch goos {
 	case "darwin":
 		return launchAgentPath(home, label), "LaunchAgent", nil
 	case "linux":
+		if euid == 0 {
+			return systemdSystemPath, "systemd system", nil
+		}
 		return filepath.Join(home, ".config", "systemd", "user", systemdUnit), "systemd user", nil
 	default:
 		return "", "", fmt.Errorf("service management is unsupported on %s", goos)
@@ -544,14 +568,21 @@ func launchAgentExecutable(content []byte) (string, error) {
 }
 
 func render(executable, dataDir string) ([]byte, error) {
-	return renderFor(runtime.GOOS, executable, dataDir)
+	return renderForContext(runtime.GOOS, executable, dataDir, os.Geteuid())
 }
 
 func renderFor(goos, executable, dataDir string) ([]byte, error) {
+	return renderForContext(goos, executable, dataDir, 1000)
+}
+
+func renderForContext(goos, executable, dataDir string, euid int) ([]byte, error) {
 	if executable == "" || dataDir == "" || strings.ContainsAny(executable+dataDir, "\x00\r\n") {
 		return nil, errors.New("service executable and data directory must be non-empty paths without control characters")
 	}
-	data := struct{ Executable, DataDir, Label string }{executable, dataDir, label}
+	data := struct{ Executable, DataDir, Label, InstallTarget string }{executable, dataDir, label, "default.target"}
+	if goos == "linux" && euid == 0 {
+		data.InstallTarget = "multi-user.target"
+	}
 	if goos == "darwin" {
 		const source = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -594,7 +625,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 
 [Install]
-WantedBy=default.target
+WantedBy={{.InstallTarget}}
 `
 	tmpl, err := texttemplate.New("systemd").Funcs(texttemplate.FuncMap{"systemdArg": systemdArg}).Parse(source)
 	if err != nil {

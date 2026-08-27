@@ -84,15 +84,19 @@ func TestRenderSystemdDoesNotHTMLEscapePaths(t *testing.T) {
 
 func TestServicePaths(t *testing.T) {
 	home := filepath.Join("", "home", "tester")
-	darwin, scope, err := servicePathFor("darwin", home)
+	darwin, scope, err := servicePathFor("darwin", home, 501)
 	if err != nil || scope != "LaunchAgent" || darwin != filepath.Join(home, "Library", "LaunchAgents", label+".plist") {
 		t.Fatalf("unexpected Darwin path: path=%q scope=%q err=%v", darwin, scope, err)
 	}
-	linux, scope, err := servicePathFor("linux", home)
+	linux, scope, err := servicePathFor("linux", home, 1000)
 	if err != nil || scope != "systemd user" || linux != filepath.Join(home, ".config", "systemd", "user", systemdUnit) {
 		t.Fatalf("unexpected Linux path: path=%q scope=%q err=%v", linux, scope, err)
 	}
-	if _, _, err := servicePathFor("windows", home); err == nil {
+	linuxRoot, scope, err := servicePathFor("linux", home, 0)
+	if err != nil || scope != "systemd system" || linuxRoot != systemdSystemPath {
+		t.Fatalf("unexpected root Linux path: path=%q scope=%q err=%v", linuxRoot, scope, err)
+	}
+	if _, _, err := servicePathFor("windows", home, 1000); err == nil {
 		t.Fatal("unsupported platform was accepted")
 	}
 }
@@ -141,9 +145,12 @@ func TestDarwinServiceUsesStableExecutable(t *testing.T) {
 	if targetPath != filepath.Join(home, "Library", "Application Support", "SurgeEB", "bin", "SurgeEB") {
 		t.Fatalf("darwin executable path=%q", targetPath)
 	}
-	linuxTarget, err := installExecutableFor("linux", source)
+	linuxTarget, err := installExecutableFor("linux", 1000, source)
 	if err != nil || linuxTarget != source {
 		t.Fatalf("Linux executable path=%q err=%v, want source path", linuxTarget, err)
+	}
+	if target := serviceExecutableTarget("linux", 0); target != linuxSystemExecutablePath {
+		t.Fatalf("root Linux executable target=%q, want %q", target, linuxSystemExecutablePath)
 	}
 }
 
@@ -249,13 +256,16 @@ func TestLaunchAgentMissingOutputIsTheOnlyIgnoredBootoutFailure(t *testing.T) {
 	}
 }
 
-func TestRootCannotInstallUserService(t *testing.T) {
-	for _, goos := range []string{"darwin", "linux"} {
-		if err := validateUserServiceContext(goos, 0); err == nil || !strings.Contains(err.Error(), "without sudo") {
-			t.Fatalf("%s root context error=%v", goos, err)
-		}
-		if err := validateUserServiceContext(goos, 501); err != nil {
-			t.Fatalf("%s user context error=%v", goos, err)
+func TestRootServiceContextPolicy(t *testing.T) {
+	if err := validateServiceContext("darwin", 0); err == nil || !strings.Contains(err.Error(), "without sudo") {
+		t.Fatalf("darwin root context error=%v", err)
+	}
+	if err := validateServiceContext("darwin", 501); err != nil {
+		t.Fatalf("darwin user context error=%v", err)
+	}
+	for _, euid := range []int{0, 1000} {
+		if err := validateServiceContext("linux", euid); err != nil {
+			t.Fatalf("linux euid %d context error=%v", euid, err)
 		}
 	}
 }
@@ -270,12 +280,31 @@ func TestRenderRejectsUnitInjectionInPaths(t *testing.T) {
 }
 
 func TestConfigurationConsoleRegistrationDoesNotStartSecondProcess(t *testing.T) {
-	deferred := strings.Join(systemdEnableArguments(false), " ")
-	immediate := strings.Join(systemdEnableArguments(true), " ")
+	deferred := strings.Join(systemdEnableArguments(1000, false), " ")
+	immediate := strings.Join(systemdEnableArguments(1000, true), " ")
 	if strings.Contains(deferred, "--now") {
 		t.Fatalf("deferred service registration would start a competing process: %s", deferred)
 	}
 	if !strings.Contains(immediate, "--now") {
 		t.Fatalf("CLI service installation no longer activates the service: %s", immediate)
+	}
+}
+
+func TestRootUsesSystemSystemdManager(t *testing.T) {
+	root := strings.Join(systemdEnableArguments(0, true), " ")
+	if strings.Contains(root, "--user") || root != "enable --now "+systemdUnit {
+		t.Fatalf("root systemd arguments=%q", root)
+	}
+	user := strings.Join(systemdEnableArguments(1000, true), " ")
+	if !strings.HasPrefix(user, "--user ") {
+		t.Fatalf("user systemd arguments=%q", user)
+	}
+
+	content, err := renderForContext("linux", "/usr/local/bin/SurgeEB", "/root/.surge-external-bridge", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "WantedBy=multi-user.target") {
+		t.Fatalf("root system service has wrong install target: %s", content)
 	}
 }
