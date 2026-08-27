@@ -61,7 +61,7 @@ export const useDataStore = defineStore('data', {
           value = await api(resourcePaths[name])
         } catch (error) {
           if (generation !== requestGeneration) return false
-          if (name === 'service') value = null
+          if (name === 'service') value = { error: error.message || '服务状态检测失败' }
           else throw error
         }
         if (generation !== requestGeneration) return false

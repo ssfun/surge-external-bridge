@@ -101,6 +101,20 @@ func TestServicePaths(t *testing.T) {
 	}
 }
 
+func TestRootLinuxServicePathDoesNotRequireHome(t *testing.T) {
+	resolvedHome := false
+	path, scope, err := servicePathWithHome("linux", 0, func() (string, error) {
+		resolvedHome = true
+		return "", errors.New("HOME is not defined")
+	})
+	if err != nil || path != systemdSystemPath || scope != "systemd system" {
+		t.Fatalf("root Linux path=%q scope=%q err=%v", path, scope, err)
+	}
+	if resolvedHome {
+		t.Fatal("root Linux service path unnecessarily resolved HOME")
+	}
+}
+
 func TestDarwinServiceUsesStableExecutable(t *testing.T) {
 	home := t.TempDir()
 	source := filepath.Join(home, "Downloads", "SurgeEB")

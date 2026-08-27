@@ -211,6 +211,30 @@ describe('component update boundaries', () => {
     wrapper.unmount()
   })
 
+  it('shows service status failures instead of reporting autostart as disabled', async () => {
+    const data = useDataStore()
+    data.settings = { mode: 'local', http_bind: '127.0.0.1:9090', socks_bind: '127.0.0.1', socks_port: 1080, virtual_host: '127.0.0.1', projection_key: 'shared-projection-key-for-devices' }
+    data.service = { error: 'HOME is not defined' }
+    const router = testRouter(SettingsView, 'settings')
+    await router.push('/')
+    const wrapper = mount({ template: '<RouterView />' }, { global: { plugins: [router] } })
+
+    const serviceCard = wrapper.get('[data-testid="settings-service"]')
+    expect(serviceCard.get('.pill').text()).toBe('检测失败')
+    expect(serviceCard.text()).toContain('无法检测系统服务状态：HOME is not defined')
+    expect(serviceCard.text()).not.toContain('自动启动未开启')
+    expect(serviceCard.findAll('button').every((button) => button.attributes('disabled') !== undefined)).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('retains the service API error for the Settings status card', async () => {
+    const data = useDataStore()
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 501, json: async () => ({ error: 'HOME is not defined' }) })))
+
+    await data.loadResource('service')
+    expect(data.service).toEqual({ error: 'HOME is not defined' })
+  })
+
   it('logs in through the dedicated page without persisting the token', async () => {
     localStorage.setItem('surgeeb-management-token', 'stale-token-value')
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) })))

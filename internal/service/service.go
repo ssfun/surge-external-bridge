@@ -86,9 +86,12 @@ func install(dataDir string, activate bool) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return Info{}, err
+	home := ""
+	if runtime.GOOS == "darwin" {
+		home, err = os.UserHomeDir()
+		if err != nil {
+			return Info{}, err
+		}
 	}
 	executable, err = installExecutableFor(runtime.GOOS, os.Geteuid(), executable)
 	if err != nil {
@@ -471,11 +474,18 @@ func stopDarwinServices(uid int, stop func(string) error) error {
 }
 
 func servicePath() (string, string, error) {
-	home, err := os.UserHomeDir()
+	return servicePathWithHome(runtime.GOOS, os.Geteuid(), os.UserHomeDir)
+}
+
+func servicePathWithHome(goos string, euid int, resolveHome func() (string, error)) (string, string, error) {
+	if goos == "linux" && euid == 0 {
+		return servicePathFor(goos, "", euid)
+	}
+	home, err := resolveHome()
 	if err != nil {
 		return "", "", err
 	}
-	return servicePathFor(runtime.GOOS, home, os.Geteuid())
+	return servicePathFor(goos, home, euid)
 }
 
 func servicePathFor(goos, home string, euid int) (string, string, error) {

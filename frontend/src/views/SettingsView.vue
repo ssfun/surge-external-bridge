@@ -33,6 +33,7 @@ const generatedCredentialTitle = computed(() => generatedCredential.management &
 const generatedCredentialHelp = computed(() => generatedCredential.management && generatedCredential.policy
   ? '请分别保存 Management Token，并将 Policy Token 复制到 Surge 配置。'
   : generatedCredential.management ? '请复制保存；Policy Token 没有改变。' : '请复制到 Surge Policy Path；Management Token 没有改变。')
+const serviceDetectionFailed = computed(() => Boolean(service.value?.error))
 
 function markDirty() { dirty.value = true; appliedMessage.value = '' }
 function generateProjectionKey() { form.projection_key = randomToken(); markDirty() }
@@ -187,10 +188,11 @@ async function serviceAction(install) {
           <div class="settings-boundary"><b>SurgeEB 不会接管系统网络</b><span>系统代理、TUN 和 DNS 等功能仍由 Surge 管理。</span></div>
         </div>
         <div class="card settings-card" data-testid="settings-service">
-          <div class="settings-card-head"><div><h3>开机自动启动</h3><p>让 SurgeEB 在登录系统后自动运行；当前程序无需重复启动。</p></div><span class="pill" :class="service?.installed && !service?.repair_needed ? 'ok' : 'warn'">{{ service?.repair_needed ? '需要修复' : (service?.installed ? '已开启' : '未开启') }}</span></div>
-          <dl class="kv settings-service-facts"><dt>运行平台</dt><dd>{{ service?.platform || '—' }}</dd><dt>自动启动</dt><dd>{{ service?.repair_needed ? '旧定义需要迁移' : (service?.installed ? '已开启' : '未开启') }}</dd></dl>
+          <div class="settings-card-head"><div><h3>开机自动启动</h3><p>让 SurgeEB 随系统或用户会话自动运行；当前程序无需重复启动。</p></div><span class="pill" :class="service?.installed && !service?.repair_needed && !serviceDetectionFailed ? 'ok' : 'warn'">{{ serviceDetectionFailed ? '检测失败' : (service?.repair_needed ? '需要修复' : (service?.installed ? '已开启' : '未开启')) }}</span></div>
+          <dl class="kv settings-service-facts"><dt>运行平台</dt><dd>{{ service?.platform || '—' }}</dd><dt>自动启动</dt><dd>{{ serviceDetectionFailed ? '检测失败' : (service?.repair_needed ? '旧定义需要迁移' : (service?.installed ? '已开启' : '未开启')) }}</dd></dl>
+          <div v-if="serviceDetectionFailed" class="settings-note warn">无法检测系统服务状态：{{ service.error }}</div>
           <div v-if="service?.repair_needed" class="settings-note warn">当前 LaunchAgent 仍使用旧路径、定义异常或服务副本缺失；修复会迁移到当前用户目录，不需要 sudo。</div>
-          <div class="actions settings-service-actions"><button class="button" type="button" :disabled="service?.installed && !service?.repair_needed" @click="serviceAction(true)">{{ service?.repair_needed ? '修复自动启动' : '开启自动启动' }}</button><button class="button danger" type="button" :disabled="!service?.installed" @click="serviceAction(false)">关闭自动启动</button></div>
+          <div class="actions settings-service-actions"><button class="button" type="button" :disabled="serviceDetectionFailed || (service?.installed && !service?.repair_needed)" @click="serviceAction(true)">{{ service?.repair_needed ? '修复自动启动' : '开启自动启动' }}</button><button class="button danger" type="button" :disabled="serviceDetectionFailed || !service?.installed" @click="serviceAction(false)">关闭自动启动</button></div>
         </div>
       </div>
     </section>
