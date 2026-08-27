@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -97,6 +98,78 @@ func TestConfiguredProjectionIdentityMatchesAcrossIndependentApps(t *testing.T) 
 	}
 	if changed.PublicID != firstEntry.PublicID {
 		t.Fatal("changing projection_key changed the name-derived public node ID")
+	}
+}
+
+func TestStoppedSettingsStartFailureRestoresPersistedManagerInputs(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "seb-settings-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	config := mustDefaultConfig(t)
+	oldPortReservation, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.SocksPort = uint16(oldPortReservation.Addr().(*net.TCPAddr).Port)
+	if err := oldPortReservation.Close(); err != nil {
+		t.Fatal(err)
+	}
+	config.Providers = []Provider{{
+		Name: "Persisted", Type: "inline", Enabled: true,
+		Payload: []map[string]any{{
+			"name": "Persisted Node", "type": "vless", "server": "127.0.0.1", "port": 65502,
+			"uuid": "22222222-2222-4222-8222-222222222222", "network": "tcp", "tls": false,
+		}},
+	}}
+	assignProviderIDs(&config)
+	store := NewStore(dir)
+	if _, err := store.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(config); err != nil {
+		t.Fatal(err)
+	}
+	application, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	before := application.Snapshot().Entries()
+	if len(before) != 1 {
+		t.Fatalf("initial projection entries=%d, want 1", len(before))
+	}
+	if err := application.manager.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	settings := config.Settings()
+	settings.SocksPort = uint16(occupied.Addr().(*net.TCPAddr).Port)
+	settings.SocksHost = "candidate.surge.eb"
+	settings.ProjectionKey = "candidate-projection-key-value"
+	if err := application.UpdateSettings(settings); err == nil {
+		t.Fatal("occupied candidate SOCKS port unexpectedly started")
+	}
+	if state := application.Status().State; state != "stopped" {
+		t.Fatalf("failed stopped update left manager state=%s, want stopped", state)
+	}
+	if persisted := application.Config(); persisted.SocksPort != config.SocksPort || persisted.SocksHost != config.SocksHost || persisted.ProjectionKey != config.ProjectionKey {
+		t.Fatalf("failed update changed persisted app config: %#v", persisted.Settings())
+	}
+	if err := application.manager.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if address := application.Status().SocksAddress; address != net.JoinHostPort(config.SocksBind, fmt.Sprint(config.SocksPort)) {
+		t.Fatalf("restored manager started at %s, want persisted address", address)
+	}
+	after := application.Snapshot().Entries()
+	if len(after) != 1 || after[0].Username != before[0].Username || after[0].Password != before[0].Password || after[0].SocksHost != config.SocksHost {
+		t.Fatalf("restored projection differs from persisted inputs: before=%#v after=%#v", before, after)
 	}
 }
 

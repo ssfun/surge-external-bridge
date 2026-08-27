@@ -58,6 +58,12 @@ func TestValidateConfigNetworkBoundaries(t *testing.T) {
 			return c
 		}()},
 		{name: "local public HTTP bind", config: func() Config { c := validLocal; c.HTTPBind = "0.0.0.0:18080"; return c }(), wantErr: true},
+		{name: "HTTP zero port", config: func() Config { c := validLocal; c.HTTPBind = "127.0.0.1:0"; return c }(), wantErr: true},
+		{name: "HTTP service name port", config: func() Config { c := validLocal; c.HTTPBind = "127.0.0.1:http"; return c }(), wantErr: true},
+		{name: "HTTP overflowing port", config: func() Config { c := validLocal; c.HTTPBind = "127.0.0.1:65536"; return c }(), wantErr: true},
+		{name: "UDP zero port", config: func() Config { c := validLocal; c.NodeTestUDP = "8.8.8.8:0"; return c }(), wantErr: true},
+		{name: "UDP service name port", config: func() Config { c := validLocal; c.NodeTestUDP = "8.8.8.8:domain"; return c }(), wantErr: true},
+		{name: "UDP overflowing port", config: func() Config { c := validLocal; c.NodeTestUDP = "8.8.8.8:65536"; return c }(), wantErr: true},
 		{name: "local public SOCKS IP", config: func() Config { c := validLocal; c.SocksHost = "8.8.8.8"; return c }(), wantErr: true},
 		{name: "local public Policy IP", config: func() Config { c := validLocal; c.PolicyHost = "8.8.8.8"; return c }(), wantErr: true},
 		{name: "gateway missing tokens", config: func() Config { c := validGateway; c.ManagementToken, c.PolicyToken = "", ""; return c }(), wantErr: true},

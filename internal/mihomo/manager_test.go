@@ -2,6 +2,7 @@ package mihomo
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -570,6 +571,91 @@ func TestProjectionSettingsRotateCredentialsAndRebindListenerWithoutCoreRestart(
 	}
 }
 
+func TestConfigureWhenStoppedReplacesAllRuntimeInputs(t *testing.T) {
+	manager, err := NewManager(ManagerOptions{
+		HomeDir: t.TempDir(), ControllerSocket: filepath.Join(t.TempDir(), "controller.sock"), ControllerSecret: "controller-secret",
+		SocksBind: "127.0.0.1", SocksAdvertise: "127.0.0.1", SocksPort: 1080,
+		MasterKey: []byte("01234567890123456789012345678901"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := []byte("abcdefghijklmnopqrstuvwxyzABCDEF")
+	definitions := []ProviderDefinition{{StableID: "candidate", Name: "Candidate", Type: "inline"}}
+	if err := manager.ConfigureWhenStopped("127.0.0.2", "socks.surge.eb", 2080, true, key, definitions); err != nil {
+		t.Fatal(err)
+	}
+	key[0] = 'x'
+	definitions[0].Name = "mutated"
+	manager.mu.RLock()
+	options := manager.options
+	manager.mu.RUnlock()
+	if options.SocksBind != "127.0.0.2" || options.SocksAdvertise != "socks.surge.eb" || options.SocksPort != 2080 || !options.PrefixProvider {
+		t.Fatalf("projection options were not replaced together: %#v", options)
+	}
+	if string(options.MasterKey) != "abcdefghijklmnopqrstuvwxyzABCDEF" || len(options.Providers) != 1 || options.Providers[0].Name != "Candidate" {
+		t.Fatalf("key or Providers were not defensively replaced: key=%q providers=%#v", options.MasterKey, options.Providers)
+	}
+}
+
+func TestAsyncFailClosedWaitsForApplyMutex(t *testing.T) {
+	if os.Getenv("SURGEEB_FAIL_CLOSED_HELPER") == "" {
+		command := exec.Command(os.Args[0], "-test.run=^TestAsyncFailClosedWaitsForApplyMutex$", "-test.v")
+		command.Env = append(os.Environ(), "SURGEEB_FAIL_CLOSED_HELPER=1")
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("fail-closed helper failed: %v\n%s", err, output)
+		}
+		return
+	}
+	home, err := os.MkdirTemp("/tmp", "sfc-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(home)
+	port, err := freePort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewManager(ManagerOptions{
+		HomeDir: home, ControllerSocket: filepath.Join(home, "controller.sock"), ControllerSecret: "controller-secret",
+		SocksBind: "127.0.0.1", SocksAdvertise: "127.0.0.1", SocksPort: port,
+		MasterKey: []byte("01234567890123456789012345678901"), PollInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Start(); err != nil {
+		t.Fatal(err)
+	}
+	manager.applyMu.Lock()
+	manager.mu.RLock()
+	config := manager.config
+	manager.mu.RUnlock()
+	done := manager.failClosedAsync(config, errors.New("security invariant failed"))
+	select {
+	case <-done:
+		manager.applyMu.Unlock()
+		t.Fatal("asynchronous fail-closed bypassed applyMu")
+	case <-time.After(25 * time.Millisecond):
+	}
+	if state := manager.Status().State; state != "running" {
+		manager.applyMu.Unlock()
+		t.Fatalf("manager changed state while applyMu was held: %s", state)
+	}
+	manager.applyMu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("asynchronous fail-closed did not complete")
+	}
+	if state := manager.Status().State; state != "error" {
+		t.Fatalf("fail-closed state=%s, want error", state)
+	}
+	if err := manager.Stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestProviderCacheSurvivesProcessRestart(t *testing.T) {
 	if os.Getenv("SURGEEB_CACHE_HELPER") != "" {
 		runProviderCacheHelper(t)
@@ -646,7 +732,7 @@ func runManagerRecoveryHelper(t *testing.T) {
 	if err := udpBlocker.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.ConfigureProjectionWhenStopped("127.0.0.1", "127.0.0.1", port, true, []byte("01234567890123456789012345678901")); err != nil {
+	if err := manager.ConfigureWhenStopped("127.0.0.1", "127.0.0.1", port, true, []byte("01234567890123456789012345678901"), nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.StartWithProviders(nil); err != nil {

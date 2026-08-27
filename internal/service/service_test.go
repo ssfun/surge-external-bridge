@@ -9,6 +9,11 @@ import (
 	"testing"
 )
 
+type fakeExitError int
+
+func (errorCode fakeExitError) Error() string { return "command exited" }
+func (errorCode fakeExitError) ExitCode() int { return int(errorCode) }
+
 func TestPrepareDataDirCreatesPrivateAbsoluteDirectory(t *testing.T) {
 	base := t.TempDir()
 	t.Chdir(base)
@@ -215,6 +220,45 @@ func TestLaunchAgentActiveDistinguishesLoadedFromRunning(t *testing.T) {
 	}
 	if !launchAgentActive([]byte("state = running\npid = 123\n")) {
 		t.Fatal("running LaunchAgent was reported inactive")
+	}
+}
+
+func TestServiceActiveDistinguishesInactiveFromDetectionErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		goos     string
+		euid     int
+		uid      int
+		output   string
+		runErr   error
+		want     bool
+		wantErr  bool
+		wantName string
+		wantArgs string
+	}{
+		{name: "Linux active", goos: "linux", euid: 0, runErr: nil, want: true, wantName: "systemctl", wantArgs: "is-active --quiet surgeeb.service"},
+		{name: "Linux user inactive", goos: "linux", euid: 1000, runErr: fakeExitError(3), wantName: "systemctl", wantArgs: "--user is-active --quiet surgeeb.service"},
+		{name: "Linux unknown unit", goos: "linux", euid: 0, runErr: fakeExitError(4), wantName: "systemctl", wantArgs: "is-active --quiet surgeeb.service"},
+		{name: "Linux DBus failure", goos: "linux", euid: 0, output: "Failed to connect to bus", runErr: fakeExitError(1), wantErr: true, wantName: "systemctl", wantArgs: "is-active --quiet surgeeb.service"},
+		{name: "Darwin running", goos: "darwin", uid: 501, output: "state = running\npid = 123\n", want: true, wantName: "launchctl", wantArgs: "print gui/501/com.sfun.surgeeb"},
+		{name: "Darwin waiting", goos: "darwin", uid: 501, output: "state = waiting\n", wantName: "launchctl", wantArgs: "print gui/501/com.sfun.surgeeb"},
+		{name: "Darwin missing", goos: "darwin", uid: 501, output: "Could not find service", runErr: fakeExitError(113), wantName: "launchctl", wantArgs: "print gui/501/com.sfun.surgeeb"},
+		{name: "Darwin permission failure", goos: "darwin", uid: 501, output: "Operation not permitted", runErr: fakeExitError(1), wantErr: true, wantName: "launchctl", wantArgs: "print gui/501/com.sfun.surgeeb"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			called := false
+			active, err := serviceActiveFor(test.goos, test.euid, test.uid, func(name string, arguments ...string) ([]byte, error) {
+				called = true
+				if name != test.wantName || strings.Join(arguments, " ") != test.wantArgs {
+					t.Fatalf("command=%s %s, want %s %s", name, strings.Join(arguments, " "), test.wantName, test.wantArgs)
+				}
+				return []byte(test.output), test.runErr
+			})
+			if !called || active != test.want || (err != nil) != test.wantErr {
+				t.Fatalf("called=%v active=%v err=%v, want active=%v wantErr=%v", called, active, err, test.want, test.wantErr)
+			}
+		})
 	}
 }
 

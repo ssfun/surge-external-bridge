@@ -122,6 +122,11 @@ func (m *Manager) ProviderState(stableID string) (nextRefresh time.Time, lastErr
 func (m *Manager) Start() error {
 	m.applyMu.Lock()
 	defer m.applyMu.Unlock()
+	return m.startLocked()
+}
+
+// startLocked starts the manager while the caller holds applyMu.
+func (m *Manager) startLocked() error {
 	m.mu.RLock()
 	alreadyRunning := m.listener != nil
 	coreReady := m.coreReady
@@ -308,7 +313,7 @@ func (m *Manager) ApplyProviders(definitions []ProviderDefinition) error {
 	m.stopHealthChecks()
 	replaceProviderConfig(candidate)
 	if err := ValidateRuntimeInvariants(candidate, m.options.HomeDir); err != nil {
-		m.failClosed(candidate, err)
+		m.failClosedLocked(candidate, err)
 		return err
 	}
 	m.store.Store(candidateSnapshot)
@@ -328,6 +333,8 @@ func (m *Manager) ApplyProviders(definitions []ProviderDefinition) error {
 }
 
 func (m *Manager) StartWithProviders(definitions []ProviderDefinition) error {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
 	m.mu.Lock()
 	if m.listener != nil {
 		m.mu.Unlock()
@@ -335,13 +342,15 @@ func (m *Manager) StartWithProviders(definitions []ProviderDefinition) error {
 	}
 	m.options.Providers = append([]ProviderDefinition(nil), definitions...)
 	m.mu.Unlock()
-	return m.Start()
+	return m.startLocked()
 }
 
-func (m *Manager) ConfigureProjectionWhenStopped(bind, advertise string, port uint16, prefixProvider bool, masterKey []byte) error {
+func (m *Manager) ConfigureWhenStopped(bind, advertise string, port uint16, prefixProvider bool, masterKey []byte, definitions []ProviderDefinition) error {
 	if strings.TrimSpace(bind) == "" || strings.TrimSpace(advertise) == "" || port == 0 || len(masterKey) < MasterKeySize {
 		return errors.New("invalid projection settings")
 	}
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.listener != nil {
@@ -350,6 +359,7 @@ func (m *Manager) ConfigureProjectionWhenStopped(bind, advertise string, port ui
 	m.options.SocksBind, m.options.SocksAdvertise, m.options.SocksPort = bind, advertise, port
 	m.options.PrefixProvider = prefixProvider
 	m.options.MasterKey = append([]byte(nil), masterKey...)
+	m.options.Providers = append([]ProviderDefinition(nil), definitions...)
 	return nil
 }
 
@@ -442,7 +452,7 @@ func (m *Manager) RefreshProvider(stableID string) error {
 		return wrapped
 	}
 	if err := SecurePrivateTree(m.options.HomeDir); err != nil {
-		m.failClosed(cfg, err)
+		m.failClosedLocked(cfg, err)
 		return err
 	}
 	if err := m.rebuildProjection(cfg, definitions); err != nil {
@@ -602,9 +612,9 @@ func (m *Manager) pollProviders() {
 				} else {
 					if err := SecurePrivateTree(m.options.HomeDir); err != nil {
 						// pollProviders runs inside the watcher goroutine whose done
-						// channel failClosed waits on. Fail closed from a separate
-						// goroutine so the watcher can return and release applyMu.
-						go m.failClosed(cfg, err)
+						// channel failClosedLocked waits on. Queue fail-closed behind
+						// applyMu so the watcher can return and release the lock first.
+						m.failClosedAsync(cfg, err)
 						return
 					}
 					m.mu.Lock()
@@ -640,7 +650,7 @@ func (m *Manager) pollProviders() {
 		return
 	}
 	if err := SecurePrivateTree(m.options.HomeDir); err != nil {
-		go m.failClosed(cfg, err)
+		m.failClosedAsync(cfg, err)
 		return
 	}
 	if err := m.rebuildProjection(cfg, definitions); err != nil {
@@ -901,10 +911,11 @@ func (m *Manager) fail(err error) {
 	m.emit("error", err.Error())
 }
 
-// failClosed is used only for a post-ApplyConfig security invariant failure.
+// failClosedLocked is used only for a post-ApplyConfig security invariant
+// failure. The caller must hold applyMu.
 // It closes the product listener and Embedded Core while leaving the outer
 // management HTTP server alive.
-func (m *Manager) failClosed(cfg *MConfig.Config, err error) {
+func (m *Manager) failClosedLocked(cfg *MConfig.Config, err error) {
 	m.mu.Lock()
 	listener, cancel, done := m.listener, m.cancel, m.done
 	m.listener, m.cancel, m.done, m.config = nil, nil, nil, nil
@@ -926,6 +937,24 @@ func (m *Manager) failClosed(cfg *MConfig.Config, err error) {
 	m.shutdownCore(cfg)
 	m.releaseOwnership()
 	m.emit("error", err.Error())
+}
+
+// failClosedAsync queues watcher-triggered cleanup behind every other runtime
+// mutation. A stale failure must not tear down a newer configuration.
+func (m *Manager) failClosedAsync(cfg *MConfig.Config, err error) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.applyMu.Lock()
+		defer m.applyMu.Unlock()
+		m.mu.RLock()
+		current := m.config == cfg && m.listener != nil
+		m.mu.RUnlock()
+		if current {
+			m.failClosedLocked(cfg, err)
+		}
+	}()
+	return done
 }
 
 func (m *Manager) emit(level, message string) {

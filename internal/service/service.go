@@ -46,19 +46,56 @@ func Status() (Info, error) {
 	}
 	installed := statErr == nil
 	repairNeeded := installed && runtime.GOOS == "darwin" && launchAgentNeedsRepair(path, installedExecutablePath())
-	return Info{Platform: runtime.GOOS, Installed: installed, Active: installed && serviceActive(), RepairNeeded: repairNeeded, Path: path, Scope: scope}, nil
+	active := false
+	if installed {
+		active, err = serviceActive()
+		if err != nil {
+			return Info{}, err
+		}
+	}
+	return Info{Platform: runtime.GOOS, Installed: installed, Active: active, RepairNeeded: repairNeeded, Path: path, Scope: scope}, nil
 }
 
-func serviceActive() bool {
-	switch runtime.GOOS {
+type serviceCommandRunner func(name string, arguments ...string) ([]byte, error)
+
+func serviceActive() (bool, error) {
+	return serviceActiveFor(runtime.GOOS, os.Geteuid(), os.Getuid(), func(name string, arguments ...string) ([]byte, error) {
+		return exec.Command(name, arguments...).CombinedOutput()
+	})
+}
+
+func serviceActiveFor(goos string, euid, uid int, run serviceCommandRunner) (bool, error) {
+	switch goos {
 	case "darwin":
-		output, err := exec.Command("launchctl", "print", launchdTarget(os.Getuid(), label)).CombinedOutput()
-		return err == nil && launchAgentActive(output)
+		output, err := run("launchctl", "print", launchdTarget(uid, label))
+		if err == nil {
+			return launchAgentActive(output), nil
+		}
+		if launchAgentTargetMissing(output) {
+			return false, nil
+		}
+		return false, serviceCommandError("launchctl print", err, output)
 	case "linux":
-		return exec.Command("systemctl", systemctlArguments(os.Geteuid(), "is-active", "--quiet", systemdUnit)...).Run() == nil
+		output, err := run("systemctl", systemctlArguments(euid, "is-active", "--quiet", systemdUnit)...)
+		if err == nil {
+			return true, nil
+		}
+		var exitError interface{ ExitCode() int }
+		if errors.As(err, &exitError) && (exitError.ExitCode() == 3 || exitError.ExitCode() == 4) {
+			return false, nil
+		}
+		return false, serviceCommandError("systemctl is-active", err, output)
 	default:
-		return false
+		return false, fmt.Errorf("service status is unsupported on %s", goos)
 	}
+}
+
+func serviceCommandError(action string, err error, output []byte) error {
+	message := bytes.TrimSpace(output)
+	if len(message) == 0 {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	return fmt.Errorf("%s: %w: %s", action, err, message)
 }
 
 func Install(dataDir string) (Info, error) {

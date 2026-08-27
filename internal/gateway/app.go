@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -374,10 +375,13 @@ func (a *App) UpdateSettings(settings Settings) error {
 			return err
 		}
 	} else {
-		if err := a.manager.ConfigureProjectionWhenStopped(candidate.SocksBind, candidate.SocksHost, candidate.SocksPort, candidate.PrefixProvider, nextKey); err != nil {
+		if err := a.manager.ConfigureWhenStopped(candidate.SocksBind, candidate.SocksHost, candidate.SocksPort, candidate.PrefixProvider, nextKey, definitions(candidate)); err != nil {
 			return err
 		}
-		if err := a.manager.StartWithProviders(definitions(candidate)); err != nil {
+		if err := a.manager.Start(); err != nil {
+			if restoreErr := a.restoreStoppedSettings(previous, previousKey); restoreErr != nil {
+				return errors.Join(err, fmt.Errorf("restore persisted stopped configuration: %w", restoreErr))
+			}
 			return err
 		}
 	}
@@ -402,6 +406,10 @@ func (a *App) applyConfig(candidate Config) error {
 	if err := ValidateConfig(candidate); err != nil {
 		return err
 	}
+	a.mu.RLock()
+	previous := cloneConfig(a.config)
+	previousKey := append([]byte(nil), a.masterKey...)
+	a.mu.RUnlock()
 	wasRunning := a.manager.Status().State == "running"
 	var applyErr error
 	if wasRunning {
@@ -410,17 +418,19 @@ func (a *App) applyConfig(candidate Config) error {
 		applyErr = a.manager.StartWithProviders(definitions(candidate))
 	}
 	if applyErr != nil {
+		if !wasRunning {
+			if restoreErr := a.restoreStoppedSettings(previous, previousKey); restoreErr != nil {
+				return errors.Join(applyErr, fmt.Errorf("restore persisted stopped configuration: %w", restoreErr))
+			}
+		}
 		return applyErr
 	}
-	a.mu.RLock()
-	previous := cloneConfig(a.config)
-	a.mu.RUnlock()
 	if err := a.store.Save(candidate); err != nil {
 		var rollbackErr error
 		if wasRunning {
 			rollbackErr = a.manager.ApplyProviders(definitions(previous))
 		} else {
-			rollbackErr = errors.Join(a.manager.Stop(), a.manager.StartWithProviders(definitions(previous)))
+			rollbackErr = a.restoreStoppedSettings(previous, previousKey)
 		}
 		return rollbackAfterPersistenceFailure(err, rollbackErr, a.manager.Stop)
 	}
@@ -455,11 +465,8 @@ func (a *App) restoreStoppedSettings(previous Config, previousKey []byte) error 
 	if err := a.manager.Stop(); err != nil {
 		return fmt.Errorf("stop unpersisted runtime: %w", err)
 	}
-	if err := a.manager.ConfigureProjectionWhenStopped(previous.SocksBind, previous.SocksHost, previous.SocksPort, previous.PrefixProvider, previousKey); err != nil {
-		return fmt.Errorf("restore previous projection settings: %w", err)
-	}
-	if err := a.manager.StartWithProviders(definitions(previous)); err != nil {
-		return fmt.Errorf("restart previous runtime: %w", err)
+	if err := a.manager.ConfigureWhenStopped(previous.SocksBind, previous.SocksHost, previous.SocksPort, previous.PrefixProvider, previousKey, definitions(previous)); err != nil {
+		return fmt.Errorf("restore previous stopped configuration: %w", err)
 	}
 	return nil
 }
@@ -539,7 +546,7 @@ func ValidateConfig(config Config) error {
 	if config.Mode != ModeLocal && config.Mode != ModeGateway {
 		return errors.New("mode must be local or gateway")
 	}
-	httpHost, _, err := net.SplitHostPort(config.HTTPBind)
+	httpHost, err := hostWithValidPort(config.HTTPBind)
 	if err != nil || net.ParseIP(strings.Trim(httpHost, "[]")) == nil {
 		return errors.New("invalid HTTP bind address")
 	}
@@ -578,7 +585,7 @@ func ValidateConfig(config Config) error {
 	if err != nil || (testURL.Scheme != "http" && testURL.Scheme != "https") || testURL.Hostname() == "" {
 		return errors.New("node test URL must be an absolute HTTP or HTTPS URL")
 	}
-	if host, port, err := net.SplitHostPort(config.NodeTestUDP); err != nil || strings.TrimSpace(host) == "" || port == "" {
+	if host, err := hostWithValidPort(config.NodeTestUDP); err != nil || strings.TrimSpace(host) == "" {
 		return errors.New("node test UDP address must include a host and port")
 	}
 	if config.NodeTestTimeout < 1 || config.NodeTestTimeout > 120 {
@@ -605,6 +612,18 @@ func ValidateConfig(config Config) error {
 		}
 	}
 	return nil
+}
+
+func hostWithValidPort(address string) (string, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || port == "" || strings.IndexFunc(port, func(character rune) bool { return character < '0' || character > '9' }) >= 0 {
+		return "", errors.New("invalid host or port")
+	}
+	value, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || value == 0 {
+		return "", errors.New("invalid host or port")
+	}
+	return host, nil
 }
 
 func validPolicyToken(token string, required bool) bool {
