@@ -15,7 +15,7 @@ const submitError = ref('')
 let returnFocus = null
 
 const defaults = () => ({
-  name: '', type: 'http', enabled: true, url: '', headers: '', file_path: '', payload: '',
+  name: '', type: 'http', enabled: true, url: '', headers: '', file: null, payload: '',
   refresh_seconds: 21600, download_proxy: '', size_limit: 16777216,
   include_name: '', exclude_name: '', health_check: true,
   health_check_url: 'https://www.gstatic.com/generate_204', health_check_seconds: 300,
@@ -25,7 +25,7 @@ const form = reactive(defaults())
 
 function resetForm() {
   Object.assign(form, defaults(), props.provider || {}, {
-    url: '', headers: '', payload: '',
+    url: '', headers: '', file: null, payload: '',
     health_check_url: props.provider ? '' : (props.provider?.health_check_url || 'https://www.gstatic.com/generate_204'),
   })
 }
@@ -71,16 +71,18 @@ async function submit() {
     const headersText = form.headers.trim()
     const payloadText = form.payload.trim()
     const body = {
-      name: form.name, type: form.type, url: form.url, file_path: form.file_path, enabled: form.enabled,
+      name: form.name, type: form.type, url: form.url, enabled: form.enabled,
       headers: headersText ? JSON.parse(headersText) : undefined,
-      payload: payloadText ? JSON.parse(payloadText) : undefined,
+      payload: payloadText || undefined,
       refresh_seconds: Number(form.refresh_seconds), download_proxy: form.download_proxy,
       size_limit: Number(form.size_limit), include_name: form.include_name, exclude_name: form.exclude_name,
       health_check: form.health_check, health_check_url: form.health_check_url,
       health_check_seconds: Number(form.health_check_seconds), health_check_timeout: Number(form.health_check_timeout),
       health_check_lazy: form.health_check_lazy, expected_status: form.expected_status,
     }
-    await data.saveProvider(body, props.provider?.stable_id || '')
+    const id = props.provider?.stable_id || ''
+    if (form.type === 'file' && form.file) await data.saveProvider(body, id, form.file)
+    else await data.saveProvider(body, id)
     ui.toast('Provider 已通过进程内受控 ApplyConfig 生效')
     emit('saved')
   } catch (error) {
@@ -121,10 +123,10 @@ async function submit() {
               <label class="field"><span>订阅 URL{{ provider && provider.type === 'http' ? '（留空保持现有值）' : '' }}</span><input v-model="form.url" data-testid="provider-url" type="url" placeholder="https://example.com/subscription" autocomplete="off" :required="!provider || provider.type !== 'http'"><small>支持 Clash YAML、URI 列表与 Base64 URI。</small></label>
             </div>
             <div v-if="form.type === 'file'" class="conditional">
-              <label class="field"><span>Provider 文件路径{{ provider && provider.type === 'file' ? '（留空保持现有值）' : '' }}</span><input v-model="form.file_path" data-testid="provider-file-path" autocomplete="off" :required="!provider || provider.type !== 'file'"><small>必须位于 Mihomo 私有目录；不能使用任意绝对路径。</small></label>
+              <label class="field"><span>上传 Provider 文件{{ provider && provider.type === 'file' ? '（不选择则保持现有文件）' : '' }}</span><input data-testid="provider-file" type="file" accept=".yaml,.yml,.txt,.conf,text/yaml,application/yaml,text/plain" :required="!provider || provider.type !== 'file'" @change="form.file = $event.target.files?.[0] || null"><small>文件会以随机名称保存到 Mihomo 私有目录，最大 8 MiB；浏览器不会读取服务器文件路径。</small></label>
             </div>
             <div v-if="form.type === 'inline'" class="conditional">
-              <label class="field"><span>Proxies JSON 数组{{ provider && provider.type === 'inline' ? '（留空保持现有值）' : '' }}</span><textarea v-model="form.payload" data-testid="provider-payload" spellcheck="false" placeholder='[{"name":"...","type":"vless",...}]' :required="!provider || provider.type !== 'inline'" /></label>
+              <label class="field"><span>Mihomo Provider YAML{{ provider && provider.type === 'inline' ? '（留空保持现有值）' : '' }}</span><textarea v-model="form.payload" data-testid="provider-payload" spellcheck="false" placeholder="proxies:\n  - name: 节点名称\n    type: vless\n    server: example.com\n    port: 443\n    ..." :required="!provider || provider.type !== 'inline'" /><small>使用 Mihomo 格式，顶层必须包含非空的 proxies 列表。</small></label>
             </div>
             <div class="field-group">
               <div class="field-group-title"><b>节点筛选</b><span>可选 · 正则表达式</span></div>

@@ -40,7 +40,7 @@ type Provider struct {
 	Type               string              `json:"type"`
 	URL                string              `json:"url,omitempty"`
 	FilePath           string              `json:"file_path,omitempty"`
-	Payload            []map[string]any    `json:"payload,omitempty"`
+	Payload            InlinePayload       `json:"payload,omitempty"`
 	Enabled            bool                `json:"enabled"`
 	Headers            map[string][]string `json:"headers,omitempty"`
 	RefreshSeconds     int                 `json:"refresh_seconds"`

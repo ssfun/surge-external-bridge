@@ -279,13 +279,14 @@ func (s *Server) addProvider(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "cross-origin mutation is not allowed")
 		return
 	}
-	var provider gateway.Provider
-	if err := readJSON(w, r, &provider); err != nil {
+	provider, uploadPath, err := s.readProviderMutation(w, r)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	created, err := s.app.AddProvider(provider)
 	if err != nil {
+		s.app.DiscardProviderUpload(uploadPath)
 		writeError(w, http.StatusBadRequest, s.publicError(err))
 		return
 	}
@@ -297,17 +298,96 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "cross-origin mutation is not allowed")
 		return
 	}
-	var provider gateway.Provider
-	if err := readJSON(w, r, &provider); err != nil {
+	provider, uploadPath, err := s.readProviderMutation(w, r)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	updated, err := s.app.UpdateProvider(r.PathValue("id"), provider)
 	if err != nil {
+		s.app.DiscardProviderUpload(uploadPath)
 		writeError(w, http.StatusBadRequest, s.publicError(err))
 		return
 	}
 	writeJSON(w, http.StatusOK, makePublicProvider(updated))
+}
+
+func (s *Server) readProviderMutation(w http.ResponseWriter, r *http.Request) (provider gateway.Provider, uploadPath string, err error) {
+	if !strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "multipart/form-data") {
+		err = readJSON(w, r, &provider)
+		return
+	}
+	defer func() {
+		if err != nil && uploadPath != "" {
+			s.app.DiscardProviderUpload(uploadPath)
+			uploadPath = ""
+		}
+	}()
+	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, gateway.MaxProviderUploadSize+(1<<20))
+	reader, parseErr := r.MultipartReader()
+	if parseErr != nil {
+		err = fmt.Errorf("invalid Provider upload: %w", parseErr)
+		return
+	}
+	var metadata []byte
+	for {
+		part, nextErr := reader.NextPart()
+		if errors.Is(nextErr, io.EOF) {
+			break
+		}
+		if nextErr != nil {
+			err = fmt.Errorf("read Provider upload: %w", nextErr)
+			return
+		}
+		switch part.FormName() {
+		case "provider":
+			if metadata != nil || part.FileName() != "" {
+				_ = part.Close()
+				err = errors.New("Provider upload must contain one provider metadata field")
+				return
+			}
+			metadata, err = io.ReadAll(io.LimitReader(part, maxRequestBody+1))
+			_ = part.Close()
+			if err != nil {
+				err = fmt.Errorf("read Provider upload metadata: %w", err)
+				return
+			}
+			if len(metadata) > maxRequestBody {
+				err = errors.New("Provider upload metadata is too large")
+				return
+			}
+		case "file":
+			if uploadPath != "" || part.FileName() == "" {
+				_ = part.Close()
+				err = errors.New("Provider upload must contain one file")
+				return
+			}
+			uploadPath, err = s.app.StoreProviderUpload(part)
+			_ = part.Close()
+			if err != nil {
+				return
+			}
+		default:
+			name := part.FormName()
+			_ = part.Close()
+			err = fmt.Errorf("unexpected Provider upload field %q", name)
+			return
+		}
+	}
+	if len(metadata) == 0 || uploadPath == "" {
+		err = errors.New("Provider upload requires metadata and a file")
+		return
+	}
+	if err = decodeJSON(strings.NewReader(string(metadata)), &provider); err != nil {
+		return
+	}
+	if provider.Type != "file" {
+		err = errors.New("uploaded files can only be used with a file Provider")
+		return
+	}
+	provider.FilePath = uploadPath
+	return
 }
 
 func (s *Server) deleteProvider(w http.ResponseWriter, r *http.Request) {
@@ -840,7 +920,11 @@ func sameOrigin(r *http.Request) bool {
 func readJSON(w http.ResponseWriter, r *http.Request, value any) error {
 	defer r.Body.Close()
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
-	decoder := json.NewDecoder(r.Body)
+	return decodeJSON(r.Body, value)
+}
+
+func decodeJSON(reader io.Reader, value any) error {
+	decoder := json.NewDecoder(reader)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(value); err != nil {
 		return err

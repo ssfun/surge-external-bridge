@@ -66,9 +66,10 @@ export async function logout() {
 
 export async function api(path, options = {}) {
   const token = legacyToken()
+  const multipart = typeof FormData !== 'undefined' && options.body instanceof FormData
   const headers = {
     Accept: 'application/json',
-    ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+    ...(options.body && !multipart ? { 'Content-Type': 'application/json' } : {}),
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...(options.headers || {}),
   }

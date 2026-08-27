@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -109,7 +111,13 @@ func TestManagementProviderLifecycleAndMutationBoundaries(t *testing.T) {
 		}
 		return response
 	}
-	payload := []byte(`{"name":"Lifecycle","type":"inline","enabled":true,"payload":[{"name":"Lifecycle Node","type":"vless","server":"127.0.0.1","port":65530,"uuid":"11111111-1111-4111-8111-111111111111","network":"tcp","tls":false}]}`)
+	payload, err := json.Marshal(map[string]any{
+		"name": "Lifecycle", "type": "inline", "enabled": true,
+		"payload": "proxies:\n  - name: Lifecycle Node\n    type: vless\n    server: 127.0.0.1\n    port: 65530\n    uuid: 11111111-1111-4111-8111-111111111111\n    network: tcp\n    tls: false\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	response := request(http.MethodPost, "/api/providers", payload, endpoint)
 	if response.StatusCode != http.StatusCreated {
 		data, _ := io.ReadAll(response.Body)
@@ -153,6 +161,154 @@ func TestManagementProviderLifecycleAndMutationBoundaries(t *testing.T) {
 	_ = response.Body.Close()
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unknown Provider field status=%d, want 400", response.StatusCode)
+	}
+}
+
+func TestManagementProviderFileUploadLifecycle(t *testing.T) {
+	application, _, endpoint := testManagementServer(t, "management-token-1234567890")
+	defer application.Close()
+	request := func(method, path string, metadata map[string]any, filename, content string) *http.Response {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		field, err := writer.CreateFormField("provider")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.NewEncoder(field).Encode(metadata); err != nil {
+			t.Fatal(err)
+		}
+		file, err := writer.CreateFormFile("file", filename)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(file, content); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		req, err := http.NewRequest(method, endpoint+path, &body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer management-token-1234567890")
+		req.Header.Set("Origin", endpoint)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		response, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	metadata := map[string]any{"name": "Uploaded File", "type": "file", "enabled": true}
+	firstYAML := "proxies:\n  - name: First File Node\n    type: vless\n    server: 127.0.0.1\n    port: 65530\n    uuid: 11111111-1111-4111-8111-111111111111\n    network: tcp\n    tls: false\n"
+	response := request(http.MethodPost, "/api/providers", metadata, "first.yaml", firstYAML)
+	if response.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		t.Fatalf("create uploaded Provider status=%d body=%s", response.StatusCode, data)
+	}
+	var created publicProvider
+	if err := json.NewDecoder(response.Body).Decode(&created); err != nil {
+		_ = response.Body.Close()
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	provider, ok := application.Provider(created.StableID)
+	if !ok || provider.FilePath == "" || created.FilePath != "" || len(application.Snapshot().Entries()) != 1 {
+		t.Fatalf("uploaded Provider was not private and projected: public=%#v private=%#v", created, provider)
+	}
+	firstPath := filepath.Join(application.DataDir(), "mihomo", filepath.FromSlash(provider.FilePath))
+	if info, err := os.Stat(firstPath); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("first upload is not private: mode=%v err=%v", info, err)
+	}
+	response = request(http.MethodPut, "/api/providers/"+created.StableID, metadata, "broken.yaml", "proxies: [\n")
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid replacement status=%d, want 400", response.StatusCode)
+	}
+	provider, ok = application.Provider(created.StableID)
+	if !ok || filepath.Join(application.DataDir(), "mihomo", filepath.FromSlash(provider.FilePath)) != firstPath {
+		t.Fatalf("invalid replacement changed the active file: %#v", provider)
+	}
+	if _, err := os.Stat(firstPath); err != nil {
+		t.Fatalf("invalid replacement removed the active file: %v", err)
+	}
+	if entries, err := os.ReadDir(filepath.Dir(firstPath)); err != nil || len(entries) != 1 {
+		t.Fatalf("invalid replacement left an orphan: entries=%#v err=%v", entries, err)
+	}
+
+	secondYAML := strings.Replace(firstYAML, "First File Node", "Second File Node", 1)
+	response = request(http.MethodPut, "/api/providers/"+created.StableID, metadata, "second.yml", secondYAML)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("replace uploaded Provider status=%d", response.StatusCode)
+	}
+	provider, ok = application.Provider(created.StableID)
+	if !ok || provider.FilePath == "" {
+		t.Fatal("replaced uploaded Provider is missing")
+	}
+	secondPath := filepath.Join(application.DataDir(), "mihomo", filepath.FromSlash(provider.FilePath))
+	if secondPath == firstPath {
+		t.Fatal("replacement reused the live upload path")
+	}
+	if _, err := os.Stat(firstPath); !os.IsNotExist(err) {
+		t.Fatalf("replaced upload was not removed: %v", err)
+	}
+	if entries := application.Snapshot().Entries(); len(entries) != 1 || entries[0].ProxyName != "Second File Node" {
+		t.Fatalf("replacement was not projected: %#v", entries)
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, endpoint+"/api/providers/"+created.StableID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer management-token-1234567890")
+	req.Header.Set("Origin", endpoint)
+	response, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete uploaded Provider status=%d", response.StatusCode)
+	}
+	if _, err := os.Stat(secondPath); !os.IsNotExist(err) {
+		t.Fatalf("deleted Provider upload was not removed: %v", err)
+	}
+}
+
+func TestManagementRejectsInvalidProviderUploadWithoutLeavingFile(t *testing.T) {
+	application, _, endpoint := testManagementServer(t, "management-token-1234567890")
+	defer application.Close()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	field, _ := writer.CreateFormField("provider")
+	_, _ = io.WriteString(field, `{"name":"Invalid Upload","type":"file","enabled":true}`)
+	file, _ := writer.CreateFormFile("file", "invalid.yaml")
+	_, _ = io.WriteString(file, "proxies: [\n")
+	_ = writer.Close()
+	req, err := http.NewRequest(http.MethodPost, endpoint+"/api/providers", &body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer management-token-1234567890")
+	req.Header.Set("Origin", endpoint)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid upload status=%d, want 400", response.StatusCode)
+	}
+	entries, err := os.ReadDir(filepath.Join(application.DataDir(), "mihomo", "uploads"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("invalid upload left private files: %#v", entries)
 	}
 }
 

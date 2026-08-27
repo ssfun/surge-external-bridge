@@ -346,7 +346,7 @@ describe('component update boundaries', () => {
     expect(field('[data-testid="provider-include"]').element.value).toBe('香港')
     expect(field('[data-testid="provider-exclude"]').element.value).toBe('过期')
     await field('[data-testid="provider-type"]').setValue('file')
-    expect(field('[data-testid="provider-file-path"]').attributes()).toHaveProperty('required')
+    expect(field('[data-testid="provider-file"]').attributes()).toHaveProperty('required')
     expect(field('[data-testid="provider-http-options"]').isVisible()).toBe(false)
     wrapper.unmount()
   })
@@ -361,11 +361,52 @@ describe('component update boundaries', () => {
     const dialog = new DOMWrapper(document.querySelector('[role="dialog"]'))
     await new DOMWrapper(document.querySelector('[data-testid="provider-primary"] input')).setValue('新订阅')
     await new DOMWrapper(document.querySelector('[data-testid="provider-url"]')).setValue('https://example.com/subscription')
-    expect(document.querySelector('[data-testid="provider-file-path"]')).toBeNull()
+    expect(document.querySelector('[data-testid="provider-file"]')).toBeNull()
     expect(document.querySelector('[data-testid="provider-payload"]')).toBeNull()
     expect(dialog.element.checkValidity()).toBe(true)
     await dialog.trigger('submit')
     await vi.waitFor(() => expect(data.saveProvider).toHaveBeenCalledWith(expect.objectContaining({ name: '新订阅', type: 'http', url: 'https://example.com/subscription' }), ''))
+    wrapper.unmount()
+  })
+
+  it('uploads a selected private Provider file instead of submitting a server path', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const data = useDataStore()
+    data.saveProvider = vi.fn(async () => {})
+    const wrapper = mount(ProviderDialog, { props: { open: true }, global: { plugins: [pinia] } })
+    await nextTick()
+    await new DOMWrapper(document.querySelector('[data-testid="provider-primary"] input')).setValue('上传订阅')
+    await new DOMWrapper(document.querySelector('[data-testid="provider-type"]')).setValue('file')
+    const input = document.querySelector('[data-testid="provider-file"]')
+    const file = new File(['proxies: []\n'], 'provider.yaml', { type: 'text/yaml' })
+    Object.defineProperty(input, 'files', { configurable: true, value: [file] })
+    await new DOMWrapper(input).trigger('change')
+    await new DOMWrapper(document.querySelector('[role="dialog"]')).trigger('submit')
+    await vi.waitFor(() => expect(data.saveProvider).toHaveBeenCalledWith(expect.objectContaining({
+      name: '上传订阅', type: 'file',
+    }), '', file))
+    expect(data.saveProvider.mock.calls[0][0]).not.toHaveProperty('file_path')
+    wrapper.unmount()
+  })
+
+  it('submits Inline payload as Mihomo Provider YAML', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const data = useDataStore()
+    data.saveProvider = vi.fn(async () => {})
+    const wrapper = mount(ProviderDialog, { props: { open: true }, global: { plugins: [pinia] } })
+    await nextTick()
+    const yaml = 'proxies:\n  - name: YAML Node\n    type: vless\n    server: example.com\n    port: 443\n'
+    await new DOMWrapper(document.querySelector('[data-testid="provider-primary"] input')).setValue('Inline YAML')
+    await new DOMWrapper(document.querySelector('[data-testid="provider-type"]')).setValue('inline')
+    const payload = new DOMWrapper(document.querySelector('[data-testid="provider-payload"]'))
+    expect(payload.element.previousElementSibling.textContent).toContain('Mihomo Provider YAML')
+    await payload.setValue(yaml)
+    await new DOMWrapper(document.querySelector('[role="dialog"]')).trigger('submit')
+    await vi.waitFor(() => expect(data.saveProvider).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'Inline YAML', type: 'inline', payload: yaml.trim(),
+    }), ''))
     wrapper.unmount()
   })
 

@@ -116,10 +116,15 @@ export const useDataStore = defineStore('data', {
       requests.set(key, request)
       return request
     },
-    async saveProvider(provider, id = '') {
+    async saveProvider(provider, id = '', file = null) {
+      const body = file ? new FormData() : JSON.stringify(provider)
+      if (file) {
+        body.append('provider', JSON.stringify(provider))
+        body.append('file', file)
+      }
       await api(id ? `/api/providers/${encodeID(id)}` : '/api/providers', {
         method: id ? 'PUT' : 'POST',
-        body: JSON.stringify(provider),
+        body,
       })
       await this.reloadResources(['providers', 'nodes', 'overview'])
     },

@@ -207,11 +207,13 @@ func (a *App) UpdateProvider(id string, provider Provider) (Provider, error) {
 	candidate := cloneConfig(a.config)
 	a.mu.RUnlock()
 	found := false
+	previousFilePath := ""
 	for index := range candidate.Providers {
 		if candidate.Providers[index].StableID != id {
 			continue
 		}
 		existing := candidate.Providers[index]
+		previousFilePath = existing.FilePath
 		assignProviderID(&provider)
 		sameType := provider.Type == existing.Type
 		if provider.Type == "http" && !sameType {
@@ -263,6 +265,9 @@ func (a *App) UpdateProvider(id string, provider Provider) (Provider, error) {
 	if err := a.applyConfig(candidate); err != nil {
 		return Provider{}, err
 	}
+	if previousFilePath != provider.FilePath {
+		a.DiscardProviderUpload(previousFilePath)
+	}
 	return provider, nil
 }
 
@@ -300,9 +305,11 @@ func (a *App) DeleteProvider(id string) error {
 	candidate := cloneConfig(a.config)
 	a.mu.RUnlock()
 	index := -1
+	filePath := ""
 	for current := range candidate.Providers {
 		if candidate.Providers[current].StableID == id {
 			index = current
+			filePath = candidate.Providers[current].FilePath
 			break
 		}
 	}
@@ -310,7 +317,11 @@ func (a *App) DeleteProvider(id string) error {
 		return errors.New("Provider not found")
 	}
 	candidate.Providers = append(candidate.Providers[:index], candidate.Providers[index+1:]...)
-	return a.applyConfig(candidate)
+	if err := a.applyConfig(candidate); err != nil {
+		return err
+	}
+	a.DiscardProviderUpload(filePath)
+	return nil
 }
 
 func (a *App) RefreshProvider(id string) error {
@@ -665,7 +676,7 @@ func cloneConfig(config Config) Config {
 			}
 		}
 		if config.Providers[index].Payload != nil {
-			clone.Providers[index].Payload = make([]map[string]any, len(config.Providers[index].Payload))
+			clone.Providers[index].Payload = make(InlinePayload, len(config.Providers[index].Payload))
 			for payloadIndex, item := range config.Providers[index].Payload {
 				clone.Providers[index].Payload[payloadIndex] = make(map[string]any, len(item))
 				for key, value := range item {

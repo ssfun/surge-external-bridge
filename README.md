@@ -56,7 +56,7 @@ PROCESS-NAME,SurgeEB,DIRECT
 
 首次使用：
 
-1. 在订阅页添加 HTTP、私有 File Provider 或 Inline payload。
+1. 在订阅页添加 HTTP Provider、上传私有 Provider 文件，或粘贴顶层含 `proxies:` 的 Mihomo Provider YAML 作为 Inline payload。
 2. 等待 Mihomo 原生初始化；有效缓存或远端成功内容会立即进入 Projection。
 3. 在节点页查看 Mihomo 延迟，按需运行真实 SOCKS TCP/UDP 诊断。UDP 默认测试 `8.8.8.8:53`，诊断仅验证项目内核链路，不经过 Surge。
 4. 从总览复制 Policy Path 配置到 Surge。
