@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { api, encodeID } from '@/api.js'
+import { api, encodeID, login } from '@/api.js'
 
 const resourcePaths = {
   overview: '/api/overview',
@@ -30,6 +30,7 @@ export const backgroundResources = {
 
 const requests = new Map()
 const snapshots = new Map()
+let requestGeneration = 0
 
 export const useDataStore = defineStore('data', {
   state: () => ({
@@ -44,17 +45,26 @@ export const useDataStore = defineStore('data', {
     initialError: '',
   }),
   actions: {
+    resetSession() {
+      requestGeneration += 1
+      requests.clear()
+      snapshots.clear()
+      this.$reset()
+    },
     async loadResource(name, { background = false } = {}) {
       if (background && Date.now() - (this.loadedAt[name] || 0) < 5000) return false
       if (requests.has(name)) return requests.get(name)
+      const generation = requestGeneration
       const request = (async () => {
         let value
         try {
           value = await api(resourcePaths[name])
         } catch (error) {
+          if (generation !== requestGeneration) return false
           if (name === 'service') value = null
           else throw error
         }
+        if (generation !== requestGeneration) return false
         const snapshot = JSON.stringify(value)
         const changed = snapshots.get(name) !== snapshot
         snapshots.set(name, snapshot)
@@ -70,7 +80,7 @@ export const useDataStore = defineStore('data', {
         }
         this[name] = value
         return true
-      })().finally(() => requests.delete(name))
+      })().finally(() => { if (requests.get(name) === request) requests.delete(name) })
       requests.set(name, request)
       return request
     },
@@ -90,16 +100,19 @@ export const useDataStore = defineStore('data', {
     async loadProviderRuntime(id, { quiet = false } = {}) {
       const key = `provider-runtime:${id}`
       if (requests.has(key)) return requests.get(key)
+      const generation = requestGeneration
       const request = api(`/api/providers/${encodeID(id)}/runtime`).then((runtime) => {
+        if (generation !== requestGeneration) return
         const provider = this.providers.find((item) => item.stable_id === id)
         if (!provider) return
         provider.runtime = runtime
         provider.runtimeError = ''
       }).catch((error) => {
+        if (generation !== requestGeneration) return
         const provider = this.providers.find((item) => item.stable_id === id)
         if (provider) provider.runtimeError = error.message
         if (!quiet) throw error
-      }).finally(() => requests.delete(key))
+      }).finally(() => { if (requests.get(key) === request) requests.delete(key) })
       requests.set(key, request)
       return request
     },
@@ -126,7 +139,7 @@ export const useDataStore = defineStore('data', {
     },
     async updateSettings(body) {
       const result = await api('/api/settings', { method: 'PUT', body: JSON.stringify(body) })
-      if (body.management_token) localStorage.setItem('surgeeb-management-token', body.management_token)
+      if (body.management_token && !result.reconnect) await login(body.management_token)
       if (!result.reconnect) await this.reloadResources(['settings', 'overview', 'providers', 'nodes'])
       return result
     },

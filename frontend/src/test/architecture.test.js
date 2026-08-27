@@ -10,6 +10,8 @@ import NodesView from '@/views/NodesView.vue'
 import SettingsView from '@/views/SettingsView.vue'
 import LogsView from '@/views/LogsView.vue'
 import ProviderDialog from '@/components/ProviderDialog.vue'
+import LoginPage from '@/components/LoginPage.vue'
+import { authState, logout } from '@/api.js'
 import appRouter, { finalizeNavigation } from '@/router.js'
 import { backgroundResources, routeResources, useDataStore } from '@/stores/data.js'
 import { routeStreams, useRealtimeStore } from '@/stores/realtime.js'
@@ -39,10 +41,39 @@ describe('component update boundaries', () => {
     vi.stubGlobal('fetch', vi.fn(async (path) => ({
       ok: true,
       status: 200,
-      json: async () => path === '/api/overview' ? sampleOverview() : [],
+      json: async () => path === '/api/session' ? { required: false, authenticated: true } : path === '/api/overview' ? sampleOverview() : [],
     })))
     const wrapper = mount(App, { global: { plugins: [pinia, router] } })
-    expect(wrapper.get('[data-testid="brand-title"]').text()).toBe('SurgeEB')
+    await vi.waitFor(() => expect(wrapper.get('[data-testid="brand-title"]').text()).toBe('SurgeEB'))
+    wrapper.unmount()
+  })
+
+  it('retries session initialization after a transient authentication check failure', async () => {
+    authState.checking = false
+    authState.required = false
+    authState.authenticated = false
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const data = useDataStore()
+    const router = testRouter(OverviewView)
+    await router.push('/')
+    let sessionAttempts = 0
+    const retryOverview = { ...sampleOverview(), version: 'retry-session' }
+    vi.stubGlobal('fetch', vi.fn(async (path) => {
+      if (path === '/api/session') {
+        sessionAttempts += 1
+        if (sessionAttempts === 1) throw new Error('temporary session failure')
+        return { ok: true, status: 200, json: async () => ({ required: false, authenticated: true }) }
+      }
+      return { ok: true, status: 200, json: async () => path === '/api/overview' ? retryOverview : [] }
+    }))
+
+    const wrapper = mount(App, { global: { plugins: [pinia, router] } })
+    await vi.waitFor(() => expect(wrapper.text()).toContain('temporary session failure'))
+    await wrapper.get('.empty-state button').trigger('click')
+    await vi.waitFor(() => expect(data.overview?.version).toBe('retry-session'))
+    expect(sessionAttempts).toBe(2)
+    expect(authState.authenticated).toBe(true)
     wrapper.unmount()
   })
 
@@ -83,7 +114,7 @@ describe('component update boundaries', () => {
     const data = useDataStore()
     const realtime = useRealtimeStore()
     data.settings = { mode: 'local', http_bind: '127.0.0.1:9090', socks_bind: '127.0.0.1', socks_port: 1080, virtual_host: 'surge.eb', projection_key: 'shared-projection-key-for-devices', projection_hash: 'abcdef', projection_count: 3, prefix_provider: false, node_test_url: 'https://example.com', node_test_udp_address: '1.1.1.1:53', node_test_timeout_seconds: 10 }
-    data.service = { platform: 'darwin', installed: true, active: false }
+    data.service = { platform: 'darwin', installed: true, active: false, repair_needed: false }
     const router = testRouter(SettingsView, 'settings')
     await router.push('/')
     const wrapper = mount({ template: '<RouterView />' }, { global: { plugins: [router] } })
@@ -111,6 +142,12 @@ describe('component update boundaries', () => {
     expect(wrapper.get('[data-testid="settings-save"]').text()).toContain('有未保存的修改')
     expect(wrapper.get('[data-testid="settings-save"]').text()).toContain('新的设置会立即生效')
     expect(wrapper.text()).not.toContain('校验边界并原子应用')
+    data.service = { platform: 'darwin', installed: true, active: true, repair_needed: true }
+    await nextTick()
+    expect(wrapper.get('[data-testid="settings-service"] > .settings-card-head .pill').text()).toBe('需要修复')
+    expect(wrapper.get('[data-testid="settings-service"]').text()).toContain('旧定义需要迁移')
+    const repairButton = wrapper.get('[data-testid="settings-service"]').findAll('button').find((button) => button.text() === '修复自动启动')
+    expect(repairButton.attributes('disabled')).toBeUndefined()
     wrapper.unmount()
   })
 
@@ -120,7 +157,7 @@ describe('component update boundaries', () => {
       mode: 'local', http_bind: '127.0.0.1:9090', socks_bind: '127.0.0.1', socks_port: 1080,
       virtual_host: 'surge.eb', projection_key: 'shared-projection-key-for-devices', prefix_provider: false,
       management_token_configured: false, policy_token_configured: false, policy_token: '',
-      node_test_url: 'https://example.com', node_test_udp_address: '1.1.1.1:53', node_test_timeout_seconds: 10,
+      suggested_gateway_host: '192.168.50.10', node_test_url: 'https://example.com', node_test_udp_address: '1.1.1.1:53', node_test_timeout_seconds: 10,
     }
     data.service = {}
     data.updateSettings = vi.fn(async () => ({ reconnect: false }))
@@ -138,6 +175,8 @@ describe('component update boundaries', () => {
     const mode = wrapper.get('[data-testid="settings-mode"]')
     await mode.setValue('gateway')
     expect(mode.element.value).toBe('gateway')
+    expect(wrapper.get('[data-testid="settings-http-bind"]').element.value).toBe('0.0.0.0:9090')
+    expect(wrapper.get('[data-testid="settings-socks-bind"]').element.value).toBe('0.0.0.0')
     expect(wrapper.get('[data-testid="settings-deployment"] > .settings-card-head .pill').text()).toBe('局域网')
     const policy = wrapper.get('[data-testid="policy-token"]')
     const tokens = [management.element.value, policy.element.value]
@@ -148,6 +187,14 @@ describe('component update boundaries', () => {
     expect(policy.attributes('type')).toBe('text')
     expect(wrapper.get('[data-testid="generated-token-note"]').text()).toContain('两个独立的 24 位 Token')
     expect(wrapper.get('[data-testid="settings-security"]').findAll('button').map((button) => button.text())).toEqual(['隐藏', '复制', '重新生成', '复制', '重新生成'])
+
+    await wrapper.get('input[placeholder="surge.eb"]').setValue('192.168.99.9')
+    await mode.setValue('local')
+    expect(wrapper.get('input[placeholder="surge.eb"]').element.value).toBe('127.0.0.1')
+    expect(wrapper.get('[data-testid="settings-http-bind"]').element.value).toBe('127.0.0.1:9090')
+    expect(wrapper.get('[data-testid="settings-socks-bind"]').element.value).toBe('127.0.0.1')
+    await mode.setValue('gateway')
+    expect(wrapper.get('input[placeholder="surge.eb"]').element.value).toBe('192.168.50.10')
 
     await wrapper.get('[data-testid="settings-identity"]').findAll('button').find((button) => button.text() === '重新生成').trigger('click')
     expect(wrapper.get('[data-testid="projection-key"]').element.value).toMatch(/^[A-Za-z0-9_-]{24}$/)
@@ -162,6 +209,64 @@ describe('component update boundaries', () => {
     }))
     expect(wrapper.find('[data-testid="settings-save"]').exists()).toBe(false)
     wrapper.unmount()
+  })
+
+  it('logs in through the dedicated page without persisting the token', async () => {
+    localStorage.setItem('surgeeb-management-token', 'stale-token-value')
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) })))
+    const wrapper = mount(LoginPage)
+    await wrapper.get('[data-testid="login-token"]').setValue('management-token-1234567890')
+    await wrapper.get('form').trigger('submit')
+    await vi.waitFor(() => expect(wrapper.emitted('authenticated')).toHaveLength(1))
+    expect(fetch).toHaveBeenCalledWith('/api/session', expect.objectContaining({ method: 'POST' }))
+    expect(localStorage.getItem('surgeeb-management-token')).toBeNull()
+    expect(authState.authenticated).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('keeps the authenticated UI state when logout is not confirmed by the server', async () => {
+    authState.authenticated = true
+    localStorage.setItem('surgeeb-management-token', 'legacy-token-value')
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('network unavailable') }))
+
+    await expect(logout()).rejects.toThrow('network unavailable')
+    expect(authState.authenticated).toBe(true)
+    expect(localStorage.getItem('surgeeb-management-token')).toBe('legacy-token-value')
+  })
+
+  it('clears response snapshots so a new session reloads unchanged server data', async () => {
+    const data = useDataStore()
+    const overview = { ...sampleOverview(), version: 'session-reset-cache' }
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => overview })))
+
+    await data.loadResource('overview')
+    expect(data.overview?.version).toBe('session-reset-cache')
+    data.resetSession()
+    expect(data.overview).toBeNull()
+    await data.loadResource('overview')
+    expect(data.overview?.version).toBe('session-reset-cache')
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('ignores an earlier session response that finishes after logout reset', async () => {
+    const data = useDataStore()
+    data.resetSession()
+    let resolveFirst
+    let calls = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls += 1
+      if (calls === 1) return new Promise((resolve) => { resolveFirst = resolve })
+      return { ok: true, status: 200, json: async () => ({ ...sampleOverview(), version: 'fresh-session' }) }
+    }))
+
+    const staleLoad = data.loadResource('overview')
+    await vi.waitFor(() => expect(resolveFirst).toBeTypeOf('function'))
+    data.resetSession()
+    resolveFirst({ ok: true, status: 200, json: async () => ({ ...sampleOverview(), version: 'stale-session' }) })
+    await staleLoad
+    expect(data.overview).toBeNull()
+    await data.loadResource('overview')
+    expect(data.overview?.version).toBe('fresh-session')
   })
 
   it('keeps the Provider dialog accessible and keyboard-dismissible', async () => {
@@ -208,6 +313,24 @@ describe('component update boundaries', () => {
     await field('[data-testid="provider-type"]').setValue('file')
     expect(field('[data-testid="provider-file-path"]').attributes()).toHaveProperty('required')
     expect(field('[data-testid="provider-http-options"]').isVisible()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('submits a new HTTP Provider without hidden required fields blocking the form', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const data = useDataStore()
+    data.saveProvider = vi.fn(async () => {})
+    const wrapper = mount(ProviderDialog, { props: { open: true }, global: { plugins: [pinia] } })
+    await nextTick()
+    const dialog = new DOMWrapper(document.querySelector('[role="dialog"]'))
+    await new DOMWrapper(document.querySelector('[data-testid="provider-primary"] input')).setValue('新订阅')
+    await new DOMWrapper(document.querySelector('[data-testid="provider-url"]')).setValue('https://example.com/subscription')
+    expect(document.querySelector('[data-testid="provider-file-path"]')).toBeNull()
+    expect(document.querySelector('[data-testid="provider-payload"]')).toBeNull()
+    expect(dialog.element.checkValidity()).toBe(true)
+    await dialog.trigger('submit')
+    await vi.waitFor(() => expect(data.saveProvider).toHaveBeenCalledWith(expect.objectContaining({ name: '新订阅', type: 'http', url: 'https://example.com/subscription' }), ''))
     wrapper.unmount()
   })
 

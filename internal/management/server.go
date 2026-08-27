@@ -48,6 +48,9 @@ func New(application *gateway.App) (*Server, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", server.health)
 	mux.HandleFunc("GET /proxies", server.proxies)
+	mux.HandleFunc("GET /api/session", server.sessionStatus)
+	mux.HandleFunc("POST /api/session", server.sessionLogin)
+	mux.HandleFunc("DELETE /api/session", server.sessionLogout)
 	mux.HandleFunc("GET /api/overview", server.authorize(server.overview))
 	mux.HandleFunc("GET /api/providers", server.authorize(server.providers))
 	mux.HandleFunc("POST /api/providers", server.authorize(server.addProvider))
@@ -160,6 +163,49 @@ func (s *Server) proxies(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = io.WriteString(w, content)
+}
+
+type sessionLoginRequest struct {
+	Token string `json:"token"`
+}
+
+func (s *Server) sessionStatus(w http.ResponseWriter, r *http.Request) {
+	token := s.app.Config().ManagementToken
+	authenticated := token == "" || s.hasManagementSession(r, token)
+	if token != "" && constantEqual(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), token) {
+		setManagementCookie(w, r, token, 86400)
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"required": token != "", "authenticated": authenticated})
+}
+
+func (s *Server) sessionLogin(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "cross-origin login is not allowed")
+		return
+	}
+	var request sessionLoginRequest
+	if err := readJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	token := s.app.Config().ManagementToken
+	if token != "" && !constantEqual(request.Token, token) {
+		writeError(w, http.StatusUnauthorized, "invalid Management Token")
+		return
+	}
+	if token != "" {
+		setManagementCookie(w, r, token, 86400)
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) sessionLogout(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "cross-origin logout is not allowed")
+		return
+	}
+	setManagementCookie(w, r, "", -1)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) overview(w http.ResponseWriter, _ *http.Request) {
@@ -430,6 +476,7 @@ type publicSettings struct {
 	DataDirectoryProtected    bool   `json:"data_directory_protected"`
 	ConfigurationProtected    bool   `json:"configuration_protected"`
 	ControllerKeyProtected    bool   `json:"controller_key_protected"`
+	SuggestedGatewayHost      string `json:"suggested_gateway_host,omitempty"`
 }
 
 func (s *Server) settings(w http.ResponseWriter, _ *http.Request) {
@@ -443,8 +490,122 @@ func (s *Server) settings(w http.ResponseWriter, _ *http.Request) {
 		Version: gateway.Version, CoreVersion: status.CoreVersion, GatewayState: status.State,
 		ProjectionHash: status.ProjectionHash, ProjectionCount: status.ProjectionCount,
 		DataDirectoryProtected: security.DataDirectoryProtected, ConfigurationProtected: security.ConfigurationProtected,
-		ControllerKeyProtected: security.ControllerKeyProtected,
+		ControllerKeyProtected: security.ControllerKeyProtected, SuggestedGatewayHost: suggestedGatewayHost(),
 	})
+}
+
+func suggestedGatewayHost() string {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	available := make([]gatewayInterface, 0, len(interfaces))
+	for _, networkInterface := range interfaces {
+		addresses, addressErr := networkInterface.Addrs()
+		if addressErr != nil {
+			continue
+		}
+		available = append(available, gatewayInterface{
+			Name: networkInterface.Name, Flags: networkInterface.Flags, Addresses: addresses,
+		})
+	}
+	return suggestedGatewayHostFromInterfaces(available, defaultRouteSourceIPv4())
+}
+
+func defaultRouteSourceIPv4() net.IP {
+	connection, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 9})
+	if err != nil {
+		return nil
+	}
+	defer connection.Close()
+	local, ok := connection.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		return nil
+	}
+	return local.IP.To4()
+}
+
+type gatewayInterface struct {
+	Name      string
+	Flags     net.Flags
+	Addresses []net.Addr
+}
+
+type gatewayHostCandidate struct {
+	address       string
+	interfaceName string
+	priority      int
+}
+
+func suggestedGatewayHostFromInterfaces(interfaces []gatewayInterface, defaultSourceIP net.IP) string {
+	candidates := make([]gatewayHostCandidate, 0)
+	for _, networkInterface := range interfaces {
+		if networkInterface.Flags&net.FlagUp == 0 || networkInterface.Flags&(net.FlagLoopback|net.FlagPointToPoint) != 0 || isVirtualGatewayInterface(networkInterface.Name) {
+			continue
+		}
+		priority := gatewayInterfacePriority(networkInterface.Name)
+		for _, address := range networkInterface.Addresses {
+			var ip net.IP
+			switch value := address.(type) {
+			case *net.IPNet:
+				ip = value.IP
+			case *net.IPAddr:
+				ip = value.IP
+			}
+			if ip == nil || ip.IsLoopback() || ip.IsUnspecified() || ip.To4() == nil || !ip.IsPrivate() {
+				continue
+			}
+			if defaultSourceIP != nil && ip.Equal(defaultSourceIP) {
+				return ip.String()
+			}
+			candidates = append(candidates, gatewayHostCandidate{address: ip.String(), interfaceName: networkInterface.Name, priority: priority})
+		}
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	bestPriority := 0
+	for _, candidate := range candidates {
+		if candidate.priority > bestPriority {
+			bestPriority = candidate.priority
+		}
+	}
+	selectedInterface := ""
+	selectedAddress := ""
+	for _, candidate := range candidates {
+		if candidate.priority != bestPriority {
+			continue
+		}
+		if selectedInterface == "" {
+			selectedInterface = candidate.interfaceName
+			selectedAddress = candidate.address
+			continue
+		}
+		if candidate.interfaceName != selectedInterface {
+			return ""
+		}
+	}
+	return selectedAddress
+}
+
+func gatewayInterfacePriority(name string) int {
+	name = strings.ToLower(name)
+	for _, prefix := range []string{"en", "eth", "wl"} {
+		if strings.HasPrefix(name, prefix) {
+			return 2
+		}
+	}
+	return 1
+}
+
+func isVirtualGatewayInterface(name string) bool {
+	name = strings.ToLower(name)
+	for _, prefix := range []string{"awdl", "br-", "bridge", "docker", "ipsec", "llw", "tailscale", "utun", "vboxnet", "veth", "virbr", "vmnet", "wg", "zt"} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 type settingsRequest struct {
@@ -515,14 +676,15 @@ func (s *Server) serviceStatus(w http.ResponseWriter, _ *http.Request) {
 }
 
 type publicServiceInfo struct {
-	Platform  string `json:"platform"`
-	Installed bool   `json:"installed"`
-	Active    bool   `json:"active"`
-	Scope     string `json:"scope"`
+	Platform     string `json:"platform"`
+	Installed    bool   `json:"installed"`
+	Active       bool   `json:"active"`
+	RepairNeeded bool   `json:"repair_needed,omitempty"`
+	Scope        string `json:"scope"`
 }
 
 func makePublicServiceInfo(info serviceManager.Info) publicServiceInfo {
-	return publicServiceInfo{Platform: info.Platform, Installed: info.Installed, Active: info.Active, Scope: info.Scope}
+	return publicServiceInfo{Platform: info.Platform, Installed: info.Installed, Active: info.Active, RepairNeeded: info.RepairNeeded, Scope: info.Scope}
 }
 
 func (s *Server) serviceInstall(w http.ResponseWriter, r *http.Request) {
@@ -583,25 +745,37 @@ func (s *Server) authorize(next http.HandlerFunc) http.HandlerFunc {
 		token := s.app.Config().ManagementToken
 		if token != "" {
 			provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			expectedCookie := managementCookieValue(token)
-			cookie, _ := r.Cookie("surgeeb_management")
-			cookieValue := ""
-			if cookie != nil {
-				cookieValue = cookie.Value
-			}
-			if !constantEqual(provided, token) && !constantEqual(cookieValue, expectedCookie) {
+			if !s.hasManagementSession(r, token) {
 				writeError(w, http.StatusUnauthorized, "invalid Management Token")
 				return
 			}
 			if constantEqual(provided, token) {
-				http.SetCookie(w, &http.Cookie{
-					Name: "surgeeb_management", Value: expectedCookie, Path: "/api/", HttpOnly: true,
-					SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil, MaxAge: 86400,
-				})
+				setManagementCookie(w, r, token, 86400)
 			}
 		}
 		next(w, r)
 	}
+}
+
+func (s *Server) hasManagementSession(r *http.Request, token string) bool {
+	provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	cookie, _ := r.Cookie("surgeeb_management")
+	cookieValue := ""
+	if cookie != nil {
+		cookieValue = cookie.Value
+	}
+	return constantEqual(provided, token) || constantEqual(cookieValue, managementCookieValue(token))
+}
+
+func setManagementCookie(w http.ResponseWriter, r *http.Request, token string, maxAge int) {
+	value := ""
+	if token != "" {
+		value = managementCookieValue(token)
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: "surgeeb_management", Value: value, Path: "/api/", HttpOnly: true,
+		SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil, MaxAge: maxAge,
+	})
 }
 
 func managementCookieValue(token string) string {

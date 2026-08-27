@@ -6,6 +6,8 @@ import { useDataStore } from '@/stores/data.js'
 import { useRealtimeStore } from '@/stores/realtime.js'
 import { useUIStore } from '@/stores/ui.js'
 import { shouldRefreshInBackground } from '@/refreshPolicy.js'
+import LoginPage from '@/components/LoginPage.vue'
+import { authState, initializeAuth, logout } from '@/api.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -29,8 +31,11 @@ const running = computed(() => gateway.value.state === 'running')
 let refreshTimer = 0
 let lastBackgroundError = ''
 const bootError = ref('')
+const sessionError = ref('')
+const sessionReady = ref(false)
 
 async function loadRoute(name, background = false) {
+  if (!sessionReady.value || !authState.authenticated) return
   try {
     await data.refreshRoute(name, { background })
     lastBackgroundError = ''
@@ -45,19 +50,24 @@ async function loadRoute(name, background = false) {
 function scheduleBackgroundRefresh() {
   window.clearTimeout(refreshTimer)
   refreshTimer = window.setTimeout(async () => {
-    if (shouldRefreshInBackground(document.hidden, realtime.paused)) await loadRoute(route.name, true)
+    if (authState.authenticated && shouldRefreshInBackground(document.hidden, realtime.paused)) await loadRoute(route.name, true)
     scheduleBackgroundRefresh()
   }, realtime.reduced ? 30000 : 15000)
 }
 
 function handleVisibility() {
+  if (!authState.authenticated) return
   realtime.sync(route.name)
   if (shouldRefreshInBackground(document.hidden, realtime.paused)) loadRoute(route.name, true)
 }
 
-watch(() => route.name, (name) => {
-  realtime.sync(name)
-  loadRoute(name)
+watch([() => route.name, () => authState.authenticated, sessionReady], ([name, authenticated, ready]) => {
+  if (ready && authenticated) {
+    realtime.sync(name)
+    loadRoute(name)
+  } else {
+    realtime.stop()
+  }
 }, { immediate: true })
 
 watch(() => realtime.reduced, scheduleBackgroundRefresh)
@@ -69,6 +79,7 @@ watch(() => realtime.paused, (paused) => {
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibility)
   scheduleBackgroundRefresh()
+  initializeSession()
 })
 
 onBeforeUnmount(() => {
@@ -76,10 +87,49 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', handleVisibility)
   realtime.stop()
 })
+
+function authenticated() {
+  sessionError.value = ''
+  sessionReady.value = true
+}
+
+async function initializeSession() {
+  sessionError.value = ''
+  sessionReady.value = false
+  try {
+    await initializeAuth()
+  } catch (error) {
+    sessionError.value = error.message
+  } finally {
+    sessionReady.value = true
+  }
+}
+
+async function retryConnection() {
+  if (!authState.authenticated) {
+    await initializeSession()
+    return
+  }
+  await loadRoute(route.name)
+}
+
+async function signOut() {
+  if (!window.confirm('退出当前配置台会话？')) return
+  try {
+    await logout()
+    realtime.stop()
+    data.resetSession()
+    bootError.value = ''
+  } catch (error) {
+    ui.toast(`退出登录失败：${error.message}`, true)
+  }
+}
 </script>
 
 <template>
-  <div class="shell">
+  <div v-if="!sessionReady || authState.checking" class="loading auth-loading"><span class="loading-dot" /><b>正在检查登录状态</b><small>建立安全会话…</small></div>
+  <LoginPage v-else-if="!sessionError && authState.required && !authState.authenticated" @authenticated="authenticated" />
+  <div v-else class="shell">
     <aside class="sidebar">
       <div class="brand">
         <div class="mark"><i /><i /><i /><i /></div>
@@ -101,13 +151,15 @@ onBeforeUnmount(() => {
         <div class="engine-line"><i :class="running ? 'ok' : 'bad'" /><span>{{ running ? 'Mihomo 网关运行中' : 'Mihomo 网关异常' }}</span></div>
         <code>socks {{ gateway.socks_address || '—' }}</code>
         <small>{{ gateway.projection_count || 0 }} 个可用节点</small>
+        <button v-if="authState.required" class="logout-link" type="button" @click="signOut">退出登录</button>
       </div>
+      <button v-if="authState.required" class="button ghost compact mobile-logout" type="button" @click="signOut">退出登录</button>
     </aside>
     <main id="main-content" tabindex="-1">
       <RouterView v-if="overview" v-slot="{ Component }">
         <component :is="Component" :key="route.name" />
       </RouterView>
-      <div v-else-if="bootError" class="card empty-state"><div class="empty-state-icon">!</div><b>无法连接配置台</b><span>{{ bootError }}</span><div class="actions"><button class="button primary" type="button" @click="loadRoute(route.name)">重新连接</button></div></div>
+      <div v-else-if="bootError || sessionError" class="card empty-state"><div class="empty-state-icon">!</div><b>无法连接配置台</b><span>{{ bootError || sessionError }}</span><div class="actions"><button class="button primary" type="button" @click="retryConnection">重新连接</button></div></div>
       <div v-else class="loading"><span class="loading-dot" /><b>正在连接配置台</b><small>读取网关状态…</small></div>
     </main>
   </div>

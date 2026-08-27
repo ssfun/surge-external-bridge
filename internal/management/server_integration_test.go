@@ -33,6 +33,63 @@ func mustDefaultGatewayConfig(t *testing.T) gateway.Config {
 	return config
 }
 
+func TestManagementSessionLoginAndLogout(t *testing.T) {
+	application, _, endpoint := testManagementServer(t, "management-token-1234567890")
+	defer application.Close()
+
+	response, err := http.Get(endpoint + "/api/session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var initial map[string]bool
+	if err := json.NewDecoder(response.Body).Decode(&initial); err != nil {
+		_ = response.Body.Close()
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if !initial["required"] || initial["authenticated"] {
+		t.Fatalf("unexpected anonymous session: %#v", initial)
+	}
+
+	loginBody := []byte(`{"token":"management-token-1234567890"}`)
+	request, _ := http.NewRequest(http.MethodPost, endpoint+"/api/session", bytes.NewReader(loginBody))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", endpoint)
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookies := response.Cookies()
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK || len(cookies) != 1 || !cookies[0].HttpOnly || cookies[0].Path != "/api/" {
+		t.Fatalf("login status=%d cookies=%+v", response.StatusCode, cookies)
+	}
+
+	request, _ = http.NewRequest(http.MethodGet, endpoint+"/api/overview", nil)
+	request.AddCookie(cookies[0])
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("session cookie authorization status=%d", response.StatusCode)
+	}
+
+	request, _ = http.NewRequest(http.MethodDelete, endpoint+"/api/session", nil)
+	request.Header.Set("Origin", endpoint)
+	request.AddCookie(cookies[0])
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logoutCookies := response.Cookies()
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusNoContent || len(logoutCookies) != 1 || logoutCookies[0].MaxAge >= 0 {
+		t.Fatalf("logout status=%d cookies=%+v", response.StatusCode, logoutCookies)
+	}
+}
+
 func TestManagementProviderLifecycleAndMutationBoundaries(t *testing.T) {
 	application, _, endpoint := testManagementServer(t, "management-token-1234567890")
 	defer application.Close()

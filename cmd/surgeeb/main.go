@@ -82,7 +82,7 @@ func serve(args []string) error {
 
 func serviceCommand(args []string) error {
 	if len(args) == 0 {
-		return errors.New("service requires install, uninstall, or status")
+		return errors.New("service requires install, uninstall, status, start, stop, or restart")
 	}
 	switch args[0] {
 	case "status":
@@ -90,7 +90,7 @@ func serviceCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("platform=%s scope=%s installed=%t active=%t path=%s\n", info.Platform, info.Scope, info.Installed, info.Active, info.Path)
+		fmt.Printf("platform=%s scope=%s installed=%t active=%t repair_needed=%t path=%s\n", info.Platform, info.Scope, info.Installed, info.Active, info.RepairNeeded, info.Path)
 		return nil
 	case "install":
 		flags := flag.NewFlagSet("service install", flag.ContinueOnError)
@@ -110,6 +110,22 @@ func serviceCommand(args []string) error {
 			return err
 		}
 		fmt.Printf("removed service definition: %s\n", info.Path)
+		return nil
+	case "start", "stop", "restart":
+		var info serviceManager.Info
+		var err error
+		switch args[0] {
+		case "start":
+			info, err = serviceManager.Start()
+		case "stop":
+			info, err = serviceManager.Stop()
+		case "restart":
+			info, err = serviceManager.Restart()
+		}
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s %s: active=%t\n", args[0], info.Scope, info.Active)
 		return nil
 	default:
 		return fmt.Errorf("unknown service command %q", args[0])
@@ -135,5 +151,6 @@ Usage:
   SurgeEB version
   SurgeEB service status
   SurgeEB service install [--data-dir PATH]
+  SurgeEB service start|stop|restart
   SurgeEB service uninstall`)
 }

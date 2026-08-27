@@ -11,6 +11,7 @@ const ui = useUIStore()
 const dialog = ref(null)
 const nameInput = ref(null)
 const busy = ref(false)
+const submitError = ref('')
 let returnFocus = null
 
 const defaults = () => ({
@@ -33,6 +34,7 @@ watch(() => props.open, async (open) => {
   if (!open) return
   returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
   resetForm()
+  submitError.value = ''
   await nextTick()
   nameInput.value?.focus({ preventScroll: true })
 }, { immediate: true })
@@ -64,6 +66,7 @@ async function reveal() {
 async function submit() {
   if (props.provider && form.name.trim() !== String(props.provider.name || '').trim() && !window.confirm('修改 Provider 名称会更换其全部节点的用户名和密码。确认继续？')) return
   busy.value = true
+  submitError.value = ''
   try {
     const headersText = form.headers.trim()
     const payloadText = form.payload.trim()
@@ -81,6 +84,7 @@ async function submit() {
     ui.toast('Provider 已通过进程内受控 ApplyConfig 生效')
     emit('saved')
   } catch (error) {
+    submitError.value = error.message
     ui.toast(error.message, true)
   } finally { busy.value = false }
 }
@@ -113,13 +117,13 @@ async function submit() {
               <label class="field"><span>名称</span><input ref="nameInput" v-model="form.name" required autocomplete="off"></label>
               <label class="field"><span>来源类型</span><span class="select-control"><select v-model="form.type" data-testid="provider-type"><option value="http">HTTP 订阅</option><option value="file">私有文件</option><option value="inline">Inline payload</option></select></span></label>
             </div>
-            <div v-show="form.type === 'http'" class="conditional">
+            <div v-if="form.type === 'http'" class="conditional">
               <label class="field"><span>订阅 URL{{ provider && provider.type === 'http' ? '（留空保持现有值）' : '' }}</span><input v-model="form.url" data-testid="provider-url" type="url" placeholder="https://example.com/subscription" autocomplete="off" :required="!provider || provider.type !== 'http'"><small>支持 Clash YAML、URI 列表与 Base64 URI。</small></label>
             </div>
-            <div v-show="form.type === 'file'" class="conditional">
+            <div v-if="form.type === 'file'" class="conditional">
               <label class="field"><span>Provider 文件路径{{ provider && provider.type === 'file' ? '（留空保持现有值）' : '' }}</span><input v-model="form.file_path" data-testid="provider-file-path" autocomplete="off" :required="!provider || provider.type !== 'file'"><small>必须位于 Mihomo 私有目录；不能使用任意绝对路径。</small></label>
             </div>
-            <div v-show="form.type === 'inline'" class="conditional">
+            <div v-if="form.type === 'inline'" class="conditional">
               <label class="field"><span>Proxies JSON 数组{{ provider && provider.type === 'inline' ? '（留空保持现有值）' : '' }}</span><textarea v-model="form.payload" data-testid="provider-payload" spellcheck="false" placeholder='[{"name":"...","type":"vless",...}]' :required="!provider || provider.type !== 'inline'" /></label>
             </div>
             <div class="field-group">
@@ -162,8 +166,9 @@ async function submit() {
             </div>
           </details>
           <p class="modal-footnote">保存后立即应用 Provider 定义，相关既有连接可能结束；普通订阅刷新不会主动关闭连接。</p>
+          <div v-if="submitError" class="banner bad" role="alert">{{ submitError }}</div>
         </div>
-        <div class="modal-actions"><button type="button" class="button" :disabled="busy" @click="close">取消</button><button class="button primary" type="submit" :disabled="busy" :aria-busy="busy">{{ provider ? '保存并应用' : '添加并应用' }}</button></div>
+        <div class="modal-actions"><button type="button" class="button" :disabled="busy" @click="close">取消</button><button class="button primary" type="submit" :disabled="busy" :aria-busy="busy">{{ busy ? '正在应用…' : provider ? '保存并应用' : '添加并应用' }}</button></div>
       </form>
     </div>
   </Teleport>

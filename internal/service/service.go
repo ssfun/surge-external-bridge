@@ -21,15 +21,16 @@ const (
 	label                = "com.sfun.surgeeb"
 	legacyLabel          = "fun.ssfun.surgeeb"
 	systemdUnit          = "surgeeb.service"
-	darwinExecutablePath = "/usr/local/bin/SurgeEB"
+	darwinExecutableName = "SurgeEB"
 )
 
 type Info struct {
-	Platform  string `json:"platform"`
-	Installed bool   `json:"installed"`
-	Active    bool   `json:"active"`
-	Path      string `json:"path,omitempty"`
-	Scope     string `json:"scope"`
+	Platform     string `json:"platform"`
+	Installed    bool   `json:"installed"`
+	Active       bool   `json:"active"`
+	RepairNeeded bool   `json:"repair_needed,omitempty"`
+	Path         string `json:"path,omitempty"`
+	Scope        string `json:"scope"`
 }
 
 func Status() (Info, error) {
@@ -42,13 +43,15 @@ func Status() (Info, error) {
 		return Info{}, statErr
 	}
 	installed := statErr == nil
-	return Info{Platform: runtime.GOOS, Installed: installed, Active: installed && serviceActive(), Path: path, Scope: scope}, nil
+	repairNeeded := installed && runtime.GOOS == "darwin" && launchAgentNeedsRepair(path, installedExecutablePath())
+	return Info{Platform: runtime.GOOS, Installed: installed, Active: installed && serviceActive(), RepairNeeded: repairNeeded, Path: path, Scope: scope}, nil
 }
 
 func serviceActive() bool {
 	switch runtime.GOOS {
 	case "darwin":
-		return exec.Command("launchctl", "print", launchdTarget(os.Getuid(), label)).Run() == nil
+		output, err := exec.Command("launchctl", "print", launchdTarget(os.Getuid(), label)).CombinedOutput()
+		return err == nil && launchAgentActive(output)
 	case "linux":
 		return exec.Command("systemctl", "--user", "is-active", "--quiet", systemdUnit).Run() == nil
 	default:
@@ -134,9 +137,12 @@ func installExecutableFor(goos, source string) (string, error) {
 		return source, nil
 	}
 	target := installedExecutablePath()
+	if target == "" {
+		return "", errors.New("resolve the current user's service executable path")
+	}
 	installed, err := installExecutableAt(source, target)
 	if err != nil {
-		return "", fmt.Errorf("prepare %s: %w; install SurgeEB there first if /usr/local/bin requires administrator access", target, err)
+		return "", fmt.Errorf("prepare user service executable %s: %w", target, err)
 	}
 	return installed, nil
 }
@@ -250,7 +256,13 @@ func configureLaunchAgent(home, path string, activate bool) error {
 }
 
 func bootoutAndWait(target string) error {
-	_ = exec.Command("launchctl", "bootout", target).Run()
+	output, err := exec.Command("launchctl", "bootout", target).CombinedOutput()
+	if err != nil {
+		if launchAgentTargetMissing(output) {
+			return nil
+		}
+		return fmt.Errorf("launchctl bootout %s: %w: %s", target, err, bytes.TrimSpace(output))
+	}
 	deadline := time.Now().Add(3 * time.Second)
 	for exec.Command("launchctl", "print", target).Run() == nil {
 		if time.Now().After(deadline) {
@@ -259,6 +271,105 @@ func bootoutAndWait(target string) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return nil
+}
+
+func launchAgentTargetMissing(output []byte) bool {
+	message := strings.ToLower(string(output))
+	return strings.Contains(message, "no such process") || strings.Contains(message, "could not find service") || strings.Contains(message, "service not found")
+}
+
+func launchAgentActive(output []byte) bool {
+	for _, line := range strings.Split(string(output), "\n") {
+		field := strings.TrimSpace(line)
+		if field == "state = running" || strings.HasPrefix(field, "pid = ") {
+			return true
+		}
+	}
+	return false
+}
+
+func Start() (Info, error)   { return control("start") }
+func Stop() (Info, error)    { return control("stop") }
+func Restart() (Info, error) { return control("restart") }
+
+func control(action string) (Info, error) {
+	if err := validateUserServiceContext(runtime.GOOS, os.Geteuid()); err != nil {
+		return Info{}, err
+	}
+	info, err := Status()
+	if err != nil {
+		return Info{}, err
+	}
+	if !info.Installed {
+		return Info{}, errors.New("user service is not installed")
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		if err := controlLaunchAgent(action, info.Path); err != nil {
+			return Info{}, err
+		}
+	case "linux":
+		if action != "start" && action != "stop" && action != "restart" {
+			return Info{}, fmt.Errorf("unsupported service action %q", action)
+		}
+		if output, err := exec.Command("systemctl", "--user", action, systemdUnit).CombinedOutput(); err != nil {
+			return Info{}, fmt.Errorf("systemctl %s: %w: %s", action, err, bytes.TrimSpace(output))
+		}
+	default:
+		return Info{}, fmt.Errorf("service management is unsupported on %s", runtime.GOOS)
+	}
+	return Status()
+}
+
+func controlLaunchAgent(action, path string) error {
+	target := launchdTarget(os.Getuid(), label)
+	domain := launchdDomain(os.Getuid())
+	switch action {
+	case "start":
+		if exec.Command("launchctl", "print", target).Run() != nil {
+			if output, err := exec.Command("launchctl", "bootstrap", domain, path).CombinedOutput(); err != nil {
+				return fmt.Errorf("launchctl bootstrap: %w: %s", err, bytes.TrimSpace(output))
+			}
+		}
+		if output, err := exec.Command("launchctl", "kickstart", "-k", target).CombinedOutput(); err != nil {
+			return fmt.Errorf("launchctl kickstart: %w: %s", err, bytes.TrimSpace(output))
+		}
+		return waitForLaunchAgent(target, true)
+	case "stop":
+		return bootoutAndWait(target)
+	case "restart":
+		if err := bootoutAndWait(target); err != nil {
+			return err
+		}
+		if output, err := exec.Command("launchctl", "bootstrap", domain, path).CombinedOutput(); err != nil {
+			return fmt.Errorf("launchctl bootstrap: %w: %s", err, bytes.TrimSpace(output))
+		}
+		if output, err := exec.Command("launchctl", "kickstart", "-k", target).CombinedOutput(); err != nil {
+			return fmt.Errorf("launchctl kickstart: %w: %s", err, bytes.TrimSpace(output))
+		}
+		return waitForLaunchAgent(target, true)
+	default:
+		return fmt.Errorf("unsupported service action %q", action)
+	}
+}
+
+func waitForLaunchAgent(target string, expected bool) error {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		output, err := exec.Command("launchctl", "print", target).CombinedOutput()
+		active := err == nil && launchAgentActive(output)
+		if active == expected {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			state := "inactive"
+			if expected {
+				state = "active"
+			}
+			return fmt.Errorf("LaunchAgent did not become %s", state)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func launchdDomain(uid int) string {
@@ -307,21 +418,35 @@ func Uninstall() (Info, error) {
 		if homeErr != nil {
 			return Info{}, homeErr
 		}
-		_ = bootoutAndWait(launchdTarget(os.Getuid(), label))
-		_ = bootoutAndWait(launchdTarget(os.Getuid(), legacyLabel))
+		if err := stopDarwinServices(os.Getuid(), bootoutAndWait); err != nil {
+			return Info{}, err
+		}
 		if err := os.Remove(launchAgentPath(home, legacyLabel)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return Info{}, err
 		}
 	} else if runtime.GOOS == "linux" {
-		_ = exec.Command("systemctl", "--user", "disable", "--now", systemdUnit).Run()
+		if output, err := exec.Command("systemctl", "--user", "disable", "--now", systemdUnit).CombinedOutput(); err != nil {
+			return Info{}, fmt.Errorf("systemctl disable: %w: %s", err, bytes.TrimSpace(output))
+		}
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return Info{}, err
 	}
 	if runtime.GOOS == "linux" {
-		_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
+		if output, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
+			return Info{}, fmt.Errorf("systemctl daemon-reload: %w: %s", err, bytes.TrimSpace(output))
+		}
 	}
 	return Status()
+}
+
+func stopDarwinServices(uid int, stop func(string) error) error {
+	for _, serviceLabel := range []string{label, legacyLabel} {
+		if err := stop(launchdTarget(uid, serviceLabel)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func servicePath() (string, string, error) {
@@ -348,7 +473,74 @@ func launchAgentPath(home, serviceLabel string) string {
 }
 
 func installedExecutablePath() string {
-	return darwinExecutablePath
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return installedExecutablePathFor(home)
+}
+
+func installedExecutablePathFor(home string) string {
+	return filepath.Join(home, "Library", "Application Support", "SurgeEB", "bin", darwinExecutableName)
+}
+
+func launchAgentNeedsRepair(path, expectedExecutable string) bool {
+	if expectedExecutable == "" {
+		return true
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return true
+	}
+	configuredExecutable, err := launchAgentExecutable(content)
+	if err != nil || filepath.Clean(configuredExecutable) != filepath.Clean(expectedExecutable) {
+		return true
+	}
+	info, err := os.Stat(expectedExecutable)
+	return err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0
+}
+
+func launchAgentExecutable(content []byte) (string, error) {
+	decoder := xml.NewDecoder(bytes.NewReader(content))
+	programArguments := false
+	lastKey := ""
+	for {
+		token, err := decoder.Token()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return "", fmt.Errorf("decode LaunchAgent: %w", err)
+		}
+		switch value := token.(type) {
+		case xml.StartElement:
+			switch value.Name.Local {
+			case "key":
+				if err := decoder.DecodeElement(&lastKey, &value); err != nil {
+					return "", fmt.Errorf("decode LaunchAgent key: %w", err)
+				}
+			case "array":
+				programArguments = lastKey == "ProgramArguments"
+			case "string":
+				if !programArguments {
+					continue
+				}
+				var executable string
+				if err := decoder.DecodeElement(&executable, &value); err != nil {
+					return "", fmt.Errorf("decode LaunchAgent executable: %w", err)
+				}
+				if executable == "" {
+					return "", errors.New("LaunchAgent executable is empty")
+				}
+				return executable, nil
+			}
+		case xml.EndElement:
+			if value.Name.Local == "array" && programArguments {
+				return "", errors.New("LaunchAgent ProgramArguments has no executable")
+			}
+		}
+	}
+	return "", errors.New("LaunchAgent ProgramArguments is missing")
 }
 
 func render(executable, dataDir string) ([]byte, error) {
@@ -366,7 +558,8 @@ func renderFor(goos, executable, dataDir string) ([]byte, error) {
 <plist version="1.0"><dict>
   <key>Label</key><string>{{xml .Label}}</string>
   <key>ProgramArguments</key><array><string>{{xml .Executable}}</string><string>serve</string><string>--data-dir</string><string>{{xml .DataDir}}</string></array>
-  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>ProcessType</key><string>Interactive</string>
   <key>Umask</key><integer>63</integer>
   <key>StandardOutPath</key><string>{{xml .DataDir}}/service.stdout.log</string>

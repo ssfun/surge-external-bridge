@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/xml"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,6 +56,13 @@ func TestRenderLaunchAgentEscapesPaths(t *testing.T) {
 	if !strings.Contains(text, "<string>com.sfun.surgeeb</string>") {
 		t.Fatalf("LaunchAgent does not use the public service label: %s", text)
 	}
+	if !strings.Contains(text, "<key>SuccessfulExit</key><false/>") || strings.Contains(text, "<key>KeepAlive</key><true/>") {
+		t.Fatalf("LaunchAgent cannot remain stopped after a clean exit: %s", text)
+	}
+	executable, err := launchAgentExecutable(content)
+	if err != nil || executable != "/Applications/Surge & Tools/SurgeEB" {
+		t.Fatalf("LaunchAgent executable=%q err=%v", executable, err)
+	}
 }
 
 func TestRenderSystemdDoesNotHTMLEscapePaths(t *testing.T) {
@@ -92,7 +100,7 @@ func TestServicePaths(t *testing.T) {
 func TestDarwinServiceUsesStableExecutable(t *testing.T) {
 	home := t.TempDir()
 	source := filepath.Join(home, "Downloads", "SurgeEB")
-	targetPath := filepath.Join(home, "usr", "local", "bin", "SurgeEB")
+	targetPath := installedExecutablePathFor(home)
 	if err := os.MkdirAll(filepath.Dir(source), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -130,12 +138,62 @@ func TestDarwinServiceUsesStableExecutable(t *testing.T) {
 	if info, err := os.Stat(target); err != nil || info.Mode().Perm() != 0o555 {
 		t.Fatalf("existing canonical executable permissions changed: info=%v err=%v", info, err)
 	}
-	if installedExecutablePath() != "/usr/local/bin/SurgeEB" {
-		t.Fatalf("darwin executable path=%q", installedExecutablePath())
+	if targetPath != filepath.Join(home, "Library", "Application Support", "SurgeEB", "bin", "SurgeEB") {
+		t.Fatalf("darwin executable path=%q", targetPath)
 	}
 	linuxTarget, err := installExecutableFor("linux", source)
 	if err != nil || linuxTarget != source {
 		t.Fatalf("Linux executable path=%q err=%v, want source path", linuxTarget, err)
+	}
+}
+
+func TestLaunchAgentRepairDetectionCoversLegacyPathAndMissingCopy(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, "com.sfun.surgeeb.plist")
+	executable := installedExecutablePathFor(home)
+	if err := os.MkdirAll(filepath.Dir(executable), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content, err := renderFor("darwin", executable, filepath.Join(home, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if launchAgentNeedsRepair(path, executable) {
+		t.Fatal("current user LaunchAgent was marked for repair")
+	}
+	legacy, err := renderFor("darwin", "/usr/local/bin/SurgeEB", filepath.Join(home, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !launchAgentNeedsRepair(path, executable) {
+		t.Fatal("legacy /usr/local/bin LaunchAgent was not marked for repair")
+	}
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(executable); err != nil {
+		t.Fatal(err)
+	}
+	if !launchAgentNeedsRepair(path, executable) {
+		t.Fatal("missing service executable was not marked for repair")
+	}
+}
+
+func TestLaunchAgentActiveDistinguishesLoadedFromRunning(t *testing.T) {
+	if launchAgentActive([]byte("state = waiting\nlast exit code = 0\n")) {
+		t.Fatal("loaded but stopped LaunchAgent was reported active")
+	}
+	if !launchAgentActive([]byte("state = running\npid = 123\n")) {
+		t.Fatal("running LaunchAgent was reported inactive")
 	}
 }
 
@@ -148,6 +206,46 @@ func TestLaunchAgentTargetsLoggedInUserDomain(t *testing.T) {
 	}
 	if got := launchAgentPath("/Users/test", legacyLabel); got != "/Users/test/Library/LaunchAgents/fun.ssfun.surgeeb.plist" {
 		t.Fatalf("legacy LaunchAgent path=%q", got)
+	}
+}
+
+func TestDarwinUninstallStopsEveryServiceAndPropagatesFailure(t *testing.T) {
+	wantErr := errors.New("process still running")
+	var targets []string
+	err := stopDarwinServices(501, func(target string) error {
+		targets = append(targets, target)
+		if strings.HasSuffix(target, "/"+legacyLabel) {
+			return wantErr
+		}
+		return nil
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("stopDarwinServices error=%v, want %v", err, wantErr)
+	}
+	wantTargets := []string{"gui/501/" + label, "gui/501/" + legacyLabel}
+	if strings.Join(targets, "|") != strings.Join(wantTargets, "|") {
+		t.Fatalf("stop targets=%v, want %v", targets, wantTargets)
+	}
+
+	firstErr := errors.New("current service did not stop")
+	targets = nil
+	err = stopDarwinServices(501, func(target string) error {
+		targets = append(targets, target)
+		return firstErr
+	})
+	if !errors.Is(err, firstErr) || len(targets) != 1 {
+		t.Fatalf("first stop failure error=%v targets=%v", err, targets)
+	}
+}
+
+func TestLaunchAgentMissingOutputIsTheOnlyIgnoredBootoutFailure(t *testing.T) {
+	for _, output := range []string{"Boot-out failed: 3: No such process", "Could not find service"} {
+		if !launchAgentTargetMissing([]byte(output)) {
+			t.Fatalf("missing target output was not recognized: %q", output)
+		}
+	}
+	if launchAgentTargetMissing([]byte("Boot-out failed: 1: Operation not permitted")) {
+		t.Fatal("permission failure was incorrectly treated as an absent service")
 	}
 }
 

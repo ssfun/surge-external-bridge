@@ -49,9 +49,18 @@ function generatePolicyToken(quiet = false) {
   markDirty()
   if (!quiet) ui.toast('Policy Token 已生成')
 }
-function modeChanged(event) {
-  form.mode = event.target.value
+function listenerPort(address) {
+  const match = String(address || '').match(/:(\d+)$/)
+  return match?.[1] || '18080'
+}
+function modeChanged() {
+  const port = listenerPort(form.http_bind)
   if (form.mode === 'gateway') {
+    form.http_bind = `0.0.0.0:${port}`
+    form.socks_bind = '0.0.0.0'
+    if (!form.virtual_host || /^(127\.0\.0\.1|localhost|0\.0\.0\.0|::1)$/.test(form.virtual_host)) {
+      form.virtual_host = settings.value?.suggested_gateway_host || ''
+    }
     let managementGenerated = false
     let policyDefaulted = false
     if (!settings.value?.management_token_configured && !form.management_token) {
@@ -63,6 +72,10 @@ function modeChanged(event) {
     if (managementGenerated && policyDefaulted) ui.toast('Management Token 与 Policy Token 已分别生成')
     else if (managementGenerated) ui.toast('Management Token 已生成，请复制保存')
     else if (policyDefaulted) ui.toast('Policy Token 已生成，请复制到 Surge 配置')
+  } else {
+    form.http_bind = `127.0.0.1:${port}`
+    form.socks_bind = '127.0.0.1'
+    form.virtual_host = '127.0.0.1'
   }
   markDirty()
 }
@@ -95,7 +108,6 @@ async function save() {
   try {
     const result = await data.updateSettings(body)
     dirty.value = false
-    if (body.management_token) localStorage.setItem('surgeeb-management-token', body.management_token)
     if (!result.reconnect) populate(settings.value)
     appliedMessage.value = result.reconnect ? '设置已保存，请使用新的配置台地址重新连接。' : ''
     ui.toast(result.reconnect ? '设置已保存，请使用新的配置台地址重新连接' : '设置已保存')
@@ -104,7 +116,9 @@ async function save() {
 }
 
 async function serviceAction(install) {
-  const question = install ? '设置为开机自动启动？不会重复启动当前程序。' : '取消开机自动启动？'
+  const question = install
+    ? (service.value?.repair_needed ? '修复旧版自动启动定义并迁移到当前用户目录？不会重复启动当前程序。' : '设置为开机自动启动？不会重复启动当前程序。')
+    : '取消开机自动启动？'
   if (!window.confirm(question)) return
   try {
     data.service = await api(install ? '/api/service/install' : '/api/service', { method: install ? 'POST' : 'DELETE', headers: { 'X-SurgeEB-Confirm': install ? 'install-user-service' : 'uninstall-user-service' } })
@@ -123,13 +137,13 @@ async function serviceAction(install) {
         <div class="card settings-card settings-deployment" data-testid="settings-deployment">
           <div class="settings-card-head"><div><h3>使用范围与地址</h3><p>选择只供本机使用，或允许同一局域网内的设备连接。</p></div><span class="pill" :class="form.mode === 'gateway' ? 'warn' : 'ok'">{{ form.mode === 'gateway' ? '局域网' : '仅本机' }}</span></div>
           <div class="settings-deployment-grid">
-            <label class="field"><span>使用范围</span><span class="select-control"><select :value="form.mode" data-testid="settings-mode" @change="modeChanged"><option value="local">仅本机</option><option value="gateway">局域网网关</option></select></span><small>{{ form.mode === 'gateway' ? '同一局域网内的设备可以访问，请保存下面的 Management Token。' : '只有这台电脑可以访问配置台和 SOCKS。' }}</small></label>
+            <label class="field"><span>使用范围</span><span class="select-control"><select v-model="form.mode" data-testid="settings-mode" @change="modeChanged"><option value="local">仅本机</option><option value="gateway">局域网网关</option></select></span><small>{{ form.mode === 'gateway' ? '自动监听所有本机网卡；同一局域网内的设备可通过下方访问地址连接。' : '自动限制为 127.0.0.1，只有这台电脑可以访问。' }}</small></label>
             <label class="field"><span>Surge 访问地址</span><input v-model="form.virtual_host" spellcheck="false" placeholder="surge.eb"><small>填写 Surge 能访问到的域名或 IP，不要带 http:// 和端口。</small></label>
           </div>
-          <div class="settings-subsection"><div class="settings-subsection-head"><b>本机监听地址</b><span>Surge 订阅地址使用与配置台相同的端口</span></div>
+          <div class="settings-subsection"><div class="settings-subsection-head"><b>监听地址</b><span>切换使用范围时自动生成，仍可按需精确绑定网卡</span></div>
             <div class="settings-listener-grid">
-              <label class="field"><span>配置台地址</span><input v-model="form.http_bind" data-testid="settings-http-bind" spellcheck="false"><small>{{ form.mode === 'gateway' ? '局域网模式下需要配置 Management Token。' : '仅供本机访问。' }}</small></label>
-              <label class="field"><span>SOCKS 地址</span><input v-model="form.socks_bind" spellcheck="false"></label>
+              <label class="field"><span>配置台监听</span><input v-model="form.http_bind" data-testid="settings-http-bind" spellcheck="false"><small>{{ form.mode === 'gateway' ? '0.0.0.0 表示监听所有网卡；访问仍使用上方具体地址。' : '仅供本机访问。' }}</small></label>
+              <label class="field"><span>SOCKS 监听</span><input v-model="form.socks_bind" data-testid="settings-socks-bind" spellcheck="false"><small>{{ form.mode === 'gateway' ? '0.0.0.0 可由局域网 IP 访问。' : '只监听本机回环。' }}</small></label>
               <label class="field"><span>SOCKS 端口</span><input v-model="form.socks_port" type="number" min="1" max="65535"></label>
             </div>
           </div>
@@ -173,9 +187,10 @@ async function serviceAction(install) {
           <div class="settings-boundary"><b>SurgeEB 不会接管系统网络</b><span>系统代理、TUN 和 DNS 等功能仍由 Surge 管理。</span></div>
         </div>
         <div class="card settings-card" data-testid="settings-service">
-          <div class="settings-card-head"><div><h3>开机自动启动</h3><p>让 SurgeEB 在登录系统后自动运行；当前程序无需重复启动。</p></div><span class="pill" :class="service?.installed ? 'ok' : 'warn'">{{ service?.installed ? '已开启' : '未开启' }}</span></div>
-          <dl class="kv settings-service-facts"><dt>运行平台</dt><dd>{{ service?.platform || '—' }}</dd><dt>自动启动</dt><dd>{{ service?.installed ? '已开启' : '未开启' }}</dd></dl>
-          <div class="actions settings-service-actions"><button class="button" type="button" :disabled="service?.installed" @click="serviceAction(true)">开启自动启动</button><button class="button danger" type="button" :disabled="!service?.installed" @click="serviceAction(false)">关闭自动启动</button></div>
+          <div class="settings-card-head"><div><h3>开机自动启动</h3><p>让 SurgeEB 在登录系统后自动运行；当前程序无需重复启动。</p></div><span class="pill" :class="service?.installed && !service?.repair_needed ? 'ok' : 'warn'">{{ service?.repair_needed ? '需要修复' : (service?.installed ? '已开启' : '未开启') }}</span></div>
+          <dl class="kv settings-service-facts"><dt>运行平台</dt><dd>{{ service?.platform || '—' }}</dd><dt>自动启动</dt><dd>{{ service?.repair_needed ? '旧定义需要迁移' : (service?.installed ? '已开启' : '未开启') }}</dd></dl>
+          <div v-if="service?.repair_needed" class="settings-note warn">当前 LaunchAgent 仍使用旧路径、定义异常或服务副本缺失；修复会迁移到当前用户目录，不需要 sudo。</div>
+          <div class="actions settings-service-actions"><button class="button" type="button" :disabled="service?.installed && !service?.repair_needed" @click="serviceAction(true)">{{ service?.repair_needed ? '修复自动启动' : '开启自动启动' }}</button><button class="button danger" type="button" :disabled="!service?.installed" @click="serviceAction(false)">关闭自动启动</button></div>
         </div>
       </div>
     </section>
