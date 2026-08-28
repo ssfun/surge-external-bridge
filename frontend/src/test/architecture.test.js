@@ -451,6 +451,7 @@ describe('component update boundaries', () => {
       },
       {
         stable_id: 'inline-on', name: '本地节点', type: 'inline', enabled: true, health_check: false,
+        filtered_count: 2, filtered_nodes: ['WARP-A', 'WARP-B'],
         runtime: { proxies: [
           { name: '香港 01', type: 'Vless', alive: true, history: [{ delay: 42 }] },
           { name: '新加坡 02', type: 'Trojan', alive: false, history: [] },
@@ -486,6 +487,8 @@ describe('component update boundaries', () => {
     expect(nodeCards[1].text()).toContain('新加坡 02')
     expect(nodeCards[1].text()).toContain('未知 / 失败')
     expect(nodeCards[1].text()).toContain('暂无数据')
+    expect(inline.get('.provider-filter-warning').text()).toContain('已过滤 2 个链式节点')
+    expect(inline.get('.provider-filter-warning').text()).toContain('WARP-A、WARP-B')
     wrapper.unmount()
   })
 

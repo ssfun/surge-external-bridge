@@ -106,6 +106,11 @@ func BuildControlledConfig(homeDir, controllerSocket, controllerSecret string, p
 	if err != nil {
 		return nil, fmt.Errorf("parse controlled Mihomo configuration: %w", err)
 	}
+	for key := range providerMappings {
+		if provider := cfg.Providers[key]; provider != nil {
+			cfg.Providers[key] = newFilteredProxyProvider(provider)
+		}
+	}
 	if cfg.Proxies == nil {
 		cfg.Proxies = make(map[string]C.Proxy)
 	}

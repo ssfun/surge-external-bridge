@@ -115,8 +115,30 @@ func (m *Manager) ProviderState(stableID string) (nextRefresh time.Time, lastErr
 		return time.Time{}, ""
 	}
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.nextPull[key], m.providerErrors[key]
+	nextRefresh, lastError = m.nextPull[key], m.providerErrors[key]
+	cfg := m.config
+	m.mu.RUnlock()
+	if lastError == "" && cfg != nil {
+		report := providerFilterReport(cfg.Providers[key])
+		if report.SourceCount > 0 && report.AvailableCount == 0 && report.FilteredCount() > 0 {
+			lastError = fmt.Sprintf("全部 %d 个节点均因使用 dialer-proxy 被过滤", report.FilteredCount())
+		}
+	}
+	return nextRefresh, lastError
+}
+
+func (m *Manager) ProviderFilterState(stableID string) ProviderFilterReport {
+	key, err := ProviderKey(stableID)
+	if err != nil {
+		return ProviderFilterReport{}
+	}
+	m.mu.RLock()
+	cfg := m.config
+	m.mu.RUnlock()
+	if cfg == nil {
+		return ProviderFilterReport{}
+	}
+	return providerFilterReport(cfg.Providers[key])
 }
 
 func (m *Manager) Start() error {
@@ -243,6 +265,7 @@ func (m *Manager) startLocked() error {
 	clear(m.providerErrors)
 	m.mu.Unlock()
 	go m.watchProviders(ctx, done)
+	m.emitProviderFilterWarnings(cfg, m.options.Providers)
 	m.emit("info", fmt.Sprintf("网关已启动，加载 %d 个节点", len(m.store.Load().Entries())))
 	return nil
 }
@@ -328,6 +351,7 @@ func (m *Manager) ApplyProviders(definitions []ProviderDefinition) error {
 	m.status.ProjectionHash = m.store.Load().Revision()
 	m.status.ProjectionCount = len(m.store.Load().Entries())
 	m.mu.Unlock()
+	m.emitProviderFilterWarnings(candidate, definitions)
 	m.emit("info", fmt.Sprintf("applied Mihomo Provider configuration with %d projected nodes", len(m.store.Load().Entries())))
 	return nil
 }
@@ -471,6 +495,7 @@ func (m *Manager) RefreshProvider(stableID string) error {
 	m.status.ProjectionCount = len(m.store.Load().Entries())
 	m.status.LastError = ""
 	m.mu.Unlock()
+	m.emitProviderFilterWarnings(cfg, definitions)
 	return nil
 }
 
@@ -664,6 +689,7 @@ func (m *Manager) pollProviders() {
 	m.status.ProjectionCount = len(m.store.Load().Entries())
 	m.status.LastError = ""
 	m.mu.Unlock()
+	m.emitProviderFilterWarnings(cfg, definitions)
 	m.emit("info", fmt.Sprintf("Provider content update projected %d nodes", len(m.store.Load().Entries())))
 }
 
@@ -860,7 +886,7 @@ func replaceProviderConfig(candidate *MConfig.Config) {
 
 func closeProviders(providers map[string]P.ProxyProvider) {
 	for _, provider := range providers {
-		for _, proxy := range provider.Proxies() {
+		for _, proxy := range providerSourceProxies(provider) {
 			_ = proxy.Close()
 		}
 		if closer, ok := provider.(interface{ Close() error }); ok {
@@ -960,6 +986,23 @@ func (m *Manager) failClosedAsync(cfg *MConfig.Config, err error) <-chan struct{
 func (m *Manager) emit(level, message string) {
 	if m.options.OnEvent != nil {
 		m.options.OnEvent(level, message)
+	}
+}
+
+func (m *Manager) emitProviderFilterWarnings(cfg *MConfig.Config, definitions []ProviderDefinition) {
+	if cfg == nil {
+		return
+	}
+	for _, definition := range definitions {
+		key, err := ProviderKey(definition.StableID)
+		if err != nil {
+			continue
+		}
+		report := providerFilterReport(cfg.Providers[key])
+		if report.FilteredCount() == 0 {
+			continue
+		}
+		m.emit("warn", fmt.Sprintf("Provider %s 已过滤 %d 个使用 dialer-proxy 的节点", definition.Name, report.FilteredCount()))
 	}
 }
 

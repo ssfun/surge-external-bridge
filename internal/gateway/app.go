@@ -356,6 +356,10 @@ func (a *App) ProviderRuntimeState(id string) (time.Time, string) {
 	return nextRefresh, a.redactEventLocked(lastError)
 }
 
+func (a *App) ProviderFilterState(id string) M.ProviderFilterReport {
+	return a.manager.ProviderFilterState(id)
+}
+
 func (a *App) UpdateSettings(settings Settings) error {
 	a.applyMu.Lock()
 	defer a.applyMu.Unlock()

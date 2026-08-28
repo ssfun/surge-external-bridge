@@ -241,6 +241,8 @@ type publicProvider struct {
 	ExpectedStatus     string     `json:"expected_status,omitempty"`
 	NextRefreshAt      *time.Time `json:"next_refresh_at,omitempty"`
 	LastError          string     `json:"last_error,omitempty"`
+	FilteredCount      int        `json:"filtered_count,omitempty"`
+	FilteredNodes      []string   `json:"filtered_nodes,omitempty"`
 }
 
 func makePublicProvider(provider gateway.Provider) publicProvider {
@@ -269,6 +271,11 @@ func (s *Server) providers(w http.ResponseWriter, _ *http.Request) {
 			item.NextRefreshAt = &nextRefresh
 		}
 		item.LastError = lastError
+		filter := s.app.ProviderFilterState(provider.StableID)
+		item.FilteredCount = filter.FilteredCount()
+		for _, node := range filter.FilteredNodes {
+			item.FilteredNodes = append(item.FilteredNodes, node.Name)
+		}
 		result = append(result, item)
 	}
 	writeJSON(w, http.StatusOK, result)

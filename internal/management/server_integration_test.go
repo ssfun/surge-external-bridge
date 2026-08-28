@@ -113,7 +113,7 @@ func TestManagementProviderLifecycleAndMutationBoundaries(t *testing.T) {
 	}
 	payload, err := json.Marshal(map[string]any{
 		"name": "Lifecycle", "type": "inline", "enabled": true,
-		"payload": "proxies:\n  - name: Lifecycle Node\n    type: vless\n    server: 127.0.0.1\n    port: 65530\n    uuid: 11111111-1111-4111-8111-111111111111\n    network: tcp\n    tls: false\n",
+		"payload": "proxies:\n  - name: Lifecycle Node\n    type: vless\n    server: 127.0.0.1\n    port: 65530\n    uuid: 11111111-1111-4111-8111-111111111111\n    network: tcp\n    tls: false\n  - name: Lifecycle Chained\n    type: socks5\n    server: 127.0.0.1\n    port: 1081\n    dialer-proxy: 链式代理规则\n",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -132,6 +132,38 @@ func TestManagementProviderLifecycleAndMutationBoundaries(t *testing.T) {
 	_ = response.Body.Close()
 	if created.StableID == "" || len(application.Snapshot().Entries()) != 1 {
 		t.Fatalf("created Provider was not projected: %#v", created)
+	}
+	response = request(http.MethodGet, "/api/providers", nil, "")
+	var listed []publicProvider
+	if err := json.NewDecoder(response.Body).Decode(&listed); err != nil {
+		_ = response.Body.Close()
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if len(listed) != 1 || listed[0].FilteredCount != 1 || len(listed[0].FilteredNodes) != 1 || listed[0].FilteredNodes[0] != "Lifecycle Chained" {
+		t.Fatalf("Provider filter status was not exposed: %#v", listed)
+	}
+	response = request(http.MethodGet, "/api/providers/"+created.StableID+"/runtime", nil, "")
+	var runtime struct {
+		Proxies       []map[string]any `json:"proxies"`
+		FilteredCount int              `json:"filteredCount"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&runtime); err != nil {
+		_ = response.Body.Close()
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if len(runtime.Proxies) != 1 || runtime.FilteredCount != 1 {
+		t.Fatalf("Provider runtime leaked filtered nodes: %#v", runtime)
+	}
+	warnings := 0
+	for _, event := range application.Events() {
+		if strings.Contains(event.Message, "已过滤 1 个使用 dialer-proxy 的节点") {
+			warnings++
+		}
+	}
+	if warnings != 1 {
+		t.Fatalf("filter warning count=%d events=%#v", warnings, application.Events())
 	}
 
 	disabled := []byte(`{"name":"Lifecycle","type":"inline","enabled":false}`)
