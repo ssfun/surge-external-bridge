@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 const (
 	ModeLocal   = "local"
@@ -41,6 +41,7 @@ type Provider struct {
 	URL                string              `json:"url,omitempty"`
 	FilePath           string              `json:"file_path,omitempty"`
 	Payload            InlinePayload       `json:"payload,omitempty"`
+	Hosts              map[string]any      `json:"hosts,omitempty"`
 	Enabled            bool                `json:"enabled"`
 	Headers            map[string][]string `json:"headers,omitempty"`
 	RefreshSeconds     int                 `json:"refresh_seconds"`

@@ -33,7 +33,7 @@ func (p *InlinePayload) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &source); err != nil {
 		return fmt.Errorf("decode inline Mihomo Provider YAML: %w", err)
 	}
-	payload, err := parseInlineProviderYAML(source)
+	payload, _, err := parseInlineProviderYAML(source)
 	if err != nil {
 		return err
 	}
@@ -41,26 +41,27 @@ func (p *InlinePayload) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func parseInlineProviderYAML(source string) (InlinePayload, error) {
+func parseInlineProviderYAML(source string) (InlinePayload, map[string]any, error) {
 	if strings.TrimSpace(source) == "" {
-		return nil, errors.New("inline Mihomo Provider YAML is empty")
+		return nil, nil, errors.New("inline Mihomo Provider YAML is empty")
 	}
 	var document struct {
 		Proxies []map[string]any `yaml:"proxies"`
+		Hosts   map[string]any   `yaml:"hosts"`
 	}
 	decoder := yaml.NewDecoder(strings.NewReader(source))
 	if err := decoder.Decode(&document); err != nil {
-		return nil, fmt.Errorf("invalid inline Mihomo Provider YAML: %w", err)
+		return nil, nil, fmt.Errorf("invalid inline Mihomo Provider YAML: %w", err)
 	}
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, errors.New("inline Mihomo Provider YAML must contain exactly one document")
+			return nil, nil, errors.New("inline Mihomo Provider YAML must contain exactly one document")
 		}
-		return nil, fmt.Errorf("invalid inline Mihomo Provider YAML: %w", err)
+		return nil, nil, fmt.Errorf("invalid inline Mihomo Provider YAML: %w", err)
 	}
 	if len(document.Proxies) == 0 {
-		return nil, errors.New("inline Mihomo Provider YAML must contain a non-empty proxies list")
+		return nil, nil, errors.New("inline Mihomo Provider YAML must contain a non-empty proxies list")
 	}
-	return InlinePayload(document.Proxies), nil
+	return InlinePayload(document.Proxies), document.Hosts, nil
 }

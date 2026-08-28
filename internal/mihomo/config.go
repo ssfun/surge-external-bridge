@@ -24,6 +24,7 @@ type ProviderDefinition struct {
 	URL                string
 	FilePath           string
 	Payload            []map[string]any
+	Hosts              map[string]any
 	Headers            map[string][]string
 	RefreshSeconds     int
 	DownloadProxy      string
@@ -57,12 +58,14 @@ func BuildControlledConfig(homeDir, controllerSocket, controllerSecret string, p
 	if err := EnsurePrivateDir(homeDir); err != nil {
 		return nil, err
 	}
+	C.SetHomeDir(homeDir)
 	controllerSocket, err = filepath.Abs(controllerSocket)
 	if err != nil || !pathWithin(homeDir, controllerSocket) {
 		return nil, errors.New("Controller socket must be inside Mihomo HomeDir")
 	}
 
 	providerMappings := make(map[string]any, len(providers))
+	hostSources := make(map[string]providerHostSource, len(providers))
 	seen := make(map[string]struct{}, len(providers))
 	for _, definition := range providers {
 		key, err := ProviderKey(definition.StableID)
@@ -78,6 +81,7 @@ func BuildControlledConfig(homeDir, controllerSocket, controllerSecret string, p
 			return nil, fmt.Errorf("provider %q: %w", definition.Name, err)
 		}
 		providerMappings[key] = mapping
+		hostSources[key] = newProviderHostSource(homeDir, definition)
 	}
 	raw := map[string]any{
 		"port": 0, "socks-port": 0, "mixed-port": 0, "redir-port": 0, "tproxy-port": 0,
@@ -101,14 +105,17 @@ func BuildControlledConfig(homeDir, controllerSocket, controllerSecret string, p
 	if err != nil {
 		return nil, err
 	}
-	C.SetHomeDir(homeDir)
 	cfg, err := MConfig.Parse(encoded)
 	if err != nil {
 		return nil, fmt.Errorf("parse controlled Mihomo configuration: %w", err)
 	}
 	for key := range providerMappings {
 		if provider := cfg.Providers[key]; provider != nil {
-			cfg.Providers[key] = newFilteredProxyProvider(provider)
+			wrapped, err := newFilteredProxyProvider(provider, hostSources[key])
+			if err != nil {
+				return nil, fmt.Errorf("prepare Provider %q hosts: %w", key, err)
+			}
+			cfg.Providers[key] = wrapped
 		}
 	}
 	if cfg.Proxies == nil {
@@ -213,6 +220,14 @@ func providerMapping(homeDir string, definition ProviderDefinition) (map[string]
 }
 
 func ProviderViews(cfg *MConfig.Config, definitions []ProviderDefinition) ([]ProviderView, error) {
+	return providerViews(cfg, definitions, false)
+}
+
+func candidateProviderViews(cfg *MConfig.Config, definitions []ProviderDefinition) ([]ProviderView, error) {
+	return providerViews(cfg, definitions, true)
+}
+
+func providerViews(cfg *MConfig.Config, definitions []ProviderDefinition, candidate bool) ([]ProviderView, error) {
 	views := make([]ProviderView, 0, len(definitions))
 	for _, definition := range definitions {
 		key, err := ProviderKey(definition.StableID)
@@ -223,8 +238,12 @@ func ProviderViews(cfg *MConfig.Config, definitions []ProviderDefinition) ([]Pro
 		if provider == nil {
 			return nil, fmt.Errorf("Mihomo Provider %q is missing", key)
 		}
+		proxies := provider.Proxies()
+		if candidate {
+			proxies = providerCandidateProxies(provider)
+		}
 		views = append(views, ProviderView{
-			StableID: definition.StableID, Name: definition.Name, Proxies: provider.Proxies(),
+			StableID: definition.StableID, Name: definition.Name, Proxies: proxies,
 			IncludeName: definition.IncludeName, ExcludeName: definition.ExcludeName, IncludeTypes: definition.IncludeTypes,
 		})
 	}

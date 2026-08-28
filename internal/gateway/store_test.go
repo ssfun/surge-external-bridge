@@ -105,11 +105,47 @@ func TestStoreDoesNotReadLegacyConfiguration(t *testing.T) {
 
 func TestStoreRejectsUnsupportedSchemaWithoutMigration(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "gateway.json"), []byte(`{"schema_version":3}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "gateway.json"), []byte(`{"schema_version":4}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := NewStore(dir).Load(); err == nil {
 		t.Fatal("unsupported schema was accepted or migrated")
+	}
+}
+
+func TestStoreMigratesSchemaTwoAndRetainsInlineHostsInSchemaThree(t *testing.T) {
+	dir := t.TempDir()
+	legacy := mustDefaultConfig(t)
+	legacy.SchemaVersion = 2
+	legacy.Providers = []Provider{{
+		Name: "Inline", Type: "inline", Enabled: true,
+		Payload: InlinePayload{{"name": "Node", "type": "socks5", "server": "edge.example.com", "port": 1080}},
+	}}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gateway.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := NewStore(dir).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.SchemaVersion != SchemaVersion || len(loaded.Providers) != 1 || loaded.Providers[0].Hosts != nil {
+		t.Fatalf("schema two migration = %#v", loaded)
+	}
+
+	loaded.Providers[0].Hosts = map[string]any{"edge.example.com": "origin.example.com"}
+	if err := NewStore(dir).Save(loaded); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := NewStore(dir).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Providers[0].Hosts["edge.example.com"] != "origin.example.com" {
+		t.Fatalf("inline hosts were not retained: %#v", reloaded.Providers[0].Hosts)
 	}
 }
 

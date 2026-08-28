@@ -13,6 +13,7 @@ import (
 	"time"
 
 	U "github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/component/resolver"
 	MConfig "github.com/metacubex/mihomo/config"
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
@@ -20,11 +21,13 @@ import (
 	"github.com/metacubex/mihomo/hub/route"
 	MLog "github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/tunnel"
+	"github.com/metacubex/mihomo/tunnel/statistic"
 )
 
 var processManager struct {
 	sync.Mutex
-	owner *Manager
+	owner       *Manager
+	initialized bool
 }
 
 var CoreVersion = linkedCoreVersion()
@@ -68,6 +71,8 @@ type Manager struct {
 	nextHealth     map[string]time.Time
 	lastHealth     map[string]time.Time
 	providerErrors map[string]string
+	hostCounts     map[string]int
+	hostResolver   *providerHostResolver
 	status         ManagerStatus
 	healthMu       sync.Mutex
 	healthTasks    map[string]*providerHealthTask
@@ -96,6 +101,8 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 		nextHealth:     make(map[string]time.Time),
 		lastHealth:     make(map[string]time.Time),
 		providerErrors: make(map[string]string),
+		hostCounts:     make(map[string]int),
+		hostResolver:   sharedProviderHostResolver,
 		status:         ManagerStatus{State: "stopped", CoreVersion: CoreVersion},
 		healthTasks:    make(map[string]*providerHealthTask),
 	}, nil
@@ -141,6 +148,12 @@ func (m *Manager) ProviderFilterState(stableID string) ProviderFilterReport {
 	return providerFilterReport(cfg.Providers[key])
 }
 
+func (m *Manager) ProviderHostsCount(stableID string) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.hostCounts[stableID]
+}
+
 func (m *Manager) Start() error {
 	m.applyMu.Lock()
 	defer m.applyMu.Unlock()
@@ -161,32 +174,84 @@ func (m *Manager) startLocked() error {
 		processManager.Unlock()
 		return errors.New("only one embedded Mihomo manager can run in a process")
 	}
+	processInitialized := processManager.initialized
 	processManager.owner = m
 	processManager.Unlock()
 
 	m.setState("starting", "")
+	var bootstrap *MConfig.Config
+	var err error
+	if !coreReady && !processInitialized {
+		// Apply the process-global Mihomo settings before parsing user Provider
+		// adapters. Stateful inline adapters can start worker goroutines during
+		// parsing, and executor.ApplyConfig writes Mihomo's unsynchronised global
+		// log level. Bootstrapping an empty topology keeps those events ordered.
+		bootstrap, err = BuildControlledConfig(m.options.HomeDir, m.options.ControllerSocket, m.options.ControllerSecret, nil, m.store)
+		if err != nil {
+			m.fail(err)
+			m.releaseOwnership()
+			return err
+		}
+		applyInitialConfig(bootstrap)
+		processManager.Lock()
+		processManager.initialized = true
+		processManager.Unlock()
+	}
 	cfg, err := BuildControlledConfig(m.options.HomeDir, m.options.ControllerSocket, m.options.ControllerSecret, m.options.Providers, m.store)
 	if err != nil {
 		m.fail(err)
 		if !coreReady {
+			if bootstrap != nil {
+				m.shutdownCore(bootstrap)
+			}
 			m.releaseOwnership()
 		}
 		return err
 	}
 	if coreReady {
 		m.stopHealthChecks()
-		if err := applyProviderConfig(cfg); err != nil {
-			m.fail(err)
-			return err
+	}
+	if err := initializeProviders(cfg.Providers); err != nil {
+		m.fail(err)
+		if !coreReady {
+			if bootstrap != nil {
+				m.shutdownCore(bootstrap)
+			}
+			m.releaseOwnership()
 		}
-	} else {
-		applyInitialConfig(cfg)
-		m.mu.Lock()
-		m.coreReady = true
-		m.config = cfg
-		m.mu.Unlock()
+		return err
+	}
+	hostResolver, hostCounts, err := buildProviderHostResolver(cfg.Providers, m.options.Providers)
+	if err != nil {
+		closeProviders(cfg.Providers)
+		m.fail(err)
+		if !coreReady {
+			if bootstrap != nil {
+				m.shutdownCore(bootstrap)
+			}
+			m.releaseOwnership()
+		}
+		return err
+	}
+	providerTransaction, err := prepareProviderStates(cfg.Providers)
+	if err != nil {
+		err = providerTransaction.reject(err)
+		closeProviders(cfg.Providers)
+		m.fail(err)
+		if !coreReady {
+			if bootstrap != nil {
+				m.shutdownCore(bootstrap)
+			}
+			m.releaseOwnership()
+		}
+		return err
+	}
+	replaceProviderConfig(cfg, m.hostResolver, hostResolver)
+	if !coreReady && processInitialized {
+		recreateController(cfg)
 	}
 	if err := SecurePrivateTree(m.options.HomeDir); err != nil {
+		err = providerTransaction.reject(err)
 		m.fail(err)
 		m.shutdownCore(cfg)
 		m.mu.Lock()
@@ -197,6 +262,7 @@ func (m *Manager) startLocked() error {
 		return err
 	}
 	if err := ValidateRuntimeInvariants(cfg, m.options.HomeDir); err != nil {
+		err = providerTransaction.reject(err)
 		m.fail(err)
 		m.shutdownCore(cfg)
 		m.mu.Lock()
@@ -207,6 +273,7 @@ func (m *Manager) startLocked() error {
 		return err
 	}
 	if err := SecurePrivateTree(m.options.HomeDir); err != nil {
+		err = providerTransaction.reject(err)
 		m.fail(err)
 		m.shutdownCore(cfg)
 		m.mu.Lock()
@@ -217,6 +284,7 @@ func (m *Manager) startLocked() error {
 		return err
 	}
 	if err := m.rebuildProjection(cfg, m.options.Providers); err != nil {
+		err = providerTransaction.reject(err)
 		m.store.Store(EmptySnapshot())
 		m.fail(err)
 		m.shutdownCore(cfg)
@@ -227,6 +295,24 @@ func (m *Manager) startLocked() error {
 		m.releaseOwnership()
 		return err
 	}
+	if err := providerTransaction.commit(); err != nil {
+		err = providerTransaction.reject(err)
+		m.store.Store(EmptySnapshot())
+		m.fail(err)
+		m.shutdownCore(cfg)
+		m.mu.Lock()
+		m.coreReady = false
+		m.config = nil
+		m.mu.Unlock()
+		m.releaseOwnership()
+		return err
+	}
+	providerTransaction.accept()
+	m.mu.Lock()
+	m.coreReady = true
+	m.config = cfg
+	m.hostCounts = hostCounts
+	m.mu.Unlock()
 	address := net.JoinHostPort(m.options.SocksBind, fmt.Sprint(m.options.SocksPort))
 	listener, err := NewSOCKSListener(address, tunnel.Tunnel, NewAuthenticator(m.store))
 	if err != nil {
@@ -279,6 +365,15 @@ func (m *Manager) startLocked() error {
 // application.
 func applyInitialConfig(cfg *MConfig.Config) {
 	executor.ApplyConfig(cfg, true)
+	// The embedded gateway owns one process-lifetime proxy-server resolver.
+	// Mihomo clears this package-level hook when DNS is disabled; reinstall the
+	// stable wrapper before any user Provider adapters can dial, then refresh
+	// only its immutable trie snapshot for the rest of the process lifetime.
+	resolver.ProxyServerHostResolver = sharedProviderHostResolver
+	recreateController(cfg)
+}
+
+func recreateController(cfg *MConfig.Config) {
 	if cfg.Controller.ExternalUI != "" {
 		route.SetUIPath(cfg.Controller.ExternalUI)
 	}
@@ -308,6 +403,7 @@ func (m *Manager) ApplyProviders(definitions []ProviderDefinition) error {
 	defer m.applyMu.Unlock()
 	m.mu.RLock()
 	running := m.listener != nil
+	current := m.config
 	m.mu.RUnlock()
 	if !running {
 		return errors.New("Mihomo manager is not running")
@@ -319,6 +415,11 @@ func (m *Manager) ApplyProviders(definitions []ProviderDefinition) error {
 	if err := initializeProviders(candidate.Providers); err != nil {
 		return err
 	}
+	hostResolver, hostCounts, err := buildProviderHostResolver(candidate.Providers, definitions)
+	if err != nil {
+		closeProviders(candidate.Providers)
+		return err
+	}
 	if err := SecurePrivateTree(m.options.HomeDir); err != nil {
 		closeProviders(candidate.Providers)
 		return err
@@ -328,21 +429,36 @@ func (m *Manager) ApplyProviders(definitions []ProviderDefinition) error {
 		closeProviders(candidate.Providers)
 		return err
 	}
+	providerTransaction, err := prepareProviderStates(candidate.Providers)
+	if err != nil {
+		err = providerTransaction.reject(err)
+		closeProviders(candidate.Providers)
+		return err
+	}
+	if err := ValidateRuntimeInvariants(candidate, m.options.HomeDir); err != nil {
+		err = providerTransaction.reject(err)
+		closeProviders(candidate.Providers)
+		m.failClosedLocked(current, err)
+		return err
+	}
+	if err := providerTransaction.commit(); err != nil {
+		err = providerTransaction.reject(err)
+		closeProviders(candidate.Providers)
+		return err
+	}
 	// The private Controller and every General setting are immutable for the
 	// lifetime of this process. Apply only the Provider/proxy topology that can
 	// actually change. Besides avoiding a needless Controller restart, this
 	// avoids Mihomo v1.19.30's unsynchronised global log-level write while old
 	// outbound finalizers may still be logging.
 	m.stopHealthChecks()
-	replaceProviderConfig(candidate)
-	if err := ValidateRuntimeInvariants(candidate, m.options.HomeDir); err != nil {
-		m.failClosedLocked(candidate, err)
-		return err
-	}
+	replaceProviderConfig(candidate, m.hostResolver, hostResolver)
+	providerTransaction.accept()
 	m.store.Store(candidateSnapshot)
 	m.mu.Lock()
 	m.config = candidate
 	m.options.Providers = append([]ProviderDefinition(nil), definitions...)
+	m.hostCounts = hostCounts
 	m.captureVersionsLocked(candidate, definitions)
 	m.scheduleProvidersLocked(definitions, time.Now())
 	clear(m.providerErrors)
@@ -479,16 +595,50 @@ func (m *Manager) RefreshProvider(stableID string) error {
 		m.failClosedLocked(cfg, err)
 		return err
 	}
-	if err := m.rebuildProjection(cfg, definitions); err != nil {
-		m.store.Store(EmptySnapshot())
+	hostResolver, hostCounts, err := buildProviderHostResolver(cfg.Providers, definitions)
+	if err != nil {
+		err = rejectProviderStates(cfg.Providers, map[string]struct{}{key: {}}, err)
+		wrapped := fmt.Errorf("refresh Mihomo Provider: %w", err)
 		m.mu.Lock()
-		m.providerErrors[key] = err.Error()
+		m.providerErrors[key] = wrapped.Error()
+		m.scheduleProviderLocked(stableID, definitions, time.Now())
 		m.mu.Unlock()
-		m.fail(err)
-		return err
+		return wrapped
 	}
+	candidate, err := m.buildProjection(cfg, definitions)
+	if err != nil {
+		err = rejectProviderStates(cfg.Providers, map[string]struct{}{key: {}}, err)
+		wrapped := fmt.Errorf("refresh Mihomo Provider: %w", err)
+		m.mu.Lock()
+		m.providerErrors[key] = wrapped.Error()
+		m.scheduleProviderLocked(stableID, definitions, time.Now())
+		m.mu.Unlock()
+		return wrapped
+	}
+	providerTransaction, err := prepareProviderStates(cfg.Providers)
+	if err != nil {
+		err = providerTransaction.reject(err)
+		wrapped := fmt.Errorf("refresh Mihomo Provider: %w", err)
+		m.mu.Lock()
+		m.providerErrors[key] = wrapped.Error()
+		m.scheduleProviderLocked(stableID, definitions, time.Now())
+		m.mu.Unlock()
+		return wrapped
+	}
+	if err := providerTransaction.commit(); err != nil {
+		err = providerTransaction.reject(err)
+		wrapped := fmt.Errorf("refresh Mihomo Provider: %w", err)
+		m.mu.Lock()
+		m.providerErrors[key] = wrapped.Error()
+		m.scheduleProviderLocked(stableID, definitions, time.Now())
+		m.mu.Unlock()
+		return wrapped
+	}
+	replaceProviderRuntime(candidate, m.hostResolver, hostResolver, m.store)
+	providerTransaction.accept()
 	m.mu.Lock()
 	delete(m.providerErrors, key)
+	m.hostCounts = hostCounts
 	m.captureVersionsLocked(cfg, definitions)
 	m.scheduleProviderLocked(stableID, definitions, time.Now())
 	m.status.ProjectionHash = m.store.Load().Revision()
@@ -562,6 +712,7 @@ func (m *Manager) Stop() error {
 	m.mu.Lock()
 	m.status = ManagerStatus{State: "stopped", CoreVersion: CoreVersion}
 	clear(m.providerErrors)
+	clear(m.hostCounts)
 	m.mu.Unlock()
 	m.releaseOwnership()
 	m.emit("info", "网关已停止")
@@ -578,7 +729,7 @@ func (m *Manager) rebuildProjection(cfg *MConfig.Config, definitions []ProviderD
 }
 
 func (m *Manager) buildProjection(cfg *MConfig.Config, definitions []ProviderDefinition) (*Snapshot, error) {
-	views, err := ProviderViews(cfg, definitions)
+	views, err := candidateProviderViews(cfg, definitions)
 	if err != nil {
 		return nil, err
 	}
@@ -620,6 +771,7 @@ func (m *Manager) pollProviders() {
 	}
 	now := time.Now()
 	changed := false
+	changedKeys := make(map[string]struct{})
 	for _, definition := range definitions {
 		key, _ := ProviderKey(definition.StableID)
 		m.mu.RLock()
@@ -651,7 +803,20 @@ func (m *Manager) pollProviders() {
 			m.scheduleProviderLocked(definition.StableID, definitions, now)
 			m.mu.Unlock()
 		}
-		if healthDue && provider != nil {
+		m.mu.RLock()
+		previousVersion := m.versions[key]
+		m.mu.RUnlock()
+		currentVersion := previousVersion
+		if provider != nil {
+			currentVersion = provider.Version()
+		}
+		hostError := providerHostError(provider)
+		if hostError != "" {
+			m.mu.Lock()
+			m.providerErrors[key] = hostError
+			m.mu.Unlock()
+		}
+		if healthDue && provider != nil && hostError == "" {
 			m.mu.RLock()
 			lastHealth := m.lastHealth[key]
 			m.mu.RUnlock()
@@ -665,11 +830,10 @@ func (m *Manager) pollProviders() {
 			m.scheduleHealthProviderLocked(definition.StableID, definitions, now)
 			m.mu.Unlock()
 		}
-		m.mu.RLock()
-		if provider != nil && m.versions[key] != provider.Version() {
+		if provider != nil && previousVersion != currentVersion {
 			changed = true
+			changedKeys[key] = struct{}{}
 		}
-		m.mu.RUnlock()
 	}
 	if !changed {
 		return
@@ -678,12 +842,56 @@ func (m *Manager) pollProviders() {
 		m.failClosedAsync(cfg, err)
 		return
 	}
-	if err := m.rebuildProjection(cfg, definitions); err != nil {
-		m.store.Store(EmptySnapshot())
-		m.fail(err)
+	hostResolver, hostCounts, err := buildProviderHostResolver(cfg.Providers, definitions)
+	if err != nil {
+		err = rejectProviderStates(cfg.Providers, changedKeys, err)
+		m.mu.Lock()
+		for key := range changedKeys {
+			m.providerErrors[key] = err.Error()
+		}
+		m.mu.Unlock()
+		m.emit("warn", "Provider hosts update rejected: "+err.Error())
 		return
 	}
+	candidate, err := m.buildProjection(cfg, definitions)
+	if err != nil {
+		err = rejectProviderStates(cfg.Providers, changedKeys, err)
+		m.mu.Lock()
+		for key := range changedKeys {
+			m.providerErrors[key] = err.Error()
+		}
+		m.mu.Unlock()
+		m.emit("warn", "Provider projection update rejected: "+err.Error())
+		return
+	}
+	providerTransaction, err := prepareProviderStates(cfg.Providers)
+	if err != nil {
+		err = providerTransaction.reject(err)
+		m.mu.Lock()
+		for key := range changedKeys {
+			m.providerErrors[key] = err.Error()
+		}
+		m.mu.Unlock()
+		m.emit("warn", "Provider cache update rejected: "+err.Error())
+		return
+	}
+	if err := providerTransaction.commit(); err != nil {
+		err = providerTransaction.reject(err)
+		m.mu.Lock()
+		for key := range changedKeys {
+			m.providerErrors[key] = err.Error()
+		}
+		m.mu.Unlock()
+		m.emit("warn", "Provider cache update rejected: "+err.Error())
+		return
+	}
+	replaceProviderRuntime(candidate, m.hostResolver, hostResolver, m.store)
+	providerTransaction.accept()
 	m.mu.Lock()
+	for key := range changedKeys {
+		delete(m.providerErrors, key)
+	}
+	m.hostCounts = hostCounts
 	m.captureVersionsLocked(cfg, definitions)
 	m.status.ProjectionHash = m.store.Load().Revision()
 	m.status.ProjectionCount = len(m.store.Load().Entries())
@@ -858,14 +1066,6 @@ func (m *Manager) stopHealthChecks() {
 	}
 }
 
-func applyProviderConfig(candidate *MConfig.Config) error {
-	if err := initializeProviders(candidate.Providers); err != nil {
-		return err
-	}
-	replaceProviderConfig(candidate)
-	return nil
-}
-
 func initializeProviders(providers map[string]P.ProxyProvider) error {
 	for name, provider := range providers {
 		if err := provider.Initial(); err != nil {
@@ -876,12 +1076,20 @@ func initializeProviders(providers map[string]P.ProxyProvider) error {
 	return nil
 }
 
-func replaceProviderConfig(candidate *MConfig.Config) {
+func replaceProviderConfig(candidate *MConfig.Config, runtimeResolver, candidateResolver *providerHostResolver) {
 	oldProviders := tunnel.Providers()
 	tunnel.OnSuspend()
+	runtimeResolver.replace(candidateResolver)
 	tunnel.UpdateProxies(candidate.Proxies, candidate.Providers)
 	tunnel.OnRunning()
 	closeProviders(oldProviders)
+}
+
+func replaceProviderRuntime(snapshot *Snapshot, runtimeResolver, candidateResolver *providerHostResolver, store *SnapshotStore) {
+	tunnel.OnSuspend()
+	runtimeResolver.replace(candidateResolver)
+	store.Store(snapshot)
+	tunnel.OnRunning()
 }
 
 func closeProviders(providers map[string]P.ProxyProvider) {
@@ -906,9 +1114,14 @@ func (m *Manager) shutdownCore(previous *MConfig.Config) {
 	// process-global log level while outbound finalizers may still be logging.
 	// Detach the only data-plane state this product installs instead. The
 	// controlled config guarantees there are no Mihomo proxy/TUN/DNS listeners
-	// to tear down, while existing connections may naturally retain old proxy
-	// references until the process exits.
+	// to tear down. Drain tracked connections before emptying the shared resolver
+	// snapshot so no old proxy can reconnect against a later Manager's mappings.
 	tunnel.OnSuspend()
+	statistic.DefaultManager.Range(func(connection statistic.Tracker) bool {
+		_ = connection.Close()
+		return true
+	})
+	m.hostResolver.replace(nil)
 	tunnel.UpdateRules(nil, nil, nil)
 	tunnel.UpdateProxies(map[string]C.Proxy{}, map[string]P.ProxyProvider{})
 	closeProviders(previous.Providers)

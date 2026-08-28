@@ -242,6 +242,7 @@ func (a *App) UpdateProvider(id string, provider Provider) (Provider, error) {
 		}
 		if provider.Type == "inline" && sameType && provider.Payload == nil {
 			provider.Payload = existing.Payload
+			provider.Hosts = existing.Hosts
 		}
 		if provider.HealthCheckURL == "" {
 			provider.HealthCheckURL = existing.HealthCheckURL
@@ -279,13 +280,15 @@ func normalizeProviderSource(provider *Provider) bool {
 	changed := false
 	switch provider.Type {
 	case "http":
-		changed = provider.FilePath != "" || provider.Payload != nil
+		changed = provider.FilePath != "" || provider.Payload != nil || provider.Hosts != nil
 		provider.FilePath = ""
 		provider.Payload = nil
+		provider.Hosts = nil
 	case "file":
-		changed = provider.URL != "" || provider.Payload != nil || provider.Headers != nil || provider.RefreshSeconds != 0 || provider.DownloadProxy != "" || provider.SizeLimit != 0
+		changed = provider.URL != "" || provider.Payload != nil || provider.Hosts != nil || provider.Headers != nil || provider.RefreshSeconds != 0 || provider.DownloadProxy != "" || provider.SizeLimit != 0
 		provider.URL = ""
 		provider.Payload = nil
+		provider.Hosts = nil
 		provider.Headers = nil
 		provider.RefreshSeconds = 0
 		provider.DownloadProxy = ""
@@ -359,6 +362,8 @@ func (a *App) ProviderRuntimeState(id string) (time.Time, string) {
 func (a *App) ProviderFilterState(id string) M.ProviderFilterReport {
 	return a.manager.ProviderFilterState(id)
 }
+
+func (a *App) ProviderHostsCount(id string) int { return a.manager.ProviderHostsCount(id) }
 
 func (a *App) UpdateSettings(settings Settings) error {
 	a.applyMu.Lock()
@@ -533,7 +538,7 @@ func definitions(config Config) []M.ProviderDefinition {
 			continue
 		}
 		result = append(result, M.ProviderDefinition{
-			StableID: provider.StableID, Name: provider.Name, Type: provider.Type, URL: provider.URL, FilePath: provider.FilePath, Payload: provider.Payload,
+			StableID: provider.StableID, Name: provider.Name, Type: provider.Type, URL: provider.URL, FilePath: provider.FilePath, Payload: provider.Payload, Hosts: provider.Hosts,
 			Headers: provider.Headers, RefreshSeconds: provider.RefreshSeconds, DownloadProxy: provider.DownloadProxy, SizeLimit: provider.SizeLimit,
 			HealthCheck: provider.HealthCheck, HealthCheckURL: provider.HealthCheckURL, HealthCheckSeconds: provider.HealthCheckSeconds,
 			HealthCheckTimeout: provider.HealthCheckTimeout, HealthCheckLazy: provider.HealthCheckLazy, ExpectedStatus: provider.ExpectedStatus,
@@ -735,12 +740,43 @@ func cloneConfig(config Config) Config {
 			for payloadIndex, item := range config.Providers[index].Payload {
 				clone.Providers[index].Payload[payloadIndex] = make(map[string]any, len(item))
 				for key, value := range item {
-					clone.Providers[index].Payload[payloadIndex][key] = value
+					clone.Providers[index].Payload[payloadIndex][key] = cloneAny(value)
 				}
 			}
 		}
+		if config.Providers[index].Hosts != nil {
+			clone.Providers[index].Hosts = cloneStringAnyMap(config.Providers[index].Hosts)
+		}
 	}
 	return clone
+}
+
+func cloneStringAnyMap(source map[string]any) map[string]any {
+	if source == nil {
+		return nil
+	}
+	clone := make(map[string]any, len(source))
+	for key, value := range source {
+		clone[key] = cloneAny(value)
+	}
+	return clone
+}
+
+func cloneAny(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneStringAnyMap(typed)
+	case []any:
+		clone := make([]any, len(typed))
+		for index := range typed {
+			clone[index] = cloneAny(typed[index])
+		}
+		return clone
+	case []string:
+		return append([]string(nil), typed...)
+	default:
+		return value
+	}
 }
 
 func assignProviderID(provider *Provider) {

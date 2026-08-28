@@ -126,7 +126,7 @@ async function submit() {
               <label class="field"><span>上传 Provider 文件{{ provider && provider.type === 'file' ? '（不选择则保持现有文件）' : '' }}</span><input data-testid="provider-file" type="file" accept=".yaml,.yml,.txt,.conf,text/yaml,application/yaml,text/plain" :required="!provider || provider.type !== 'file'" @change="form.file = $event.target.files?.[0] || null"><small>文件会以随机名称保存到 Mihomo 私有目录，最大 8 MiB；浏览器不会读取服务器文件路径。</small></label>
             </div>
             <div v-if="form.type === 'inline'" class="conditional">
-              <label class="field"><span>Mihomo Provider YAML{{ provider && provider.type === 'inline' ? '（留空保持现有值）' : '' }}</span><textarea v-model="form.payload" data-testid="provider-payload" spellcheck="false" placeholder="proxies:\n  - name: 节点名称\n    type: vless\n    server: example.com\n    port: 443\n    ..." :required="!provider || provider.type !== 'inline'" /><small>使用 Mihomo 格式，顶层必须包含非空的 proxies 列表。</small></label>
+              <label class="field"><span>Mihomo Provider YAML{{ provider && provider.type === 'inline' ? '（留空保持现有值）' : '' }}</span><textarea v-model="form.payload" data-testid="provider-payload" spellcheck="false" placeholder="proxies:\n  - name: 节点名称\n    type: vless\n    server: example.com\n    port: 443\n    ..." :required="!provider || provider.type !== 'inline'" /><small>使用 Mihomo 格式，顶层必须包含非空的 proxies 列表；与节点 server 匹配的 hosts 会自动应用。</small></label>
             </div>
             <div class="field-group">
               <div class="field-group-title"><b>节点筛选</b><span>可选 · 正则表达式</span></div>

@@ -197,6 +197,10 @@ func TestProviderStateMarksAllDialerProxyNodesUnavailable(t *testing.T) {
 }
 
 func TestControlledProviderFiltersWireGuardDialerProxyBeforeUse(t *testing.T) {
+	// Mihomo's log level is process-global and unsynchronised. Initialize the
+	// controlled core before constructing a WireGuard adapter whose shutdown
+	// workers may emit deferred logs after Close returns.
+	_ = runtimeManager(t)
 	home := shortTempDir(t)
 	definitions := []ProviderDefinition{{StableID: "warp-filter", Name: "WARP", Type: "inline", Payload: []map[string]any{
 		{"name": "Safe", "type": "direct"},

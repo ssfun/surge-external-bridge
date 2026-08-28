@@ -141,6 +141,7 @@ function runAction(provider, name) {
         <span v-if="provider.header_names?.length"><b>请求</b>{{ provider.header_names.length }} 个敏感 Header</span>
         <span v-if="hasSubscriptionInfo(provider)"><b>订阅</b>流量信息已同步</span>
       </div>
+      <div v-if="provider.hosts_count" class="provider-secondary"><span><b>Hosts</b>已应用 {{ provider.hosts_count }} 条代理服务器映射</span></div>
       <div v-if="updatedAt(provider)" class="provider-updated">最近更新 {{ formatDateTime(updatedAt(provider)) }}</div>
       <div v-if="provider.filtered_count" class="provider-filter-warning"><b>已过滤 {{ provider.filtered_count }} 个链式节点</b><span :title="filteredNodeLabel(provider)">{{ filteredNodeLabel(provider) }}</span></div>
       <div v-if="provider.last_error || provider.runtimeError" class="provider-error"><b>最近错误</b><span>{{ provider.last_error || provider.runtimeError }}</span></div>

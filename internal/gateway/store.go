@@ -86,6 +86,12 @@ func (s *Store) Load() (Config, error) {
 		config.SocksHost = legacy.VirtualHost
 		config.PolicyHost = legacy.VirtualHost
 		migrated = true
+	case 2:
+		if err := json.Unmarshal(data, &config); err != nil {
+			return Config{}, fmt.Errorf("decode gateway.json schema 2: %w", err)
+		}
+		config.SchemaVersion = SchemaVersion
+		migrated = true
 	case SchemaVersion:
 		if err := json.Unmarshal(data, &config); err != nil {
 			return Config{}, fmt.Errorf("decode gateway.json: %w", err)

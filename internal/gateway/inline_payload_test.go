@@ -11,7 +11,7 @@ func TestInlinePayloadAcceptsMihomoProviderYAML(t *testing.T) {
 		"name":    "Inline",
 		"type":    "inline",
 		"enabled": true,
-		"payload": "proxies:\n  - name: YAML Node\n    type: vless\n    server: 127.0.0.1\n    port: 443\n    uuid: 11111111-1111-4111-8111-111111111111\n    network: ws\n    ws-opts:\n      headers:\n        Host: example.com\n",
+		"payload": "proxies:\n  - name: YAML Node\n    type: vless\n    server: edge.example.com\n    port: 443\n    uuid: 11111111-1111-4111-8111-111111111111\n    network: ws\n    ws-opts:\n      headers:\n        Host: example.com\nhosts:\n  edge.example.com: origin.example.com\n",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -26,6 +26,9 @@ func TestInlinePayloadAcceptsMihomoProviderYAML(t *testing.T) {
 	wsOptions, ok := provider.Payload[0]["ws-opts"].(map[string]any)
 	if !ok || wsOptions["headers"] == nil {
 		t.Fatalf("nested Mihomo options were not retained: %#v", provider.Payload[0])
+	}
+	if provider.Hosts["edge.example.com"] != "origin.example.com" {
+		t.Fatalf("Mihomo hosts were not retained: %#v", provider.Hosts)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/metacubex/mihomo/component/resolver"
+	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/transport/socks5"
 	"github.com/metacubex/mihomo/tunnel"
 )
@@ -138,6 +141,80 @@ func TestNativeProviderRefreshProjectsSuccessAndRetainsLastSuccessOnFailure(t *t
 	}
 	if _, lastError = manager.ProviderState("p1"); lastError != "" {
 		t.Fatalf("successful refresh retained stale error %q", lastError)
+	}
+}
+
+func TestHTTPProviderHostsRefreshIsTransactionalAndKeepsOriginalServer(t *testing.T) {
+	manager := runtimeManager(t)
+	content := "proxies:\n  - name: Host Node\n    type: socks5\n    server: edge.example.com\n    port: 1080\nhosts:\n  edge.example.com: 192.0.2.10\n"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(content))
+	}))
+	defer upstream.Close()
+	definition := ProviderDefinition{StableID: "hosts-http", Name: "Hosts HTTP", Type: "http", URL: upstream.URL, RefreshSeconds: 3600}
+	if err := manager.ApplyProviders([]ProviderDefinition{definition}); err != nil {
+		t.Fatal(err)
+	}
+	initial := manager.Snapshot()
+	if len(initial.Entries()) != 1 || !strings.Contains(initial.Entries()[0].Proxy.Addr(), "edge.example.com") {
+		t.Fatalf("original proxy server was rewritten: %#v", initial.Entries())
+	}
+	assertRuntimeHostIP(t, manager, definition.StableID, "edge.example.com", "192.0.2.10")
+	resolverBeforeRefresh := resolver.ProxyServerHostResolver
+	stableRevision := initial.Revision()
+
+	content = "proxies:\n  - name: Rejected Host Node\n    type: socks5\n    server: edge.example.com\n    port: 1080\nhosts:\n  edge.example.com: [192.0.2.20, invalid.example.com]\n"
+	if err := manager.RefreshProvider(definition.StableID); err == nil {
+		t.Fatal("invalid matched hosts refresh was accepted")
+	}
+	if got := manager.Snapshot(); got.Revision() != stableRevision || got.Entries()[0].ProxyName != "Host Node" {
+		t.Fatalf("invalid hosts refresh replaced the last projection: %#v", got.Entries())
+	}
+	cache, err := os.ReadFile(C.Path.GetPathByHash("proxies", definition.URL))
+	if err != nil || !strings.Contains(string(cache), "192.0.2.10") || strings.Contains(string(cache), "invalid.example.com") {
+		t.Fatalf("invalid hosts refresh replaced the accepted restart cache: %v %q", err, cache)
+	}
+	assertRuntimeHostIP(t, manager, definition.StableID, "edge.example.com", "192.0.2.10")
+
+	content = "proxies:\n  - name: Host Node 2\n    type: socks5\n    server: edge.example.com\n    port: 1080\nhosts:\n  edge.example.com: 192.0.2.20\n"
+	if err := manager.RefreshProvider(definition.StableID); err != nil {
+		t.Fatal(err)
+	}
+	if resolver.ProxyServerHostResolver != resolverBeforeRefresh {
+		t.Fatal("Provider refresh replaced the live proxy-server resolver instead of swapping its immutable hosts snapshot")
+	}
+	if got := manager.Snapshot(); len(got.Entries()) != 1 || got.Entries()[0].ProxyName != "Host Node 2" {
+		t.Fatalf("valid hosts recovery was not projected: %#v", got.Entries())
+	}
+	assertRuntimeHostIP(t, manager, definition.StableID, "edge.example.com", "192.0.2.20")
+
+	conflicting := ProviderDefinition{
+		StableID: "hosts-conflict", Name: "Hosts Conflict", Type: "inline",
+		Payload: []map[string]any{{"name": "Conflict", "type": "socks5", "server": "edge.example.com", "port": 1081}},
+		Hosts:   map[string]any{"edge.example.com": "192.0.2.30"},
+	}
+	beforeConflict := manager.Snapshot().Revision()
+	if err := manager.ApplyProviders([]ProviderDefinition{definition, conflicting}); err == nil {
+		t.Fatal("conflicting Provider hosts were accepted")
+	}
+	if manager.Snapshot().Revision() != beforeConflict {
+		t.Fatal("conflicting Provider hosts replaced the live projection")
+	}
+	assertRuntimeHostIP(t, manager, definition.StableID, "edge.example.com", "192.0.2.20")
+}
+
+func assertRuntimeHostIP(t *testing.T, manager *Manager, stableID, host, want string) {
+	t.Helper()
+	if count := manager.ProviderHostsCount(stableID); count != 1 {
+		t.Fatalf("Provider hosts count=%d, want 1", count)
+	}
+	hostResolver, ok := resolver.ProxyServerHostResolver.(*providerHostResolver)
+	if !ok {
+		t.Fatalf("proxy server resolver = %T", resolver.ProxyServerHostResolver)
+	}
+	target, err := hostResolver.resolve(host)
+	if err != nil || len(target.ips) != 1 || target.ips[0] != netip.MustParseAddr(want) {
+		t.Fatalf("runtime host target = %#v, %v, want %s", target, err, want)
 	}
 }
 
@@ -595,6 +672,56 @@ func TestConfigureWhenStoppedReplacesAllRuntimeInputs(t *testing.T) {
 	}
 	if string(options.MasterKey) != "abcdefghijklmnopqrstuvwxyzABCDEF" || len(options.Providers) != 1 || options.Providers[0].Name != "Candidate" {
 		t.Fatalf("key or Providers were not defensively replaced: key=%q providers=%#v", options.MasterKey, options.Providers)
+	}
+}
+
+func TestManagerStopRestartKeepsProcessHostResolver(t *testing.T) {
+	if os.Getenv("SURGEEB_RESOLVER_LIFECYCLE_HELPER") == "" {
+		command := exec.Command(os.Args[0], "-test.run=^TestManagerStopRestartKeepsProcessHostResolver$", "-test.v")
+		command.Env = append(os.Environ(), "SURGEEB_RESOLVER_LIFECYCLE_HELPER=1")
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("resolver lifecycle helper failed: %v\n%s", err, output)
+		}
+		return
+	}
+	home, err := os.MkdirTemp("/tmp", "surgeeb-resolver-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(home)
+	port, err := freePort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewManager(ManagerOptions{
+		HomeDir: home, ControllerSocket: filepath.Join(home, "controller.sock"), ControllerSecret: "controller-secret",
+		SocksBind: "127.0.0.1", SocksAdvertise: "127.0.0.1", SocksPort: port,
+		MasterKey: []byte("01234567890123456789012345678901"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stable := resolver.ProxyServerHostResolver
+	if stable != sharedProviderHostResolver {
+		t.Fatalf("runtime resolver = %T %p, want shared %p", stable, stable, sharedProviderHostResolver)
+	}
+	if err := manager.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if resolver.ProxyServerHostResolver != stable {
+		t.Fatal("stopping the Manager replaced the process proxy-server resolver")
+	}
+	if err := manager.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if resolver.ProxyServerHostResolver != stable {
+		t.Fatal("restarting the Manager replaced the process proxy-server resolver")
+	}
+	if err := manager.Stop(); err != nil {
+		t.Fatal(err)
 	}
 }
 

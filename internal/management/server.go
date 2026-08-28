@@ -243,6 +243,7 @@ type publicProvider struct {
 	LastError          string     `json:"last_error,omitempty"`
 	FilteredCount      int        `json:"filtered_count,omitempty"`
 	FilteredNodes      []string   `json:"filtered_nodes,omitempty"`
+	HostsCount         int        `json:"hosts_count,omitempty"`
 }
 
 func makePublicProvider(provider gateway.Provider) publicProvider {
@@ -272,6 +273,7 @@ func (s *Server) providers(w http.ResponseWriter, _ *http.Request) {
 		}
 		item.LastError = lastError
 		filter := s.app.ProviderFilterState(provider.StableID)
+		item.HostsCount = s.app.ProviderHostsCount(provider.StableID)
 		item.FilteredCount = filter.FilteredCount()
 		for _, node := range filter.FilteredNodes {
 			item.FilteredNodes = append(item.FilteredNodes, node.Name)
