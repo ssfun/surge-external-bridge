@@ -43,6 +43,15 @@ PROCESS-NAME,SurgeEB,DIRECT
 
 ## 首次运行
 
+macOS 下载发行版后，先在二进制所在目录执行：
+
+```bash
+xattr -r -d com.apple.quarantine SurgeEB
+chmod +x SurgeEB
+```
+
+然后启动：
+
 ```bash
 ./SurgeEB serve
 ```
