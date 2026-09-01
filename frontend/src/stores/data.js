@@ -132,6 +132,13 @@ export const useDataStore = defineStore('data', {
       await api(`/api/providers/${encodeID(id)}`, { method: 'DELETE' })
       await this.reloadResources(['providers', 'nodes', 'overview'])
     },
+    async reorderProviders(providerIDs) {
+      await api('/api/providers/order', {
+        method: 'PUT',
+        body: JSON.stringify({ provider_ids: providerIDs }),
+      })
+      await this.reloadResources(['providers', 'nodes', 'overview'])
+    },
     async refreshProvider(id) {
       await api(`/api/providers/${encodeID(id)}/refresh`, { method: 'POST' })
       await this.reloadResources(['providers', 'nodes', 'overview'])

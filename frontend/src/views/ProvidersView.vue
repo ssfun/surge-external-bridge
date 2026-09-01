@@ -17,6 +17,7 @@ const busy = reactive(new Set())
 const dialogOpen = ref(false)
 const editing = ref(null)
 const menuOpen = ref('')
+const reordering = ref(false)
 const enabledCount = computed(() => providers.value.filter((provider) => provider.enabled).length)
 const errorCount = computed(() => providers.value.filter((provider) => provider.last_error || provider.runtimeError).length)
 
@@ -92,10 +93,26 @@ function runAction(provider, name) {
   menuOpen.value = ''
   return action(provider, name)
 }
+
+async function moveProvider(index, offset) {
+  const target = index + offset
+  if (reordering.value || target < 0 || target >= providers.value.length) return
+  const provider = providers.value[index]
+  const order = providers.value.map((item) => item.stable_id)
+  const targetID = order[target]
+  order[target] = order[index]
+  order[index] = targetID
+  reordering.value = true
+  try {
+    await data.reorderProviders(order)
+    ui.toast(`Provider“${provider.name}”已${offset < 0 ? '上移' : '下移'}，节点顺序已同步`)
+  } catch (error) { ui.toast(error.message, true) }
+  finally { reordering.value = false }
+}
 </script>
 
 <template>
-  <PageHeader eyebrow="PROVIDERS" title="订阅与节点来源" description="添加和管理节点来源；Mihomo 成功加载后会自动发布给 Surge。">
+  <PageHeader eyebrow="PROVIDERS" title="订阅与节点来源" description="添加和管理节点来源；Provider 从上到下决定最终节点的排列顺序。">
     <button class="button primary" type="button" @click="open()">添加 Provider</button>
   </PageHeader>
 
@@ -106,7 +123,7 @@ function runAction(provider, name) {
   </div>
 
   <div class="sub-list">
-    <article v-for="provider in providers" :key="provider.stable_id" class="sub-card" :class="{ off: !provider.enabled }" data-testid="provider-card" :data-provider-id="provider.stable_id">
+    <article v-for="(provider, index) in providers" :key="provider.stable_id" class="sub-card" :class="{ off: !provider.enabled }" data-testid="provider-card" :data-provider-id="provider.stable_id">
       <div class="provider-card-head">
         <div class="provider-identity">
           <div class="provider-title-line">
@@ -116,6 +133,11 @@ function runAction(provider, name) {
           <div class="provider-source"><span>{{ providerTypeLabel(provider.type) }}</span><code>{{ sourceLabel(provider) }}</code></div>
         </div>
         <div class="provider-actions">
+          <div class="provider-order" role="group" :aria-label="`调整 Provider“${provider.name}”的顺序，当前第 ${index + 1} 位`">
+            <span class="provider-position" :title="`当前第 ${index + 1} 位`">{{ index + 1 }}</span>
+            <button class="button ghost provider-order-button" type="button" :aria-label="`上移 Provider“${provider.name}”`" title="上移" :disabled="reordering || index === 0" @click="moveProvider(index, -1)">↑</button>
+            <button class="button ghost provider-order-button" type="button" :aria-label="`下移 Provider“${provider.name}”`" title="下移" :disabled="reordering || index === providers.length - 1" @click="moveProvider(index, 1)">↓</button>
+          </div>
           <button class="button ghost" type="button" :disabled="busy.has(provider.stable_id)" @click="open(provider)">编辑</button>
           <button v-if="provider.type !== 'inline' && provider.enabled" class="button ghost" type="button" :disabled="busy.has(provider.stable_id)" :aria-busy="busy.has(provider.stable_id)" @click="runAction(provider, 'refresh')">刷新</button>
           <div class="provider-menu" @click.stop @keydown.esc.prevent.stop="menuOpen = ''">

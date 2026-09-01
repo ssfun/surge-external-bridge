@@ -505,6 +505,7 @@ describe('component update boundaries', () => {
     data.nodes = [{ id: 'node-1', provider_id: 'inline-on' }]
     const router = testRouter(ProvidersView, 'providers')
     await router.push('/')
+    data.reorderProviders = vi.fn(async () => {})
     const wrapper = mount({ template: '<RouterView />' }, { global: { plugins: [pinia, router] } })
     const http = wrapper.get('[data-provider-id="http-off"]')
     const inline = wrapper.get('[data-provider-id="inline-on"]')
@@ -514,7 +515,12 @@ describe('component update boundaries', () => {
     expect(http.text()).toContain('筛选包含 香港 · 排除 过期')
     expect(http.text()).not.toContain('最近更新 —')
     expect(http.text()).not.toContain('暂无订阅流量信息')
-    expect(http.findAll('button').map((button) => button.text())).toEqual(['编辑', '更多'])
+    expect(http.findAll('button').map((button) => button.text())).toEqual(['↑', '↓', '编辑', '更多'])
+    expect(http.get('[aria-label="上移 Provider“主力订阅”"]').attributes('disabled')).toBeDefined()
+    expect(http.get('[aria-label="下移 Provider“主力订阅”"]').attributes('disabled')).toBeUndefined()
+    await http.get('[aria-label="下移 Provider“主力订阅”"]').trigger('click')
+    await vi.waitFor(() => expect(data.reorderProviders).toHaveBeenCalledWith(['inline-on', 'http-off']))
+    expect(wrapper.text()).toContain('Provider 从上到下决定最终节点的排列顺序')
 
     await http.get('.provider-more').trigger('click')
     expect(wrapper.get('.provider-menu-panel').text()).toContain('复制 URL / Header')

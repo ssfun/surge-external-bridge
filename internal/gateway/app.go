@@ -331,6 +331,81 @@ func (a *App) DeleteProvider(id string) error {
 	return nil
 }
 
+func (a *App) ReorderProviders(ids []string) error {
+	a.applyMu.Lock()
+	defer a.applyMu.Unlock()
+	a.mu.RLock()
+	previous := cloneConfig(a.config)
+	previousKey := append([]byte(nil), a.masterKey...)
+	a.mu.RUnlock()
+	providers, changed, err := reorderedProviders(previous.Providers, ids)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return nil
+	}
+	candidate := cloneConfig(previous)
+	candidate.Providers = providers
+	if err := ValidateConfig(candidate); err != nil {
+		return err
+	}
+	wasRunning := a.manager.Status().State == "running"
+	if wasRunning {
+		err = a.manager.ReorderProviders(definitions(candidate))
+	} else {
+		err = a.manager.StartWithProviders(definitions(candidate))
+	}
+	if err != nil {
+		if !wasRunning {
+			if restoreErr := a.restoreStoppedSettings(previous, previousKey); restoreErr != nil {
+				return errors.Join(err, fmt.Errorf("restore persisted stopped configuration: %w", restoreErr))
+			}
+		}
+		return err
+	}
+	if err := a.store.Save(candidate); err != nil {
+		var rollbackErr error
+		if wasRunning {
+			rollbackErr = a.manager.ReorderProviders(definitions(previous))
+		} else {
+			rollbackErr = a.restoreStoppedSettings(previous, previousKey)
+		}
+		return rollbackAfterPersistenceFailure(err, rollbackErr, a.manager.Stop)
+	}
+	a.mu.Lock()
+	a.config = cloneConfig(candidate)
+	a.mu.Unlock()
+	a.addEvent("info", "Provider 顺序已更新")
+	return nil
+}
+
+func reorderedProviders(providers []Provider, ids []string) ([]Provider, bool, error) {
+	if len(ids) != len(providers) {
+		return nil, false, errors.New("Provider order must include every Provider exactly once")
+	}
+	byID := make(map[string]Provider, len(providers))
+	for _, provider := range providers {
+		byID[provider.StableID] = provider
+	}
+	result := make([]Provider, 0, len(providers))
+	seen := make(map[string]struct{}, len(ids))
+	changed := false
+	for index, id := range ids {
+		provider, ok := byID[id]
+		if !ok {
+			return nil, false, fmt.Errorf("unknown Provider %q", id)
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return nil, false, fmt.Errorf("duplicate Provider %q", id)
+		}
+		seen[id] = struct{}{}
+		result = append(result, provider)
+		changed = changed || providers[index].StableID != id
+	}
+	return result, changed, nil
+}
+
 func (a *App) RefreshProvider(id string) error {
 	provider, _ := a.Provider(id)
 	err := a.manager.RefreshProvider(id)

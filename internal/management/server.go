@@ -55,6 +55,7 @@ func New(application *gateway.App) (*Server, error) {
 	mux.HandleFunc("GET /api/overview", server.authorize(server.overview))
 	mux.HandleFunc("GET /api/providers", server.authorize(server.providers))
 	mux.HandleFunc("POST /api/providers", server.authorize(server.addProvider))
+	mux.HandleFunc("PUT /api/providers/order", server.authorize(server.reorderProviders))
 	mux.HandleFunc("PUT /api/providers/{id}", server.authorize(server.updateProvider))
 	mux.HandleFunc("DELETE /api/providers/{id}", server.authorize(server.deleteProvider))
 	mux.HandleFunc("POST /api/providers/{id}/refresh", server.authorize(server.refreshProvider))
@@ -319,6 +320,25 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, makePublicProvider(updated))
+}
+
+func (s *Server) reorderProviders(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "cross-origin mutation is not allowed")
+		return
+	}
+	var request struct {
+		ProviderIDs []string `json:"provider_ids"`
+	}
+	if err := readJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.app.ReorderProviders(request.ProviderIDs); err != nil {
+		writeError(w, http.StatusBadRequest, s.publicError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) readProviderMutation(w http.ResponseWriter, r *http.Request) (provider gateway.Provider, uploadPath string, err error) {

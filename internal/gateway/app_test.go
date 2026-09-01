@@ -41,3 +41,26 @@ func TestPersistenceRollbackFailureStopsDataPlaneAndPreservesBothErrors(t *testi
 		t.Fatalf("combined rollback error = %v", err)
 	}
 }
+
+func TestReorderedProvidersRequiresAnExactPermutation(t *testing.T) {
+	providers := []Provider{{StableID: "first", Name: "First"}, {StableID: "second", Name: "Second"}, {StableID: "third", Name: "Third"}}
+	reordered, changed, err := reorderedProviders(providers, []string{"third", "first", "second"})
+	if err != nil || !changed {
+		t.Fatalf("valid reorder changed=%t err=%v", changed, err)
+	}
+	if got := []string{reordered[0].StableID, reordered[1].StableID, reordered[2].StableID}; strings.Join(got, ",") != "third,first,second" {
+		t.Fatalf("reordered IDs=%v", got)
+	}
+	for _, order := range [][]string{
+		{"first", "second"},
+		{"first", "first", "third"},
+		{"first", "second", "unknown"},
+	} {
+		if _, _, err := reorderedProviders(providers, order); err == nil {
+			t.Fatalf("invalid order %v was accepted", order)
+		}
+	}
+	if _, changed, err := reorderedProviders(providers, []string{"first", "second", "third"}); err != nil || changed {
+		t.Fatalf("unchanged order changed=%t err=%v", changed, err)
+	}
+}

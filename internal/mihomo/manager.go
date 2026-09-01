@@ -472,6 +472,42 @@ func (m *Manager) ApplyProviders(definitions []ProviderDefinition) error {
 	return nil
 }
 
+// ReorderProviders rebuilds only the product-owned projection from the
+// existing Mihomo Provider instances. A pure ordering change must not refetch
+// subscriptions or replace their runtime health/cache state.
+func (m *Manager) ReorderProviders(definitions []ProviderDefinition) error {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	m.mu.RLock()
+	cfg := m.config
+	running := m.listener != nil
+	masterKey := append([]byte(nil), m.options.MasterKey...)
+	advertise, port := m.options.SocksAdvertise, m.options.SocksPort
+	prefixProvider := m.options.PrefixProvider
+	m.mu.RUnlock()
+	if !running || cfg == nil {
+		return errors.New("Mihomo manager is not running")
+	}
+	views, err := ProviderViews(cfg, definitions)
+	if err != nil {
+		return err
+	}
+	candidate, err := BuildProjection(views, BuildOptions{
+		MasterKey: masterKey, SocksAdvertise: advertise, SocksPort: port, PrefixProvider: prefixProvider,
+	})
+	if err != nil {
+		return err
+	}
+	m.store.Store(candidate)
+	m.mu.Lock()
+	m.options.Providers = append([]ProviderDefinition(nil), definitions...)
+	m.status.ProjectionHash = candidate.Revision()
+	m.status.ProjectionCount = len(candidate.Entries())
+	m.status.LastError = ""
+	m.mu.Unlock()
+	return nil
+}
+
 func (m *Manager) StartWithProviders(definitions []ProviderDefinition) error {
 	m.applyMu.Lock()
 	defer m.applyMu.Unlock()

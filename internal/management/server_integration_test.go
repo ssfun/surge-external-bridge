@@ -196,6 +196,80 @@ func TestManagementProviderLifecycleAndMutationBoundaries(t *testing.T) {
 	}
 }
 
+func TestManagementProviderReorderControlsPublishedNodeOrder(t *testing.T) {
+	application, _, endpoint := testManagementServer(t, "management-token-1234567890")
+	defer application.Close()
+	add := func(name, node string) gateway.Provider {
+		provider, err := application.AddProvider(gateway.Provider{
+			Name: name, Type: "inline", Enabled: true,
+			Payload: []map[string]any{{
+				"name": node, "type": "vless", "server": "127.0.0.1", "port": 65530,
+				"uuid": "11111111-1111-4111-8111-111111111111", "network": "tcp", "tls": false,
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return provider
+	}
+	first := add("First Provider", "First Node")
+	second := add("Second Provider", "Second Node")
+	if got := application.Snapshot().Entries(); len(got) != 2 || got[0].ProviderID != first.StableID || got[1].ProviderID != second.StableID {
+		t.Fatalf("initial projection order=%#v", got)
+	}
+	request := func(origin string, body any) *http.Response {
+		payload, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req, err := http.NewRequest(http.MethodPut, endpoint+"/api/providers/order", bytes.NewReader(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer management-token-1234567890")
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", origin)
+		response, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	response := request(endpoint, map[string]any{"provider_ids": []string{second.StableID, first.StableID}})
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("reorder status=%d", response.StatusCode)
+	}
+	providers := application.Config().Providers
+	entries := application.Snapshot().Entries()
+	if len(providers) != 2 || providers[0].StableID != second.StableID || len(entries) != 2 || entries[0].ProviderID != second.StableID || entries[1].ProviderID != first.StableID {
+		t.Fatalf("persisted providers=%#v projection=%#v", providers, entries)
+	}
+	reorderEvents := 0
+	for _, event := range application.Events() {
+		if event.Message == "Provider 顺序已更新" {
+			reorderEvents++
+		}
+		if strings.Contains(event.Message, "reordered Mihomo Providers") {
+			t.Fatalf("runtime emitted a pre-persistence reorder success event: %#v", application.Events())
+		}
+	}
+	if reorderEvents != 1 {
+		t.Fatalf("durable reorder event count=%d, want 1", reorderEvents)
+	}
+
+	response = request(endpoint, map[string]any{"provider_ids": []string{second.StableID, second.StableID}})
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest || application.Config().Providers[0].StableID != second.StableID {
+		t.Fatalf("invalid reorder status=%d changed configuration", response.StatusCode)
+	}
+	response = request("https://attacker.example", map[string]any{"provider_ids": []string{first.StableID, second.StableID}})
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-origin reorder status=%d, want 403", response.StatusCode)
+	}
+}
+
 func TestManagementProviderFileUploadLifecycle(t *testing.T) {
 	application, _, endpoint := testManagementServer(t, "management-token-1234567890")
 	defer application.Close()
