@@ -369,6 +369,50 @@ describe('component update boundaries', () => {
     wrapper.unmount()
   })
 
+  it('submits an existing private file Provider after switching it to HTTP', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const data = useDataStore()
+    data.saveProvider = vi.fn(async () => {})
+    const provider = {
+      stable_id: 'private-file', name: '私有订阅', type: 'file', enabled: true,
+      refresh_seconds: 0, size_limit: 0, health_check: false,
+      health_check_seconds: 0, health_check_timeout: 0,
+    }
+    const wrapper = mount(ProviderDialog, { props: { open: true, provider }, global: { plugins: [pinia] } })
+    await nextTick()
+    await new DOMWrapper(document.querySelector('[data-testid="provider-type"]')).setValue('http')
+    await new DOMWrapper(document.querySelector('[data-testid="provider-url"]')).setValue('https://example.com/subscription')
+    const dialog = new DOMWrapper(document.querySelector('[role="dialog"]'))
+    const numbers = [...dialog.element.querySelectorAll('input[type="number"]')]
+    expect(numbers.find((input) => input.min === '60' && !input.disabled).value).toBe('21600')
+    expect(numbers.find((input) => input.min === '1024').value).toBe('16777216')
+    expect(dialog.element.checkValidity()).toBe(true)
+    await dialog.trigger('submit')
+    await vi.waitFor(() => expect(data.saveProvider).toHaveBeenCalledWith(expect.objectContaining({
+      name: '私有订阅', type: 'http', url: 'https://example.com/subscription',
+      refresh_seconds: 21600, size_limit: 16777216,
+    }), 'private-file'))
+    wrapper.unmount()
+  })
+
+  it('opens advanced options and shows an error for an invalid hidden control', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const wrapper = mount(ProviderDialog, { props: { open: true }, global: { plugins: [pinia] } })
+    await nextTick()
+    const details = document.querySelector('[data-testid="provider-options"]')
+    const sizeLimit = [...details.querySelectorAll('input[type="number"]')].find((input) => input.min === '1024')
+    sizeLimit.value = '1'
+    sizeLimit.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(details.open).toBe(false)
+    expect(document.querySelector('[role="dialog"]').checkValidity()).toBe(false)
+    await nextTick()
+    expect(details.open).toBe(true)
+    expect(document.querySelector('[role="alert"]').textContent).toContain('请检查表单')
+    wrapper.unmount()
+  })
+
   it('uploads a selected private Provider file instead of submitting a server path', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)

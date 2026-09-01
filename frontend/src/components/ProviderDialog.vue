@@ -14,21 +14,42 @@ const busy = ref(false)
 const submitError = ref('')
 let returnFocus = null
 
+const httpDefaults = { refresh_seconds: 21600, size_limit: 16777216 }
+const healthCheckDefaults = { health_check_seconds: 300, health_check_timeout: 5000 }
+
 const defaults = () => ({
   name: '', type: 'http', enabled: true, url: '', headers: '', file: null, payload: '',
-  refresh_seconds: 21600, download_proxy: '', size_limit: 16777216,
+  refresh_seconds: httpDefaults.refresh_seconds, download_proxy: '', size_limit: httpDefaults.size_limit,
   include_name: '', exclude_name: '', health_check: true,
-  health_check_url: 'https://www.gstatic.com/generate_204', health_check_seconds: 300,
-  health_check_timeout: 5000, health_check_lazy: true, expected_status: '200-399',
+  health_check_url: 'https://www.gstatic.com/generate_204', health_check_seconds: healthCheckDefaults.health_check_seconds,
+  health_check_timeout: healthCheckDefaults.health_check_timeout, health_check_lazy: true, expected_status: '200-399',
 })
 const form = reactive(defaults())
+
+function ensureActiveDefaults() {
+  if (form.type === 'http') {
+    const refreshSeconds = Number(form.refresh_seconds)
+    if (!Number.isFinite(refreshSeconds) || refreshSeconds < 60) form.refresh_seconds = httpDefaults.refresh_seconds
+    const sizeLimit = Number(form.size_limit)
+    if (!Number.isFinite(sizeLimit) || sizeLimit < 1024 || sizeLimit > 134217728) form.size_limit = httpDefaults.size_limit
+  }
+  if (form.health_check) {
+    const healthCheckSeconds = Number(form.health_check_seconds)
+    if (!Number.isFinite(healthCheckSeconds) || healthCheckSeconds < 60) form.health_check_seconds = healthCheckDefaults.health_check_seconds
+    const timeout = Number(form.health_check_timeout)
+    if (!Number.isFinite(timeout) || timeout < 100 || timeout > 120000) form.health_check_timeout = healthCheckDefaults.health_check_timeout
+  }
+}
 
 function resetForm() {
   Object.assign(form, defaults(), props.provider || {}, {
     url: '', headers: '', file: null, payload: '',
     health_check_url: props.provider ? '' : (props.provider?.health_check_url || 'https://www.gstatic.com/generate_204'),
   })
+  ensureActiveDefaults()
 }
+
+watch([() => form.type, () => form.health_check], ensureActiveDefaults, { flush: 'sync' })
 
 watch(() => props.open, async (open) => {
   if (!open) return
@@ -52,6 +73,13 @@ function trapFocus(event) {
   const last = items.at(-1)
   if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
   else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+}
+
+function revealInvalidControl(event) {
+  const control = event.target
+  const details = control instanceof HTMLElement ? control.closest('details') : null
+  if (details) details.open = true
+  submitError.value = '请检查表单中标出的字段'
 }
 
 async function reveal() {
@@ -104,6 +132,7 @@ async function submit() {
         aria-describedby="provider-dialog-description"
         tabindex="-1"
         @submit.prevent="submit"
+        @invalid.capture="revealInvalidControl"
         @keydown.esc.prevent.stop="close"
         @keydown.tab="trapFocus"
       >
@@ -147,8 +176,8 @@ async function submit() {
                 <label class="field"><span>请求 Header JSON{{ provider && provider.type === 'http' ? '（留空保持现有值）' : '' }}</span><textarea v-model="form.headers" spellcheck="false" placeholder='{"User-Agent":["SurgeEB"]}' /><small>仅允许 User-Agent、Accept 与 Accept-Language；Authorization、Cookie 和 URL userinfo 会因重定向泄密风险被拒绝。</small></label>
                 <button v-if="provider && provider.type === 'http'" type="button" class="button ghost compact" @click="reveal">读取现有 URL / Header</button>
                 <div class="form-grid advanced-grid">
-                  <label class="field"><span>刷新间隔（秒）</span><input v-model="form.refresh_seconds" type="number" min="60"></label>
-                  <label class="field"><span>响应上限（字节）</span><input v-model="form.size_limit" type="number" min="1024" max="134217728"></label>
+                  <label class="field"><span>刷新间隔（秒）</span><input v-model="form.refresh_seconds" type="number" min="60" :disabled="form.type !== 'http'"></label>
+                  <label class="field"><span>响应上限（字节）</span><input v-model="form.size_limit" type="number" min="1024" max="134217728" :disabled="form.type !== 'http'"></label>
                 </div>
                 <label class="field"><span>下载所用代理</span><input v-model="form.download_proxy" placeholder="留空使用 DIRECT"><small>填写 Mihomo 中已有的 Proxy 名称。</small></label>
               </section>
@@ -157,10 +186,10 @@ async function submit() {
                 <label class="check-row"><input v-model="form.health_check" type="checkbox"> 启用自动健康检查</label>
                 <div v-show="form.health_check" class="conditional health-options">
                   <div class="form-grid">
-                    <label class="field"><span>检查 URL{{ provider ? '（留空保持现有值）' : '' }}</span><input v-model="form.health_check_url" type="url"></label>
-                    <label class="field"><span>间隔（秒）</span><input v-model="form.health_check_seconds" type="number" min="60"></label>
-                    <label class="field"><span>超时（毫秒）</span><input v-model="form.health_check_timeout" type="number" min="100" max="120000"></label>
-                    <label class="field"><span>期望状态码</span><input v-model="form.expected_status"></label>
+                    <label class="field"><span>检查 URL{{ provider ? '（留空保持现有值）' : '' }}</span><input v-model="form.health_check_url" type="url" :disabled="!form.health_check"></label>
+                    <label class="field"><span>间隔（秒）</span><input v-model="form.health_check_seconds" type="number" min="60" :disabled="!form.health_check"></label>
+                    <label class="field"><span>超时（毫秒）</span><input v-model="form.health_check_timeout" type="number" min="100" max="120000" :disabled="!form.health_check"></label>
+                    <label class="field"><span>期望状态码</span><input v-model="form.expected_status" :disabled="!form.health_check"></label>
                   </div>
                   <label class="check-row"><input v-model="form.health_check_lazy" type="checkbox"> Lazy：只在需要时主动检查</label>
                 </div>
