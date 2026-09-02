@@ -37,6 +37,7 @@ type Config struct {
 type Provider struct {
 	StableID           string              `json:"-"`
 	Name               string              `json:"name"`
+	Prefix             string              `json:"prefix,omitempty"`
 	Type               string              `json:"type"`
 	URL                string              `json:"url,omitempty"`
 	FilePath           string              `json:"file_path,omitempty"`

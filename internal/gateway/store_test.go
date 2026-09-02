@@ -137,6 +137,7 @@ func TestStoreMigratesSchemaTwoAndRetainsInlineHostsInSchemaThree(t *testing.T) 
 	}
 
 	loaded.Providers[0].Hosts = map[string]any{"edge.example.com": "origin.example.com"}
+	loaded.Providers[0].Prefix = "机场前缀"
 	if err := NewStore(dir).Save(loaded); err != nil {
 		t.Fatal(err)
 	}
@@ -146,6 +147,9 @@ func TestStoreMigratesSchemaTwoAndRetainsInlineHostsInSchemaThree(t *testing.T) 
 	}
 	if reloaded.Providers[0].Hosts["edge.example.com"] != "origin.example.com" {
 		t.Fatalf("inline hosts were not retained: %#v", reloaded.Providers[0].Hosts)
+	}
+	if reloaded.Providers[0].Prefix != "机场前缀" {
+		t.Fatalf("Provider prefix was not retained: %#v", reloaded.Providers[0])
 	}
 }
 

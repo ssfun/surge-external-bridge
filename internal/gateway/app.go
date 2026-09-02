@@ -613,7 +613,7 @@ func definitions(config Config) []M.ProviderDefinition {
 			continue
 		}
 		result = append(result, M.ProviderDefinition{
-			StableID: provider.StableID, Name: provider.Name, Type: provider.Type, URL: provider.URL, FilePath: provider.FilePath, Payload: provider.Payload, Hosts: provider.Hosts,
+			StableID: provider.StableID, Name: provider.Name, Prefix: provider.Prefix, Type: provider.Type, URL: provider.URL, FilePath: provider.FilePath, Payload: provider.Payload, Hosts: provider.Hosts,
 			Headers: provider.Headers, RefreshSeconds: provider.RefreshSeconds, DownloadProxy: provider.DownloadProxy, SizeLimit: provider.SizeLimit,
 			HealthCheck: provider.HealthCheck, HealthCheckURL: provider.HealthCheckURL, HealthCheckSeconds: provider.HealthCheckSeconds,
 			HealthCheckTimeout: provider.HealthCheckTimeout, HealthCheckLazy: provider.HealthCheckLazy, ExpectedStatus: provider.ExpectedStatus,
@@ -856,6 +856,7 @@ func cloneAny(value any) any {
 
 func assignProviderID(provider *Provider) {
 	provider.Name = strings.TrimSpace(provider.Name)
+	provider.Prefix = strings.TrimSpace(provider.Prefix)
 	provider.StableID = stableProviderID(provider.Name)
 }
 

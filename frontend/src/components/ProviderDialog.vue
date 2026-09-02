@@ -18,7 +18,7 @@ const httpDefaults = { refresh_seconds: 21600, size_limit: 16777216 }
 const healthCheckDefaults = { health_check_seconds: 300, health_check_timeout: 5000 }
 
 const defaults = () => ({
-  name: '', type: 'http', enabled: true, url: '', headers: '', file: null, payload: '',
+  name: '', prefix: '', type: 'http', enabled: true, url: '', headers: '', file: null, payload: '',
   refresh_seconds: httpDefaults.refresh_seconds, download_proxy: '', size_limit: httpDefaults.size_limit,
   include_name: '', exclude_name: '', health_check: true,
   health_check_url: 'https://www.gstatic.com/generate_204', health_check_seconds: healthCheckDefaults.health_check_seconds,
@@ -99,7 +99,7 @@ async function submit() {
     const headersText = form.headers.trim()
     const payloadText = form.payload.trim()
     const body = {
-      name: form.name, type: form.type, url: form.url, enabled: form.enabled,
+      name: form.name, prefix: form.prefix, type: form.type, url: form.url, enabled: form.enabled,
       headers: headersText ? JSON.parse(headersText) : undefined,
       payload: payloadText || undefined,
       refresh_seconds: Number(form.refresh_seconds), download_proxy: form.download_proxy,
@@ -148,6 +148,7 @@ async function submit() {
               <label class="field"><span>名称</span><input ref="nameInput" v-model="form.name" required autocomplete="off"></label>
               <label class="field"><span>来源类型</span><span class="select-control"><select v-model="form.type" data-testid="provider-type"><option value="http">HTTP 订阅</option><option value="file">私有文件</option><option value="inline">Inline payload</option></select></span></label>
             </div>
+            <label class="field"><span>节点名 Provider 前缀</span><input v-model="form.prefix" data-testid="provider-prefix" placeholder="留空使用配置名称" autocomplete="off"><small>仅改变 Surge 中的节点展示名；留空时使用上方名称，填写后使用此值作为 Provider 前缀。</small></label>
             <div v-if="form.type === 'http'" class="conditional">
               <label class="field"><span>订阅 URL{{ provider && provider.type === 'http' ? '（留空保持现有值）' : '' }}</span><input v-model="form.url" data-testid="provider-url" type="url" placeholder="https://example.com/subscription" autocomplete="off" :required="!provider || provider.type !== 'http'"><small>支持 Clash YAML、URI 列表与 Base64 URI。</small></label>
             </div>

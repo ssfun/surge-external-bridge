@@ -112,7 +112,7 @@ func TestManagementProviderLifecycleAndMutationBoundaries(t *testing.T) {
 		return response
 	}
 	payload, err := json.Marshal(map[string]any{
-		"name": "Lifecycle", "type": "inline", "enabled": true,
+		"name": "Lifecycle", "prefix": "LC", "type": "inline", "enabled": true,
 		"payload": "proxies:\n  - name: Lifecycle Node\n    type: vless\n    server: 127.0.0.1\n    port: 65530\n    uuid: 11111111-1111-4111-8111-111111111111\n    network: tcp\n    tls: false\n  - name: Lifecycle Chained\n    type: socks5\n    server: 127.0.0.1\n    port: 1081\n    dialer-proxy: 链式代理规则\n",
 	})
 	if err != nil {
@@ -130,7 +130,7 @@ func TestManagementProviderLifecycleAndMutationBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = response.Body.Close()
-	if created.StableID == "" || len(application.Snapshot().Entries()) != 1 {
+	if created.StableID == "" || created.Prefix != "LC" || len(application.Snapshot().Entries()) != 1 || application.Snapshot().Entries()[0].DisplayName != "LC · Lifecycle Node" {
 		t.Fatalf("created Provider was not projected: %#v", created)
 	}
 	response = request(http.MethodGet, "/api/providers", nil, "")

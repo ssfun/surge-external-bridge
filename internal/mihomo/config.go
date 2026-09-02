@@ -20,6 +20,7 @@ var stableIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,80}$`)
 type ProviderDefinition struct {
 	StableID           string
 	Name               string
+	Prefix             string
 	Type               string
 	URL                string
 	FilePath           string
@@ -243,7 +244,7 @@ func providerViews(cfg *MConfig.Config, definitions []ProviderDefinition, candid
 			proxies = providerCandidateProxies(provider)
 		}
 		views = append(views, ProviderView{
-			StableID: definition.StableID, Name: definition.Name, Proxies: proxies,
+			StableID: definition.StableID, Name: definition.Name, Prefix: definition.Prefix, Proxies: proxies,
 			IncludeName: definition.IncludeName, ExcludeName: definition.ExcludeName, IncludeTypes: definition.IncludeTypes,
 		})
 	}

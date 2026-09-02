@@ -31,6 +31,7 @@ var (
 type ProviderView struct {
 	StableID     string
 	Name         string
+	Prefix       string
 	Proxies      []C.Proxy
 	IncludeName  string
 	ExcludeName  string
@@ -208,8 +209,12 @@ func BuildProjection(providers []ProviderView, options BuildOptions) (*Snapshot,
 				SupportUOT:   proxy.SupportUOT(),
 				Info:         proxy.ProxyInfo(),
 			}
-			if options.PrefixProvider && provider.Name != "" {
-				entry.DisplayName = surgeDisplayName(provider.Name + " · " + proxy.Name())
+			if options.PrefixProvider {
+				prefix := strings.TrimSpace(provider.Prefix)
+				if prefix == "" {
+					prefix = providerName
+				}
+				entry.DisplayName = surgeDisplayName(prefix + " · " + proxy.Name())
 			} else {
 				entry.DisplayName = surgeDisplayName(proxy.Name())
 			}

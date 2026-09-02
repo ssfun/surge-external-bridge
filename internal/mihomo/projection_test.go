@@ -75,6 +75,30 @@ func TestProjectionIdentityIsStableAcrossProxyReplacement(t *testing.T) {
 	}
 }
 
+func TestProjectionUsesConfiguredProviderPrefixWithoutChangingIdentity(t *testing.T) {
+	key := make([]byte, 32)
+	proxy := &fakeProxy{name: "香港 01", adapterType: C.Vless, udp: true}
+	options := BuildOptions{
+		MasterKey: key, SocksAdvertise: "127.0.0.1", SocksPort: 1080, PrefixProvider: true,
+	}
+	fallback, err := BuildProjection([]ProviderView{{StableID: "provider-id", Name: "配置名称", Proxies: []C.Proxy{proxy}}}, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configured, err := BuildProjection([]ProviderView{{StableID: "provider-id", Name: "配置名称", Prefix: "机场前缀", Proxies: []C.Proxy{proxy}}}, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallbackEntry := fallback.Entries()[0]
+	configuredEntry := configured.Entries()[0]
+	if fallbackEntry.DisplayName != "配置名称 · 香港 01" || configuredEntry.DisplayName != "机场前缀 · 香港 01" {
+		t.Fatalf("unexpected Provider prefixes: fallback=%q configured=%q", fallbackEntry.DisplayName, configuredEntry.DisplayName)
+	}
+	if fallbackEntry.Username != configuredEntry.Username || fallbackEntry.Password != configuredEntry.Password || fallbackEntry.PublicID != configuredEntry.PublicID {
+		t.Fatal("changing only the Provider display prefix changed the projected node identity")
+	}
+}
+
 func TestProjectionEntryAtomicallyCarriesPublishedSOCKSEndpoint(t *testing.T) {
 	proxy := &fakeProxy{name: "node", adapterType: C.Vless}
 	providers := []ProviderView{{StableID: "p", Name: "Provider", Proxies: []C.Proxy{proxy}}}

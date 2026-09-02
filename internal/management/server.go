@@ -224,6 +224,7 @@ func (s *Server) overview(w http.ResponseWriter, _ *http.Request) {
 type publicProvider struct {
 	StableID           string     `json:"stable_id"`
 	Name               string     `json:"name"`
+	Prefix             string     `json:"prefix,omitempty"`
 	Type               string     `json:"type"`
 	URL                string     `json:"url,omitempty"`
 	FilePath           string     `json:"file_path,omitempty"`
@@ -253,7 +254,7 @@ func makePublicProvider(provider gateway.Provider) publicProvider {
 		names = append(names, name)
 	}
 	return publicProvider{
-		StableID: provider.StableID, Name: provider.Name, Type: provider.Type, URL: redactURL(provider.URL),
+		StableID: provider.StableID, Name: provider.Name, Prefix: provider.Prefix, Type: provider.Type, URL: redactURL(provider.URL),
 		FilePath: "", Enabled: provider.Enabled, HeaderNames: names, RefreshSeconds: provider.RefreshSeconds,
 		SizeLimit: provider.SizeLimit, IncludeName: provider.IncludeName, ExcludeName: provider.ExcludeName,
 		DownloadProxy: provider.DownloadProxy,
