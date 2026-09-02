@@ -33,7 +33,7 @@ func TestValidateConfigNetworkBoundaries(t *testing.T) {
 	validGateway.SocksHost = "192.168.50.10"
 	validGateway.PolicyHost = "policy.surge.eb"
 	validGateway.ManagementToken = "management-token-1234"
-	validGateway.PolicyToken = "policy-token-12345678"
+	validGateway.PolicyPaths[0].Token = "policy-token-12345678"
 
 	tests := []struct {
 		name    string
@@ -66,10 +66,14 @@ func TestValidateConfigNetworkBoundaries(t *testing.T) {
 		{name: "UDP overflowing port", config: func() Config { c := validLocal; c.NodeTestUDP = "8.8.8.8:65536"; return c }(), wantErr: true},
 		{name: "local public SOCKS IP", config: func() Config { c := validLocal; c.SocksHost = "8.8.8.8"; return c }(), wantErr: true},
 		{name: "local public Policy IP", config: func() Config { c := validLocal; c.PolicyHost = "8.8.8.8"; return c }(), wantErr: true},
-		{name: "gateway missing tokens", config: func() Config { c := validGateway; c.ManagementToken, c.PolicyToken = "", ""; return c }(), wantErr: true},
-		{name: "gateway unsafe policy token", config: func() Config { c := validGateway; c.PolicyToken = "unsafe"; return c }(), wantErr: true},
-		{name: "gateway short custom policy token", config: func() Config { c := validGateway; c.PolicyToken = "short"; return c }(), wantErr: true},
-		{name: "gateway shared token", config: func() Config { c := validGateway; c.PolicyToken = c.ManagementToken; return c }(), wantErr: true},
+		{name: "gateway missing tokens", config: func() Config {
+			c := cloneConfig(validGateway)
+			c.ManagementToken, c.PolicyPaths[0].Token = "", ""
+			return c
+		}(), wantErr: true},
+		{name: "gateway unsafe policy token", config: func() Config { c := cloneConfig(validGateway); c.PolicyPaths[0].Token = "unsafe"; return c }(), wantErr: true},
+		{name: "gateway short custom policy token", config: func() Config { c := cloneConfig(validGateway); c.PolicyPaths[0].Token = "short"; return c }(), wantErr: true},
+		{name: "gateway shared token", config: func() Config { c := cloneConfig(validGateway); c.PolicyPaths[0].Token = c.ManagementToken; return c }(), wantErr: true},
 		{name: "gateway public SOCKS IP", config: func() Config { c := validGateway; c.SocksHost = "8.8.8.8"; return c }(), wantErr: true},
 		{name: "gateway public Policy IP", config: func() Config { c := validGateway; c.PolicyHost = "8.8.8.8"; return c }(), wantErr: true},
 		{name: "unspecified SOCKS IP", config: func() Config { c := validGateway; c.SocksHost = "0.0.0.0"; return c }(), wantErr: true},
@@ -109,7 +113,7 @@ func TestAllowsHTTPHost(t *testing.T) {
 	gateway.HTTPBind = "0.0.0.0:18080"
 	gateway.SocksBind = "0.0.0.0"
 	gateway.ManagementToken = "management-token-1234"
-	gateway.PolicyToken = "policy-token-12345678"
+	gateway.PolicyPaths[0].Token = "policy-token-12345678"
 
 	tests := []struct {
 		name, host string

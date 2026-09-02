@@ -39,6 +39,7 @@ async function copyPolicy() {
   >
     <button v-if="overview.provider_count" class="button" type="button" @click="router.push({ name: 'providers' })">查看订阅</button>
     <button v-else class="button primary" type="button" @click="dialogOpen = true">添加第一个 Provider</button>
+    <button v-if="overview.provider_count" class="button" type="button" @click="router.push({ name: 'policyPaths' })">管理 Policy Path</button>
     <button v-if="overview.projection_count" class="button primary" type="button" @click="copyPolicy">复制 Surge 配置</button>
   </PageHeader>
 
@@ -70,7 +71,7 @@ async function copyPolicy() {
 
   <div class="grid two section-gap">
     <div class="card">
-      <div class="code-head"><span>Surge Policy Path</span><button v-if="overview.projection_count" class="button ghost compact" type="button" @click="copyPolicy">复制配置</button><span v-else>有可用节点后即可复制</span></div>
+      <div class="code-head"><span>默认 Surge Policy Path · 共 {{ overview.policy_path_count || 1 }} 条</span><button v-if="overview.projection_count" class="button ghost compact" type="button" @click="copyPolicy">复制配置</button><span v-else>有可用节点后即可复制</span></div>
       <pre>{{ snippet }}</pre>
     </div>
     <div class="card">

@@ -14,6 +14,96 @@ import (
 	M "github.com/ssfun/surge-external-bridge/internal/mihomo"
 )
 
+func newRunningTestApp(t *testing.T) *App {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "seb-policy-path-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	config := mustDefaultConfig(t)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.SocksPort = uint16(listener.Addr().(*net.TCPAddr).Port)
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(dir)
+	if _, err := store.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(config); err != nil {
+		t.Fatal(err)
+	}
+	application, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+	return application
+}
+
+func TestSettingsPatchPreservesTokenRotatedAfterStaleSettingsRead(t *testing.T) {
+	application := newRunningTestApp(t)
+	settings := application.Config().Settings()
+	settings.PolicyToken = "original-policy-token-1234"
+	if err := application.UpdateSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	stale := application.Config().Settings()
+	rotated, err := application.RegeneratePolicyPathToken(DefaultPolicyPathID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale.NodeTestTimeout++
+	if err := application.UpdateSettingsPatch(stale, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	current := application.Config().Settings()
+	if current.PolicyToken != rotated.Token {
+		t.Fatalf("settings patch restored stale Policy Token %q; want rotated %q", current.PolicyToken, rotated.Token)
+	}
+	if current.NodeTestTimeout != stale.NodeTestTimeout {
+		t.Fatalf("non-secret settings patch was not applied: timeout=%d, want %d", current.NodeTestTimeout, stale.NodeTestTimeout)
+	}
+}
+
+func TestPolicyPathPublicationWaitsForConfigApply(t *testing.T) {
+	application := newRunningTestApp(t)
+	application.applyMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			application.applyMu.Unlock()
+		}
+	}()
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		_, _, err := application.ProxiesForPath(DefaultPolicyPathID)
+		done <- err
+	}()
+	<-started
+	select {
+	case err := <-done:
+		t.Fatalf("Policy Path publication escaped an in-progress config apply: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	application.applyMu.Unlock()
+	locked = false
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Policy Path publication did not resume after config apply completed")
+	}
+}
+
 func TestConfiguredProjectionIdentityMatchesAcrossIndependentApps(t *testing.T) {
 	waitEntry := func(application *App) M.Entry {
 		t.Helper()

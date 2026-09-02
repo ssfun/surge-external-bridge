@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -137,6 +138,8 @@ func (a *App) Events() []Event {
 
 func (a *App) Providers() []Provider { return a.Config().Providers }
 
+func (a *App) PolicyPaths() []PolicyPath { return a.Config().PolicyPaths }
+
 func (a *App) Provider(id string) (Provider, bool) {
 	for _, provider := range a.Providers() {
 		if provider.StableID == id {
@@ -144,6 +147,10 @@ func (a *App) Provider(id string) (Provider, bool) {
 		}
 	}
 	return Provider{}, false
+}
+
+func (a *App) PolicyPath(id string) (PolicyPath, bool) {
+	return a.Config().PolicyPath(id)
 }
 
 func (a *App) Node(id string) (M.Entry, bool) { return a.manager.Snapshot().EntryByID(id) }
@@ -260,6 +267,9 @@ func (a *App) UpdateProvider(id string, provider Provider) (Provider, error) {
 		if err := validateProvider(provider); err != nil {
 			return Provider{}, err
 		}
+		if existing.StableID != provider.StableID {
+			replacePolicyPathProviderID(candidate.PolicyPaths, existing.StableID, provider.StableID)
+		}
 		candidate.Providers[index] = provider
 		found = true
 		break
@@ -324,10 +334,148 @@ func (a *App) DeleteProvider(id string) error {
 		return errors.New("Provider not found")
 	}
 	candidate.Providers = append(candidate.Providers[:index], candidate.Providers[index+1:]...)
+	removePolicyPathProviderID(candidate.PolicyPaths, id)
 	if err := a.applyConfig(candidate); err != nil {
 		return err
 	}
 	_ = a.DiscardProviderUpload(filePath)
+	return nil
+}
+
+func (a *App) AddPolicyPath(path PolicyPath) (PolicyPath, error) {
+	a.applyMu.Lock()
+	defer a.applyMu.Unlock()
+	a.mu.RLock()
+	candidate := cloneConfig(a.config)
+	a.mu.RUnlock()
+
+	if strings.TrimSpace(path.Name) == "" {
+		return PolicyPath{}, errors.New("Policy Path name is required")
+	}
+	if !path.IncludeAll && len(path.ProviderIDs) == 0 {
+		return PolicyPath{}, errors.New("Policy Path must include at least one Provider")
+	}
+	allocated := false
+	for attempts := 0; attempts < 8; attempts++ {
+		value, err := randomToken()
+		if err != nil {
+			return PolicyPath{}, err
+		}
+		path.StableID = "pp_" + value
+		if _, exists := candidate.PolicyPath(path.StableID); !exists {
+			allocated = true
+			break
+		}
+	}
+	if !allocated {
+		return PolicyPath{}, errors.New("could not allocate Policy Path identity")
+	}
+	if path.Token == "" {
+		for {
+			token, err := randomToken()
+			if err != nil {
+				return PolicyPath{}, err
+			}
+			path.Token = token
+			if policyPathTokenAvailable(candidate, path.Token, "") {
+				break
+			}
+		}
+	}
+	normalizePolicyPathSelection(&path, candidate.Providers)
+	candidate.PolicyPaths = append(candidate.PolicyPaths, path)
+	if err := a.savePolicyPaths(candidate, "Policy Path 已添加"); err != nil {
+		return PolicyPath{}, err
+	}
+	return path, nil
+}
+
+func (a *App) UpdatePolicyPath(id string, path PolicyPath) (PolicyPath, error) {
+	a.applyMu.Lock()
+	defer a.applyMu.Unlock()
+	a.mu.RLock()
+	candidate := cloneConfig(a.config)
+	a.mu.RUnlock()
+	if strings.TrimSpace(path.Name) == "" {
+		return PolicyPath{}, errors.New("Policy Path name is required")
+	}
+	if !path.IncludeAll && len(path.ProviderIDs) == 0 {
+		return PolicyPath{}, errors.New("Policy Path must include at least one Provider")
+	}
+	for index := range candidate.PolicyPaths {
+		if candidate.PolicyPaths[index].StableID != id {
+			continue
+		}
+		path.StableID = id
+		path.Token = candidate.PolicyPaths[index].Token
+		normalizePolicyPathSelection(&path, candidate.Providers)
+		candidate.PolicyPaths[index] = path
+		if err := a.savePolicyPaths(candidate, "Policy Path 已更新"); err != nil {
+			return PolicyPath{}, err
+		}
+		return path, nil
+	}
+	return PolicyPath{}, errors.New("Policy Path not found")
+}
+
+func (a *App) DeletePolicyPath(id string) error {
+	if id == DefaultPolicyPathID {
+		return errors.New("default Policy Path cannot be deleted")
+	}
+	a.applyMu.Lock()
+	defer a.applyMu.Unlock()
+	a.mu.RLock()
+	candidate := cloneConfig(a.config)
+	a.mu.RUnlock()
+	for index := range candidate.PolicyPaths {
+		if candidate.PolicyPaths[index].StableID != id {
+			continue
+		}
+		candidate.PolicyPaths = append(candidate.PolicyPaths[:index], candidate.PolicyPaths[index+1:]...)
+		return a.savePolicyPaths(candidate, "Policy Path 已删除")
+	}
+	return errors.New("Policy Path not found")
+}
+
+func (a *App) RegeneratePolicyPathToken(id string) (PolicyPath, error) {
+	a.applyMu.Lock()
+	defer a.applyMu.Unlock()
+	a.mu.RLock()
+	candidate := cloneConfig(a.config)
+	a.mu.RUnlock()
+	for index := range candidate.PolicyPaths {
+		if candidate.PolicyPaths[index].StableID != id {
+			continue
+		}
+		for {
+			token, err := randomToken()
+			if err != nil {
+				return PolicyPath{}, err
+			}
+			if policyPathTokenAvailable(candidate, token, id) {
+				candidate.PolicyPaths[index].Token = token
+				break
+			}
+		}
+		if err := a.savePolicyPaths(candidate, "Policy Path Token 已重新生成"); err != nil {
+			return PolicyPath{}, err
+		}
+		return candidate.PolicyPaths[index], nil
+	}
+	return PolicyPath{}, errors.New("Policy Path not found")
+}
+
+func (a *App) savePolicyPaths(candidate Config, event string) error {
+	if err := ValidateConfig(candidate); err != nil {
+		return err
+	}
+	if err := a.store.Save(candidate); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.config = cloneConfig(candidate)
+	a.mu.Unlock()
+	a.addEvent("info", event)
 	return nil
 }
 
@@ -441,12 +589,31 @@ func (a *App) ProviderFilterState(id string) M.ProviderFilterReport {
 func (a *App) ProviderHostsCount(id string) int { return a.manager.ProviderHostsCount(id) }
 
 func (a *App) UpdateSettings(settings Settings) error {
+	managementToken := settings.ManagementToken
+	policyToken := settings.PolicyToken
+	return a.UpdateSettingsPatch(settings, &managementToken, &policyToken)
+}
+
+// UpdateSettingsPatch applies non-secret settings while preserving credentials
+// whose pointers are nil. Credential selection happens after applyMu is held so
+// a concurrent Token rotation cannot be overwritten by an earlier HTTP read.
+func (a *App) UpdateSettingsPatch(settings Settings, managementToken, policyToken *string) error {
 	a.applyMu.Lock()
 	defer a.applyMu.Unlock()
 	a.mu.RLock()
 	previous := cloneConfig(a.config)
 	previousKey := append([]byte(nil), a.masterKey...)
 	a.mu.RUnlock()
+	if managementToken == nil {
+		settings.ManagementToken = previous.ManagementToken
+	} else {
+		settings.ManagementToken = *managementToken
+	}
+	if policyToken == nil {
+		settings.PolicyToken = previous.Settings().PolicyToken
+	} else {
+		settings.PolicyToken = *policyToken
+	}
 	candidate := cloneConfig(previous)
 	candidate.SetSettings(settings)
 	if err := ValidateConfig(candidate); err != nil {
@@ -526,19 +693,42 @@ func (a *App) applyConfig(candidate Config) error {
 }
 
 func (a *App) Proxies() (string, string, error) {
+	return a.ProxiesForPath(DefaultPolicyPathID)
+}
+
+func (a *App) ProxiesForPath(id string) (string, string, error) {
+	a.applyMu.Lock()
+	defer a.applyMu.Unlock()
 	if status := a.Status(); status.State != "running" {
 		return "", "", errors.New("Mihomo 身份数据面当前不可用")
 	}
+	path, ok := a.PolicyPath(id)
+	if !ok {
+		return "", "", errors.New("Policy Path not found")
+	}
 	snapshot := a.manager.Snapshot()
 	entries := snapshot.Entries()
-	if len(entries) == 0 {
-		return "", snapshot.Revision(), nil
+	selected := make(map[string]struct{}, len(path.ProviderIDs))
+	if !path.IncludeAll {
+		for _, providerID := range path.ProviderIDs {
+			selected[providerID] = struct{}{}
+		}
 	}
 	lines := make([]string, 0, len(entries))
 	for _, entry := range entries {
+		if !path.IncludeAll {
+			if _, included := selected[entry.ProviderID]; !included {
+				continue
+			}
+		}
 		lines = append(lines, formatSurgeLine(entry))
 	}
-	return strings.Join(lines, "\n") + "\n", snapshot.Revision(), nil
+	content := ""
+	if len(lines) > 0 {
+		content = strings.Join(lines, "\n") + "\n"
+	}
+	revision := sha256.Sum256([]byte(content))
+	return content, hex.EncodeToString(revision[:]), nil
 }
 
 func formatSurgeLine(entry M.Entry) string {
@@ -589,7 +779,10 @@ var eventSecretPattern = regexp.MustCompile(`(?i)\b(token|password|passwd|secret
 var eventURLPattern = regexp.MustCompile(`https?://[^\s"'<>]+`)
 
 func (a *App) redactEventLocked(message string) string {
-	secrets := []string{a.config.ManagementToken, a.config.PolicyToken, a.config.ProjectionKey, a.store.Dir()}
+	secrets := []string{a.config.ManagementToken, a.config.ProjectionKey, a.store.Dir()}
+	for _, path := range a.config.PolicyPaths {
+		secrets = append(secrets, path.Token)
+	}
 	for _, provider := range a.config.Providers {
 		secrets = append(secrets, provider.URL, provider.FilePath)
 		for _, values := range provider.Headers {
@@ -647,8 +840,8 @@ func ValidateConfig(config Config) error {
 		return errors.New("projection key must contain 16-256 non-control characters without surrounding whitespace")
 	}
 	socksIP, policyIP := net.ParseIP(config.SocksHost), net.ParseIP(config.PolicyHost)
-	if config.ManagementToken != "" && len(config.ManagementToken) < 16 || !validPolicyToken(config.PolicyToken, false) || config.ManagementToken != "" && config.ManagementToken == config.PolicyToken {
-		return errors.New("Management Token and Policy Token must each contain at least 16 characters when configured, and the two values must differ")
+	if config.ManagementToken != "" && len(config.ManagementToken) < 16 {
+		return errors.New("Management Token must contain at least 16 characters when configured")
 	}
 	if config.Mode == ModeLocal && (!isLoopbackHost(httpHost) || !isLoopbackHost(config.SocksBind)) {
 		return errors.New("local mode requires loopback HTTP and SOCKS bind addresses")
@@ -656,8 +849,8 @@ func ValidateConfig(config Config) error {
 	if config.Mode == ModeLocal && (socksIP != nil && !socksIP.IsLoopback() || policyIP != nil && !policyIP.IsLoopback()) {
 		return errors.New("local mode SOCKS and Policy host IPs must be loopback")
 	}
-	if config.Mode == ModeGateway && (len(config.ManagementToken) < 16 || !validPolicyToken(config.PolicyToken, true) || config.ManagementToken == config.PolicyToken) {
-		return errors.New("gateway mode requires distinct Management and Policy Tokens of at least 16 characters")
+	if config.Mode == ModeGateway && len(config.ManagementToken) < 16 {
+		return errors.New("gateway mode requires a Management Token of at least 16 characters")
 	}
 	if config.Mode == ModeGateway && (socksIP != nil && !isPrivateOrTrustedHost(config.SocksHost) || policyIP != nil && !isPrivateOrTrustedHost(config.PolicyHost)) {
 		return errors.New("gateway mode SOCKS and Policy host IPs must be private or trusted")
@@ -695,6 +888,9 @@ func ValidateConfig(config Config) error {
 			return fmt.Errorf("Provider %q: %w", provider.Name, err)
 		}
 	}
+	if err := validatePolicyPaths(config); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -715,6 +911,133 @@ func validPolicyToken(token string, required bool) bool {
 		return !required
 	}
 	return len(token) >= 16
+}
+
+var policyPathIDPattern = regexp.MustCompile(`^pp_[A-Za-z0-9_-]{16,80}$`)
+
+func validatePolicyPaths(config Config) error {
+	if len(config.PolicyPaths) == 0 || len(config.PolicyPaths) > 128 {
+		return errors.New("configuration must contain 1-128 Policy Paths")
+	}
+	providers := make(map[string]struct{}, len(config.Providers))
+	for _, provider := range config.Providers {
+		providers[provider.StableID] = struct{}{}
+	}
+	seenIDs := make(map[string]struct{}, len(config.PolicyPaths))
+	seenNames := make(map[string]struct{}, len(config.PolicyPaths))
+	seenTokens := make(map[string]struct{}, len(config.PolicyPaths))
+	defaultCount := 0
+	for _, path := range config.PolicyPaths {
+		if path.StableID == DefaultPolicyPathID {
+			defaultCount++
+		} else if !policyPathIDPattern.MatchString(path.StableID) {
+			return fmt.Errorf("Policy Path %q has an invalid identity", path.Name)
+		}
+		if _, duplicate := seenIDs[path.StableID]; duplicate {
+			return errors.New("duplicate Policy Path identity")
+		}
+		seenIDs[path.StableID] = struct{}{}
+		name := strings.TrimSpace(path.Name)
+		if name == "" || len(name) > 80 || name != path.Name || strings.ContainsAny(name, "=\r\n") {
+			return errors.New("Policy Path name must contain 1-80 characters without '=' or line breaks")
+		}
+		foldedName := strings.ToLower(name)
+		if _, duplicate := seenNames[foldedName]; duplicate {
+			return fmt.Errorf("duplicate Policy Path name %q", path.Name)
+		}
+		seenNames[foldedName] = struct{}{}
+		requiredToken := config.Mode == ModeGateway || path.StableID != DefaultPolicyPathID
+		if !validPolicyToken(path.Token, requiredToken) || path.Token == "unsafe" {
+			return fmt.Errorf("Policy Path %q requires a Token of at least 16 characters", path.Name)
+		}
+		if path.Token != "" {
+			if path.Token == config.ManagementToken {
+				return fmt.Errorf("Policy Path %q must not share the Management Token", path.Name)
+			}
+			if _, duplicate := seenTokens[path.Token]; duplicate {
+				return errors.New("Policy Paths must use distinct Tokens")
+			}
+			seenTokens[path.Token] = struct{}{}
+		}
+		if path.IncludeAll {
+			if len(path.ProviderIDs) != 0 {
+				return fmt.Errorf("Policy Path %q cannot combine include_all with Provider IDs", path.Name)
+			}
+			continue
+		}
+		seenProviders := make(map[string]struct{}, len(path.ProviderIDs))
+		for _, providerID := range path.ProviderIDs {
+			if _, ok := providers[providerID]; !ok {
+				return fmt.Errorf("Policy Path %q references unknown Provider %q", path.Name, providerID)
+			}
+			if _, duplicate := seenProviders[providerID]; duplicate {
+				return fmt.Errorf("Policy Path %q contains duplicate Provider %q", path.Name, providerID)
+			}
+			seenProviders[providerID] = struct{}{}
+		}
+	}
+	if defaultCount != 1 {
+		return errors.New("configuration must contain exactly one default Policy Path")
+	}
+	return nil
+}
+
+func normalizePolicyPathSelection(path *PolicyPath, providers []Provider) {
+	if path.IncludeAll {
+		path.ProviderIDs = nil
+		return
+	}
+	wanted := make(map[string]struct{}, len(path.ProviderIDs))
+	for _, id := range path.ProviderIDs {
+		wanted[id] = struct{}{}
+	}
+	ordered := make([]string, 0, len(wanted))
+	for _, provider := range providers {
+		if _, ok := wanted[provider.StableID]; ok {
+			ordered = append(ordered, provider.StableID)
+			delete(wanted, provider.StableID)
+		}
+	}
+	unknown := make([]string, 0, len(wanted))
+	for id := range wanted {
+		unknown = append(unknown, id)
+	}
+	sort.Strings(unknown)
+	path.ProviderIDs = append(ordered, unknown...)
+}
+
+func replacePolicyPathProviderID(paths []PolicyPath, previous, next string) {
+	for pathIndex := range paths {
+		for providerIndex := range paths[pathIndex].ProviderIDs {
+			if paths[pathIndex].ProviderIDs[providerIndex] == previous {
+				paths[pathIndex].ProviderIDs[providerIndex] = next
+			}
+		}
+	}
+}
+
+func removePolicyPathProviderID(paths []PolicyPath, id string) {
+	for pathIndex := range paths {
+		ids := paths[pathIndex].ProviderIDs[:0]
+		for _, providerID := range paths[pathIndex].ProviderIDs {
+			if providerID != id {
+				ids = append(ids, providerID)
+			}
+		}
+		paths[pathIndex].ProviderIDs = ids
+	}
+}
+
+func policyPathTokenAvailable(config Config, token, exceptID string) bool {
+	if token == "" || token == config.ManagementToken {
+		return false
+	}
+	for _, path := range config.PolicyPaths {
+		if path.StableID != exceptID && path.Token == token {
+			return false
+		}
+	}
+	return true
 }
 
 func validateProvider(provider Provider) error {
@@ -803,6 +1126,10 @@ func cloneConfig(config Config) Config {
 	clone := config
 	clone.ProjectionTypes = append([]string(nil), config.ProjectionTypes...)
 	clone.Providers = append([]Provider(nil), config.Providers...)
+	clone.PolicyPaths = append([]PolicyPath(nil), config.PolicyPaths...)
+	for index := range clone.PolicyPaths {
+		clone.PolicyPaths[index].ProviderIDs = append([]string(nil), config.PolicyPaths[index].ProviderIDs...)
+	}
 	for index := range clone.Providers {
 		if config.Providers[index].Headers != nil {
 			clone.Providers[index].Headers = make(map[string][]string, len(config.Providers[index].Headers))

@@ -1,6 +1,7 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import OverviewView from '@/views/OverviewView.vue'
 import ProvidersView from '@/views/ProvidersView.vue'
+import PolicyPathsView from '@/views/PolicyPathsView.vue'
 import NodesView from '@/views/NodesView.vue'
 import ConnectionsView from '@/views/ConnectionsView.vue'
 import LogsView from '@/views/LogsView.vue'
@@ -21,6 +22,7 @@ const router = createRouter({
   routes: [
     { path: '/', name: 'overview', component: OverviewView },
     { path: '/providers', name: 'providers', component: ProvidersView },
+    { path: '/policy-paths', name: 'policyPaths', component: PolicyPathsView },
     { path: '/nodes', name: 'nodes', component: NodesView },
     { path: '/connections', name: 'connections', component: ConnectionsView },
     { path: '/logs', name: 'logs', component: LogsView },

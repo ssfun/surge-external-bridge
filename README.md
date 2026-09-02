@@ -68,7 +68,7 @@ chmod +x SurgeEB
 1. 在订阅页添加 HTTP Provider、上传私有 Provider 文件，或粘贴顶层含 `proxies:` 的 Mihomo Provider YAML 作为 Inline payload。若 YAML 顶层 `hosts` 命中该 Provider 的节点 `server`，网关会保留原始 `server`/SNI，并仅在代理服务器拨号解析时应用对应映射。
 2. 等待 Mihomo 原生初始化；有效缓存或远端成功内容会立即进入 Projection。
 3. 在节点页查看 Mihomo 延迟，按需运行真实 SOCKS TCP/UDP 诊断。UDP 默认测试 `8.8.8.8:53`，诊断仅验证项目内核链路，不经过 Surge。
-4. 从总览复制 Policy Path 配置到 Surge。
+4. 从总览复制默认 Policy Path，或在订阅页的 Policy Path 管理中创建不同 Provider 组合后复制到 Surge。
 
 后续成功刷新自动生效，不需要再次应用或重启。上游请求或解析失败时，Mihomo 保留最近成功的 Provider 内容。
 
@@ -77,7 +77,7 @@ chmod +x SurgeEB
 配置台提供：
 
 - 总览：产品/Core 版本、Provider/节点/连接数、实时流量、内存和最近错误。
-- 订阅：增删改、启停、手动刷新、健康检查、订阅状态和名称投影筛选。
+- 订阅：Provider 增删改、排序、启停、手动刷新、健康检查、订阅状态和名称投影筛选；Policy Path 可创建多个独立链接，并选择全部或指定 Provider。
 - 节点：协议、能力、Mihomo 延迟历史、TCP/UDP 诊断和 Surge 行复制。
 - 连接：实时目标、节点链、规则、流量，以及关闭单个或全部连接。
 - 日志：Mihomo 结构化实时日志与产品事件，敏感字段二次脱敏。
@@ -115,14 +115,16 @@ listeners: []
 
 局域网网关模式同时适用于 macOS 与 Linux，并要求：
 
-- Management Token 与 Policy Token 不同且都至少 16 字符；
+- Management Token 与每个 Policy Path Token 均不同且都至少 16 字符；
 - HTTP 写操作执行 Token、同源、方法和请求体大小检查；
 - SOCKS 每个节点强制认证；
 - `socks_host` 只写入投影节点，`policy_host` 只生成 Policy URL 并作为 HTTP Host 精确放行；不会因为配置了某个 `.eb` 域名而信任整个后缀；
 - 两个发布主机直接使用 IP 时，只允许回环、私网、Tailscale CGNAT 或链路本地地址；
 - 不支持把管理台、Policy 或 SOCKS 裸露到公网。
 
-`/proxies` 含 SOCKS 凭据，固定返回 `Cache-Control: no-store`，支持 ETag 和独立强随机 Policy Token；不提供可猜测的免密值。敏感复制必须显式确认。
+`/proxies` 与 `/proxies/{id}` 含 SOCKS 凭据，固定返回 `Cache-Control: no-store`。每个 Policy Path 使用独立强随机 Token 和按自身内容计算的 ETag；重新生成某条路径的 Token 或删除路径不会影响其他链接。敏感复制必须显式确认。
+
+默认 `/proxies` 在升级后继续保留原 Token 和“全部 Provider”语义。指定 Provider 的路径按全局 Provider 顺序发布；Provider 重命名会原子更新引用，停用时暂不输出，重新启用后恢复，删除后从相关路径移除。一个 Provider 可以同时属于多个 Policy Path。
 
 ## 多设备统一 Policy Path
 
@@ -150,7 +152,7 @@ Surge External Bridge 采用全新数据目录和配置，不读取或迁移旧�
 
 ```text
 ~/.surge-external-bridge/
-├── gateway.json          # 0600，schema 1；包含开放配置的 projection_key
+├── gateway.json          # 0600，schema 4；包含 projection_key、Provider 与 Policy Path
 ├── controller.key        # 0600，内部 Controller Secret 来源
 └── mihomo/               # 0700，Provider 最近成功缓存与 Unix Socket
 ```

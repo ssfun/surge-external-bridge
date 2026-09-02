@@ -8,7 +8,9 @@ import (
 	"time"
 )
 
-const SchemaVersion = 3
+const SchemaVersion = 4
+
+const DefaultPolicyPathID = "default"
 
 const (
 	ModeLocal   = "local"
@@ -16,22 +18,30 @@ const (
 )
 
 type Config struct {
-	SchemaVersion   int        `json:"schema_version"`
-	Mode            string     `json:"mode"`
-	HTTPBind        string     `json:"http_bind"`
-	SocksBind       string     `json:"socks_bind"`
-	SocksPort       uint16     `json:"socks_port"`
-	SocksHost       string     `json:"socks_host"`
-	PolicyHost      string     `json:"policy_host"`
-	ProjectionKey   string     `json:"projection_key"`
-	ManagementToken string     `json:"management_token,omitempty"`
-	PolicyToken     string     `json:"policy_token,omitempty"`
-	PrefixProvider  bool       `json:"prefix_provider"`
-	ProjectionTypes []string   `json:"projection_types"`
-	NodeTestURL     string     `json:"node_test_url"`
-	NodeTestUDP     string     `json:"node_test_udp_address"`
-	NodeTestTimeout int        `json:"node_test_timeout_seconds"`
-	Providers       []Provider `json:"providers"`
+	SchemaVersion   int          `json:"schema_version"`
+	Mode            string       `json:"mode"`
+	HTTPBind        string       `json:"http_bind"`
+	SocksBind       string       `json:"socks_bind"`
+	SocksPort       uint16       `json:"socks_port"`
+	SocksHost       string       `json:"socks_host"`
+	PolicyHost      string       `json:"policy_host"`
+	ProjectionKey   string       `json:"projection_key"`
+	ManagementToken string       `json:"management_token,omitempty"`
+	PrefixProvider  bool         `json:"prefix_provider"`
+	ProjectionTypes []string     `json:"projection_types"`
+	NodeTestURL     string       `json:"node_test_url"`
+	NodeTestUDP     string       `json:"node_test_udp_address"`
+	NodeTestTimeout int          `json:"node_test_timeout_seconds"`
+	Providers       []Provider   `json:"providers"`
+	PolicyPaths     []PolicyPath `json:"policy_paths"`
+}
+
+type PolicyPath struct {
+	StableID    string   `json:"id"`
+	Name        string   `json:"name"`
+	IncludeAll  bool     `json:"include_all"`
+	ProviderIDs []string `json:"provider_ids,omitempty"`
+	Token       string   `json:"token,omitempty"`
 }
 
 type Provider struct {
@@ -77,6 +87,7 @@ func DefaultConfig() (Config, error) {
 		PrefixProvider:  true,
 		ProjectionTypes: []string{"*"}, NodeTestURL: "https://www.gstatic.com/generate_204",
 		NodeTestUDP: "8.8.8.8:53", NodeTestTimeout: 15, Providers: []Provider{},
+		PolicyPaths: []PolicyPath{{StableID: DefaultPolicyPathID, Name: "全部节点", IncludeAll: true}},
 	}, nil
 }
 
@@ -106,10 +117,14 @@ type Settings struct {
 }
 
 func (c Config) Settings() Settings {
+	policyToken := ""
+	if path, ok := c.PolicyPath(DefaultPolicyPathID); ok {
+		policyToken = path.Token
+	}
 	return Settings{
 		Mode: c.Mode, HTTPBind: c.HTTPBind, SocksBind: c.SocksBind, SocksPort: c.SocksPort,
 		SocksHost: c.SocksHost, PolicyHost: c.PolicyHost, ProjectionKey: c.ProjectionKey,
-		ManagementToken: c.ManagementToken, PolicyToken: c.PolicyToken,
+		ManagementToken: c.ManagementToken, PolicyToken: policyToken,
 		PrefixProvider: c.PrefixProvider, ProjectionTypes: append([]string(nil), c.ProjectionTypes...),
 		NodeTestURL: c.NodeTestURL, NodeTestUDP: c.NodeTestUDP, NodeTestTimeout: c.NodeTestTimeout,
 	}
@@ -120,10 +135,25 @@ func (c *Config) SetSettings(settings Settings) {
 	c.SocksBind, c.SocksPort = settings.SocksBind, settings.SocksPort
 	c.SocksHost, c.PolicyHost = settings.SocksHost, settings.PolicyHost
 	c.ProjectionKey = settings.ProjectionKey
-	c.ManagementToken, c.PolicyToken = settings.ManagementToken, settings.PolicyToken
+	c.ManagementToken = settings.ManagementToken
+	for index := range c.PolicyPaths {
+		if c.PolicyPaths[index].StableID == DefaultPolicyPathID {
+			c.PolicyPaths[index].Token = settings.PolicyToken
+			break
+		}
+	}
 	c.PrefixProvider = settings.PrefixProvider
 	c.ProjectionTypes = append([]string(nil), settings.ProjectionTypes...)
 	c.NodeTestURL, c.NodeTestUDP, c.NodeTestTimeout = settings.NodeTestURL, settings.NodeTestUDP, settings.NodeTestTimeout
+}
+
+func (c Config) PolicyPath(id string) (PolicyPath, bool) {
+	for _, path := range c.PolicyPaths {
+		if path.StableID == id {
+			return path, true
+		}
+	}
+	return PolicyPath{}, false
 }
 
 // PolicyBaseURL combines the independently published Policy host with the

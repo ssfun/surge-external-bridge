@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -105,7 +106,8 @@ func TestStoreDoesNotReadLegacyConfiguration(t *testing.T) {
 
 func TestStoreRejectsUnsupportedSchemaWithoutMigration(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "gateway.json"), []byte(`{"schema_version":4}`), 0o600); err != nil {
+	data := []byte(fmt.Sprintf(`{"schema_version":%d}`, SchemaVersion+1))
+	if err := os.WriteFile(filepath.Join(dir, "gateway.json"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := NewStore(dir).Load(); err == nil {
@@ -113,7 +115,7 @@ func TestStoreRejectsUnsupportedSchemaWithoutMigration(t *testing.T) {
 	}
 }
 
-func TestStoreMigratesSchemaTwoAndRetainsInlineHostsInSchemaThree(t *testing.T) {
+func TestStoreMigratesSchemaTwoAndRetainsInlineHostsInCurrentSchema(t *testing.T) {
 	dir := t.TempDir()
 	legacy := mustDefaultConfig(t)
 	legacy.SchemaVersion = 2
@@ -150,6 +152,44 @@ func TestStoreMigratesSchemaTwoAndRetainsInlineHostsInSchemaThree(t *testing.T) 
 	}
 	if reloaded.Providers[0].Prefix != "机场前缀" {
 		t.Fatalf("Provider prefix was not retained: %#v", reloaded.Providers[0])
+	}
+}
+
+func TestStoreMigratesSchemaThreePolicyTokenIntoDefaultPolicyPath(t *testing.T) {
+	dir := t.TempDir()
+	legacy := mustDefaultConfig(t)
+	encoded, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(encoded, &document); err != nil {
+		t.Fatal(err)
+	}
+	document["schema_version"] = float64(3)
+	document["policy_token"] = "legacy-policy-token-1234"
+	delete(document, "policy_paths")
+	encoded, err = json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gateway.json"), encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := NewStore(dir).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, ok := loaded.PolicyPath(DefaultPolicyPathID)
+	if !ok || path.Token != "legacy-policy-token-1234" || !path.IncludeAll {
+		t.Fatalf("migrated default Policy Path=%+v, exists=%v", path, ok)
+	}
+	persisted, err := os.ReadFile(filepath.Join(dir, "gateway.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(persisted), `"policy_token"`) || !strings.Contains(string(persisted), `"policy_paths"`) {
+		t.Fatalf("schema three Policy Token migration was not persisted: %s", persisted)
 	}
 }
 
@@ -225,7 +265,7 @@ func TestStoreMigratesUnsafeGatewayCredentialsToRepairableState(t *testing.T) {
 	config.SocksHost = "192.168.50.10"
 	config.PolicyHost = "policy.surge.eb"
 	config.ManagementToken = "management-token-1234"
-	config.PolicyToken = "unsafe"
+	config.PolicyPaths[0].Token = "unsafe"
 	config.Providers = []Provider{{
 		Name: "Legacy Auth", Type: "http", URL: "https://example.com/subscription", Enabled: true,
 		Headers: map[string][]string{"Authorization": {"Bearer legacy-secret"}}, RefreshSeconds: 21600, SizeLimit: 16 << 20,
@@ -239,8 +279,8 @@ func TestStoreMigratesUnsafeGatewayCredentialsToRepairableState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.PolicyToken == "unsafe" || len(loaded.PolicyToken) != 24 {
-		t.Fatalf("legacy Policy Token was not replaced: %q", loaded.PolicyToken)
+	if loaded.PolicyPaths[0].Token == "unsafe" || len(loaded.PolicyPaths[0].Token) != 24 {
+		t.Fatalf("legacy Policy Token was not replaced: %q", loaded.PolicyPaths[0].Token)
 	}
 	if loaded.Providers[0].Enabled {
 		t.Fatal("Provider with redirect-sensitive credentials remained enabled")
@@ -267,7 +307,7 @@ func TestStoreMigratesUnsafePolicyTokenInLocalMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config.PolicyToken = "unsafe"
+	config.PolicyPaths[0].Token = "unsafe"
 	if err := store.Save(config); err != nil {
 		t.Fatal(err)
 	}
@@ -276,8 +316,8 @@ func TestStoreMigratesUnsafePolicyTokenInLocalMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.PolicyToken == "unsafe" || len(loaded.PolicyToken) != 24 {
-		t.Fatalf("legacy local Policy Token was not replaced: %q", loaded.PolicyToken)
+	if loaded.PolicyPaths[0].Token == "unsafe" || len(loaded.PolicyPaths[0].Token) != 24 {
+		t.Fatalf("legacy local Policy Token was not replaced: %q", loaded.PolicyPaths[0].Token)
 	}
 	if got := len(store.Notices()); got != 1 {
 		t.Fatalf("security migration notices=%d, want 1", got)

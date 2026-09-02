@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -193,6 +194,155 @@ func TestManagementProviderLifecycleAndMutationBoundaries(t *testing.T) {
 	_ = response.Body.Close()
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unknown Provider field status=%d, want 400", response.StatusCode)
+	}
+}
+
+func TestPolicyPathLifecycleFiltersCurrentProviderSnapshot(t *testing.T) {
+	application, _, endpoint := testManagementServer(t, "")
+	defer application.Close()
+	first, err := application.AddProvider(gateway.Provider{
+		Name: "First Provider", Type: "inline", Enabled: true,
+		Payload: []map[string]any{{"name": "First Node", "type": "socks5", "server": "127.0.0.1", "port": 1081}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := application.AddProvider(gateway.Provider{
+		Name: "Second Provider", Type: "inline", Enabled: true,
+		Payload: []map[string]any{{"name": "Second Node", "type": "socks5", "server": "127.0.0.1", "port": 1082}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := application.Config().Settings()
+	settings.PolicyToken = "default-policy-token-1234"
+	if err := application.UpdateSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+
+	requestJSON := func(method, path string, body any, headers map[string]string) (*http.Response, []byte) {
+		t.Helper()
+		var reader io.Reader
+		if body != nil {
+			encoded, encodeErr := json.Marshal(body)
+			if encodeErr != nil {
+				t.Fatal(encodeErr)
+			}
+			reader = bytes.NewReader(encoded)
+		}
+		request, requestErr := http.NewRequest(method, endpoint+path, reader)
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		request.Header.Set("Origin", endpoint)
+		if body != nil {
+			request.Header.Set("Content-Type", "application/json")
+		}
+		for name, value := range headers {
+			request.Header.Set(name, value)
+		}
+		response, responseErr := http.DefaultClient.Do(request)
+		if responseErr != nil {
+			t.Fatal(responseErr)
+		}
+		content, readErr := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		return response, content
+	}
+
+	response, body := requestJSON(http.MethodPost, "/api/policy-paths", policyPathRequest{
+		Name: "First Only", ProviderIDs: []string{first.StableID},
+	}, nil)
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("create Policy Path status=%d body=%s", response.StatusCode, body)
+	}
+	var created publicPolicyPath
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Default || created.Token == "" || created.ProviderCount != 1 || created.ProjectionCount != 1 {
+		t.Fatalf("created Policy Path=%+v", created)
+	}
+	createdURL, err := url.Parse(created.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, body = requestJSON(http.MethodGet, createdURL.RequestURI(), nil, nil)
+	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), "First Node") || strings.Contains(string(body), "Second Node") {
+		t.Fatalf("filtered Policy Path status=%d body=%s", response.StatusCode, body)
+	}
+	etag := response.Header.Get("ETag")
+	response, _ = requestJSON(http.MethodGet, createdURL.RequestURI(), nil, map[string]string{"If-None-Match": etag})
+	if response.StatusCode != http.StatusNotModified {
+		t.Fatalf("conditional Policy Path status=%d, want 304", response.StatusCode)
+	}
+	response, _ = requestJSON(http.MethodGet, createdURL.Path+"?token=wrong", nil, nil)
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong Policy Path Token status=%d, want 401", response.StatusCode)
+	}
+	defaultURL := "/proxies?token=" + url.QueryEscape(settings.PolicyToken)
+	response, body = requestJSON(http.MethodGet, defaultURL, nil, nil)
+	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), "First Node") || !strings.Contains(string(body), "Second Node") {
+		t.Fatalf("default Policy Path status=%d body=%s", response.StatusCode, body)
+	}
+
+	updatedProvider := first
+	updatedProvider.Name = "Renamed First Provider"
+	updatedProvider.Prefix = ""
+	updatedProvider.Payload = []map[string]any{{"name": "Renamed Node", "type": "socks5", "server": "127.0.0.1", "port": 1081}}
+	renamed, err := application.UpdateProvider(first.StableID, updatedProvider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, ok := application.PolicyPath(created.StableID)
+	if !ok || len(path.ProviderIDs) != 1 || path.ProviderIDs[0] != renamed.StableID {
+		t.Fatalf("renamed Provider reference was not rewritten: %+v", path)
+	}
+	response, body = requestJSON(http.MethodGet, createdURL.RequestURI(), nil, nil)
+	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), "Renamed Node") {
+		t.Fatalf("renamed Provider output status=%d body=%s", response.StatusCode, body)
+	}
+	if err := application.DeleteProvider(renamed.StableID); err != nil {
+		t.Fatal(err)
+	}
+	path, _ = application.PolicyPath(created.StableID)
+	if len(path.ProviderIDs) != 0 {
+		t.Fatalf("deleted Provider reference retained: %+v", path)
+	}
+	response, body = requestJSON(http.MethodGet, createdURL.RequestURI(), nil, nil)
+	if response.StatusCode != http.StatusOK || len(body) != 0 {
+		t.Fatalf("empty Policy Path status=%d body=%q", response.StatusCode, body)
+	}
+
+	response, body = requestJSON(http.MethodPost, "/api/policy-paths/"+created.StableID+"/token", nil, map[string]string{"X-SurgeEB-Confirm": "regenerate-policy-path-token"})
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("regenerate Policy Path Token status=%d body=%s", response.StatusCode, body)
+	}
+	var regenerated publicPolicyPath
+	if err := json.Unmarshal(body, &regenerated); err != nil {
+		t.Fatal(err)
+	}
+	if regenerated.Token == created.Token {
+		t.Fatal("Policy Path Token did not change")
+	}
+	response, _ = requestJSON(http.MethodGet, createdURL.RequestURI(), nil, nil)
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("old Policy Path URL status=%d, want 401", response.StatusCode)
+	}
+	response, body = requestJSON(http.MethodDelete, "/api/policy-paths/"+created.StableID, nil, map[string]string{"X-SurgeEB-Confirm": "delete-policy-path"})
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete Policy Path status=%d body=%s", response.StatusCode, body)
+	}
+	regeneratedURL, _ := url.Parse(regenerated.URL)
+	response, _ = requestJSON(http.MethodGet, regeneratedURL.RequestURI(), nil, nil)
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("deleted Policy Path URL status=%d, want 404", response.StatusCode)
+	}
+	if _, ok := application.Provider(second.StableID); !ok {
+		t.Fatal("unselected Provider was mutated by Policy Path lifecycle")
 	}
 }
 
@@ -651,7 +801,7 @@ func TestControllerAllowlistUsesPrivateCredentialAndBlocksDangerousRoutes(t *tes
 	if settings["projection_key"] != application.Config().ProjectionKey {
 		t.Fatalf("settings DTO did not expose the configured projection key: %#v", settings)
 	}
-	if settings["policy_token"] != application.Config().PolicyToken {
+	if settings["policy_token"] != application.Config().Settings().PolicyToken {
 		t.Fatalf("settings DTO did not expose the configured Policy Token: %#v", settings)
 	}
 	if _, ok := settings["management_token"]; ok {
@@ -811,7 +961,7 @@ func TestNodeHealthCheckTranslatesPublicPostToMihomoGet(t *testing.T) {
 func TestStructuredLogRedaction(t *testing.T) {
 	config := mustDefaultGatewayConfig(t)
 	config.ManagementToken = "management-secret-value"
-	config.PolicyToken = "policy-secret-value"
+	config.PolicyPaths[0].Token = "policy-secret-value"
 	config.Providers = []gateway.Provider{{StableID: "p1", Name: "provider", Type: "http", URL: "https://user:pass@example.com/sub?token=abc", Headers: map[string][]string{"Authorization": {"Bearer upstream-secret"}}}}
 	record := map[string]any{"message": "uuid=550e8400-e29b-41d4-a716-446655440000 Authorization=Bearer-secret https://example.com/subscription-secret?token=abc /tmp/private /Applications/Secret.app/Contents/MacOS/client management-secret-value upstream-secret"}
 	redactLogRecord(record, config, "/tmp/private")

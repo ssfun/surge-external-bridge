@@ -104,7 +104,7 @@ async function save() {
     node_test_timeout_seconds: Number(form.node_test_timeout_seconds),
   }
   if (form.management_token) body.management_token = form.management_token
-  if (form.policy_token) body.policy_token = form.policy_token
+  if (form.policy_token && form.policy_token !== settings.value?.policy_token) body.policy_token = form.policy_token
   if (body.projection_key !== settings.value?.projection_key && !window.confirm('修改后，现有 Surge 节点的用户名和密码会变化。确认保存？')) return
   saving.value = true
   try {
@@ -153,9 +153,9 @@ async function serviceAction(install) {
         </div>
         <div class="settings-secondary-grid">
           <div class="card settings-card" data-testid="settings-security">
-            <div class="settings-card-head"><div><h3>访问 Token</h3><p>Management Token 保护配置台；Policy Token 保护包含节点凭据的 Policy Path。</p></div></div>
+            <div class="settings-card-head"><div><h3>访问 Token</h3><p>Management Token 保护配置台；这里的 Policy Token 只对应默认 <code>/proxies</code> 链接。</p></div></div>
             <label class="field"><span class="settings-field-label">Management Token <i class="pill" :class="form.management_token ? 'warn' : settings.management_token_configured ? 'ok' : 'warn'">{{ form.management_token ? '待保存' : settings.management_token_configured ? '已配置' : '未配置' }}</i></span><span class="settings-secret-control"><input v-model="form.management_token" data-testid="management-token" :type="credentialVisible.management ? 'text' : 'password'" autocomplete="new-password" :placeholder="settings.management_token_configured ? '留空保持不变' : '输入新 Token'"><span class="settings-field-actions"><button v-if="form.management_token" class="button ghost compact" type="button" @click="credentialVisible.management = !credentialVisible.management">{{ credentialVisible.management ? '隐藏' : '显示' }}</button><button v-if="form.management_token" class="button ghost compact" type="button" @click="copyCredential('Management Token', form.management_token)">复制</button><button class="button ghost compact" type="button" @click="generateManagementToken">{{ form.management_token ? '重新生成' : '生成' }}</button></span></span><small>在其他设备打开此配置台时使用；保存后不会再次显示完整内容。</small></label>
-            <label class="field"><span class="settings-field-label">Policy Token <i class="pill" :class="form.policy_token ? 'ok' : 'warn'">{{ form.policy_token ? '已设置' : '未设置' }}</i></span><span class="settings-secret-control"><input v-model="form.policy_token" data-testid="policy-token" type="text" autocomplete="off" minlength="16" placeholder="至少 16 位"><span class="settings-field-actions"><button v-if="form.policy_token" class="button ghost compact" type="button" @click="copyCredential('Policy Token', form.policy_token)">复制</button><button class="button ghost compact" type="button" @click="generatePolicyToken">{{ form.policy_token ? '重新生成' : '生成' }}</button></span></span><small>会显示在 Surge 的订阅地址中；至少 16 位，并且必须与 Management Token 不同。</small></label>
+            <label class="field"><span class="settings-field-label">默认 Policy Token <i class="pill" :class="form.policy_token ? 'ok' : 'warn'">{{ form.policy_token ? '已设置' : '未设置' }}</i></span><span class="settings-secret-control"><input v-model="form.policy_token" data-testid="policy-token" type="text" autocomplete="off" minlength="16" placeholder="至少 16 位"><span class="settings-field-actions"><button v-if="form.policy_token" class="button ghost compact" type="button" @click="copyCredential('Policy Token', form.policy_token)">复制</button><button class="button ghost compact" type="button" @click="generatePolicyToken">{{ form.policy_token ? '重新生成' : '生成' }}</button></span></span><small>用于兼容默认 /proxies 地址；其他链接请在 Policy Path 管理中分别轮换 Token。</small></label>
             <div v-if="generatedCredential.management || generatedCredential.policy" class="settings-note warn settings-generated-note" data-testid="generated-token-note"><b>{{ generatedCredentialTitle }}</b><span>{{ generatedCredentialHelp }}</span></div>
             <div v-else-if="form.mode === 'gateway'" class="settings-note">Management Token 保存后不会回显；Policy Token 会保留显示，便于配置 Surge Policy Path。</div>
           </div>

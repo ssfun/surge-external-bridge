@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useRouter } from 'vue-router'
 import PageHeader from '@/components/PageHeader.vue'
 import ProviderDialog from '@/components/ProviderDialog.vue'
 import { api, encodeID } from '@/api.js'
@@ -10,6 +11,7 @@ import { copyText, formatDateTime, formatDuration, providerTypeLabel } from '@/u
 
 const data = useDataStore()
 const ui = useUIStore()
+const router = useRouter()
 const { providers, nodes } = storeToRefs(data)
 const expanded = reactive(new Set())
 const loadingRuntime = reactive(new Set())
@@ -115,6 +117,11 @@ async function moveProvider(index, offset) {
   <PageHeader eyebrow="PROVIDERS" title="订阅与节点来源" description="添加和管理节点来源；Provider 从上到下决定最终节点的排列顺序。">
     <button class="button primary" type="button" @click="open()">添加 Provider</button>
   </PageHeader>
+
+  <nav class="section-nav" aria-label="订阅模块">
+    <button class="active" type="button" aria-current="page"><span>Provider</span><small>{{ providers.length }}</small></button>
+    <button type="button" @click="router.push({ name: 'policyPaths' })"><span>Policy Path</span></button>
+  </nav>
 
   <div v-if="providers.length" class="provider-summary" data-testid="provider-summary">
     <span><b>{{ enabledCount }}</b> / {{ providers.length }} 已启用</span>

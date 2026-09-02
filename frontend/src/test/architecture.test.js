@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '@/App.vue'
 import OverviewView from '@/views/OverviewView.vue'
 import ProvidersView from '@/views/ProvidersView.vue'
+import PolicyPathsView from '@/views/PolicyPathsView.vue'
 import NodesView from '@/views/NodesView.vue'
 import SettingsView from '@/views/SettingsView.vue'
 import LogsView from '@/views/LogsView.vue'
@@ -542,6 +543,42 @@ describe('component update boundaries', () => {
     expect(inline.get('.provider-filter-warning').text()).toContain('已过滤 2 个链式节点')
     expect(inline.get('.provider-filter-warning').text()).toContain('WARP-A、WARP-B')
     expect(inline.text()).toContain('已应用 4 条代理服务器映射')
+    wrapper.unmount()
+  })
+
+  it('manages independent Policy Paths with explicit Provider selection', async () => {
+    const data = useDataStore()
+    data.providers = [
+      { stable_id: 'first', name: '第一订阅', enabled: true },
+      { stable_id: 'second', name: '第二订阅', enabled: false },
+    ]
+    data.policyPaths = [{
+      id: 'default', name: '全部节点', include_all: true, provider_ids: [], token: 'default-token',
+      url: 'http://127.0.0.1:18080/proxies?token=default-token', default: true, provider_count: 2, projection_count: 3,
+    }]
+    data.savePolicyPath = vi.fn(async () => {})
+    data.regeneratePolicyPathToken = vi.fn(async () => {})
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const router = testRouter(PolicyPathsView, 'policyPaths')
+    await router.push('/')
+    const wrapper = mount({ template: '<RouterView />' }, { attachTo: document.body, global: { plugins: [router] } })
+
+    expect(wrapper.get('[data-testid="policy-path-card"]').text()).toContain('全部 Provider')
+    expect(wrapper.get('[data-testid="policy-path-card"]').text()).toContain('3当前节点')
+    await wrapper.findAll('button').find((button) => button.text() === '添加 Policy Path').trigger('click')
+    await wrapper.get('[data-testid="policy-path-name"]').setValue('指定节点')
+    const scopeLabels = wrapper.findAll('.policy-path-scope .check-row')
+    await scopeLabels[1].get('input').setValue(true)
+    const providerRows = wrapper.findAll('[data-testid="policy-path-provider-list"] .check-row')
+    expect(providerRows[1].text()).toContain('已停用，启用后自动恢复输出')
+    await providerRows[0].get('input').setValue(true)
+    await wrapper.get('.policy-path-modal').trigger('submit')
+    await vi.waitFor(() => expect(data.savePolicyPath).toHaveBeenCalledWith({
+      name: '指定节点', include_all: false, provider_ids: ['first'],
+    }, ''))
+
+    await wrapper.get('[data-testid="policy-path-card"]').findAll('button').find((button) => button.text() === '重新生成 Token').trigger('click')
+    await vi.waitFor(() => expect(data.regeneratePolicyPathToken).toHaveBeenCalledWith('default'))
     wrapper.unmount()
   })
 

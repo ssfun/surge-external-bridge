@@ -26,6 +26,10 @@ const navigation = [
   ['settings', '05', '设置'],
 ]
 
+function navigationActive(name) {
+  return route.name === name || (name === 'providers' && route.name === 'policyPaths')
+}
+
 const gateway = computed(() => overview.value?.gateway || {})
 const running = computed(() => gateway.value.state === 'running')
 let refreshTimer = 0
@@ -140,8 +144,8 @@ async function signOut() {
           v-for="item in navigation"
           :key="item[0]"
           type="button"
-          :class="{ active: route.name === item[0] }"
-          :aria-current="route.name === item[0] ? 'page' : undefined"
+          :class="{ active: navigationActive(item[0]) }"
+          :aria-current="navigationActive(item[0]) ? 'page' : undefined"
           @click="router.push({ name: item[0] })"
         >
           <b :data-short="item[2]">{{ item[1] }}</b><span>{{ item[2] }}</span>

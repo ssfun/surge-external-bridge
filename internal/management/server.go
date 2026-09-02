@@ -49,6 +49,7 @@ func New(application *gateway.App) (*Server, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", server.health)
 	mux.HandleFunc("GET /proxies", server.proxies)
+	mux.HandleFunc("GET /proxies/{id}", server.policyProxies)
 	mux.HandleFunc("GET /api/session", server.sessionStatus)
 	mux.HandleFunc("POST /api/session", server.sessionLogin)
 	mux.HandleFunc("DELETE /api/session", server.sessionLogout)
@@ -58,6 +59,11 @@ func New(application *gateway.App) (*Server, error) {
 	mux.HandleFunc("PUT /api/providers/order", server.authorize(server.reorderProviders))
 	mux.HandleFunc("PUT /api/providers/{id}", server.authorize(server.updateProvider))
 	mux.HandleFunc("DELETE /api/providers/{id}", server.authorize(server.deleteProvider))
+	mux.HandleFunc("GET /api/policy-paths", server.authorize(server.policyPaths))
+	mux.HandleFunc("POST /api/policy-paths", server.authorize(server.addPolicyPath))
+	mux.HandleFunc("PUT /api/policy-paths/{id}", server.authorize(server.updatePolicyPath))
+	mux.HandleFunc("DELETE /api/policy-paths/{id}", server.authorize(server.deletePolicyPath))
+	mux.HandleFunc("POST /api/policy-paths/{id}/token", server.authorize(server.regeneratePolicyPathToken))
 	mux.HandleFunc("POST /api/providers/{id}/refresh", server.authorize(server.refreshProvider))
 	mux.HandleFunc("POST /api/providers/{id}/healthcheck", server.authorize(server.healthCheckProvider))
 	mux.HandleFunc("GET /api/providers/{id}/runtime", server.authorize(server.providerRuntime))
@@ -144,12 +150,25 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) proxies(w http.ResponseWriter, r *http.Request) {
+	s.servePolicyPath(w, r, gateway.DefaultPolicyPathID)
+}
+
+func (s *Server) policyProxies(w http.ResponseWriter, r *http.Request) {
+	s.servePolicyPath(w, r, r.PathValue("id"))
+}
+
+func (s *Server) servePolicyPath(w http.ResponseWriter, r *http.Request, id string) {
 	config := s.app.Config()
-	if config.PolicyToken != "" && !constantEqual(r.URL.Query().Get("token"), config.PolicyToken) {
+	path, ok := config.PolicyPath(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "Policy Path not found")
+		return
+	}
+	if path.Token != "" && !constantEqual(r.URL.Query().Get("token"), path.Token) {
 		writeError(w, http.StatusUnauthorized, "invalid Policy Token")
 		return
 	}
-	content, revision, err := s.app.Proxies()
+	content, revision, err := s.app.ProxiesForPath(id)
 	if err != nil {
 		w.Header().Set("Cache-Control", "no-store")
 		writeError(w, http.StatusServiceUnavailable, s.publicError(err))
@@ -215,7 +234,7 @@ func (s *Server) overview(w http.ResponseWriter, _ *http.Request) {
 	status := s.app.Status()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version": gateway.Version, "core_version": status.CoreVersion, "gateway": status,
-		"provider_count": len(config.Providers), "projection_count": status.ProjectionCount,
+		"provider_count": len(config.Providers), "projection_count": status.ProjectionCount, "policy_path_count": len(config.PolicyPaths),
 		"policy_url": policyURL(config), "process_rule": "PROCESS-NAME,SurgeEB,DIRECT",
 		"socks_advertise": net.JoinHostPort(config.SocksHost, fmt.Sprint(config.SocksPort)),
 	})
@@ -283,6 +302,140 @@ func (s *Server) providers(w http.ResponseWriter, _ *http.Request) {
 		result = append(result, item)
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+type publicPolicyPath struct {
+	StableID        string   `json:"id"`
+	Name            string   `json:"name"`
+	IncludeAll      bool     `json:"include_all"`
+	ProviderIDs     []string `json:"provider_ids"`
+	Token           string   `json:"token,omitempty"`
+	URL             string   `json:"url"`
+	Default         bool     `json:"default"`
+	ProviderCount   int      `json:"provider_count"`
+	ProjectionCount int      `json:"projection_count"`
+}
+
+func makePublicPolicyPath(config gateway.Config, path gateway.PolicyPath, entries []M.Entry) publicPolicyPath {
+	selected := make(map[string]struct{}, len(path.ProviderIDs))
+	for _, providerID := range path.ProviderIDs {
+		selected[providerID] = struct{}{}
+	}
+	projectionCount := 0
+	for _, entry := range entries {
+		if path.IncludeAll {
+			projectionCount++
+		} else if _, ok := selected[entry.ProviderID]; ok {
+			projectionCount++
+		}
+	}
+	providerCount := len(path.ProviderIDs)
+	if path.IncludeAll {
+		providerCount = len(config.Providers)
+	}
+	return publicPolicyPath{
+		StableID: path.StableID, Name: path.Name, IncludeAll: path.IncludeAll,
+		ProviderIDs: append([]string{}, path.ProviderIDs...), Token: path.Token,
+		URL: policyPathURL(config, path), Default: path.StableID == gateway.DefaultPolicyPathID,
+		ProviderCount: providerCount, ProjectionCount: projectionCount,
+	}
+}
+
+func (s *Server) policyPaths(w http.ResponseWriter, _ *http.Request) {
+	config := s.app.Config()
+	entries := s.app.Snapshot().Entries()
+	result := make([]publicPolicyPath, 0, len(config.PolicyPaths))
+	for _, path := range config.PolicyPaths {
+		result = append(result, makePublicPolicyPath(config, path, entries))
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+type policyPathRequest struct {
+	Name        string   `json:"name"`
+	IncludeAll  bool     `json:"include_all"`
+	ProviderIDs []string `json:"provider_ids"`
+}
+
+func (s *Server) addPolicyPath(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "cross-origin mutation is not allowed")
+		return
+	}
+	var request policyPathRequest
+	if err := readJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	created, err := s.app.AddPolicyPath(gateway.PolicyPath{Name: request.Name, IncludeAll: request.IncludeAll, ProviderIDs: request.ProviderIDs})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, s.publicError(err))
+		return
+	}
+	writeJSON(w, http.StatusCreated, makePublicPolicyPath(s.app.Config(), created, s.app.Snapshot().Entries()))
+}
+
+func (s *Server) updatePolicyPath(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "cross-origin mutation is not allowed")
+		return
+	}
+	var request policyPathRequest
+	if err := readJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	updated, err := s.app.UpdatePolicyPath(r.PathValue("id"), gateway.PolicyPath{Name: request.Name, IncludeAll: request.IncludeAll, ProviderIDs: request.ProviderIDs})
+	if err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, s.publicError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, makePublicPolicyPath(s.app.Config(), updated, s.app.Snapshot().Entries()))
+}
+
+func (s *Server) deletePolicyPath(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "cross-origin mutation is not allowed")
+		return
+	}
+	if r.Header.Get("X-SurgeEB-Confirm") != "delete-policy-path" {
+		writeError(w, http.StatusPreconditionFailed, "删除 Policy Path 需要显式确认")
+		return
+	}
+	if err := s.app.DeletePolicyPath(r.PathValue("id")); err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, s.publicError(err))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) regeneratePolicyPathToken(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "cross-origin mutation is not allowed")
+		return
+	}
+	if r.Header.Get("X-SurgeEB-Confirm") != "regenerate-policy-path-token" {
+		writeError(w, http.StatusPreconditionFailed, "重新生成 Policy Path Token 需要显式确认")
+		return
+	}
+	updated, err := s.app.RegeneratePolicyPathToken(r.PathValue("id"))
+	if err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, s.publicError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, makePublicPolicyPath(s.app.Config(), updated, s.app.Snapshot().Entries()))
 }
 
 func (s *Server) addProvider(w http.ResponseWriter, r *http.Request) {
@@ -746,26 +899,18 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	current := s.app.Config().Settings()
 	next := gateway.Settings{
 		Mode: request.Mode, HTTPBind: request.HTTPBind, SocksBind: request.SocksBind, SocksPort: request.SocksPort,
 		SocksHost: request.SocksHost, PolicyHost: request.PolicyHost, ProjectionKey: request.ProjectionKey,
-		ManagementToken: current.ManagementToken, PolicyToken: current.PolicyToken,
 		PrefixProvider: request.PrefixProvider, ProjectionTypes: request.ProjectionTypes,
 		NodeTestURL: request.NodeTestURL, NodeTestUDP: request.NodeTestUDP, NodeTestTimeout: request.NodeTestTimeout,
-	}
-	if request.ManagementToken != nil {
-		next.ManagementToken = *request.ManagementToken
-	}
-	if request.PolicyToken != nil {
-		next.PolicyToken = *request.PolicyToken
 	}
 	prepared, err := s.prepareHTTPRebind(next.HTTPBind)
 	if err != nil {
 		writeError(w, http.StatusConflict, "新的 HTTP 监听地址不可用："+s.publicError(err))
 		return
 	}
-	if err := s.app.UpdateSettings(next); err != nil {
+	if err := s.app.UpdateSettingsPatch(next, request.ManagementToken, request.PolicyToken); err != nil {
 		if prepared != nil {
 			_ = prepared.Close()
 		}
@@ -927,7 +1072,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'")
-		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/proxies" {
+		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/proxies" || strings.HasPrefix(r.URL.Path, "/proxies/") {
 			w.Header().Set("Cache-Control", "no-store")
 		}
 		next.ServeHTTP(w, r)
@@ -1004,11 +1149,22 @@ func requestHost(value string) string {
 	return strings.Trim(value, "[]")
 }
 func policyURL(config gateway.Config) string {
-	base := config.PolicyBaseURL() + "/proxies"
-	if config.PolicyToken == "" {
-		return base
+	path, ok := config.PolicyPath(gateway.DefaultPolicyPathID)
+	if !ok {
+		return ""
 	}
-	return base + "?token=" + url.QueryEscape(config.PolicyToken)
+	return policyPathURL(config, path)
+}
+
+func policyPathURL(config gateway.Config, path gateway.PolicyPath) string {
+	base := config.PolicyBaseURL() + "/proxies"
+	if path.StableID != gateway.DefaultPolicyPathID {
+		base += "/" + url.PathEscape(path.StableID)
+	}
+	if path.Token != "" {
+		base += "?token=" + url.QueryEscape(path.Token)
+	}
+	return base
 }
 
 func redactURL(raw string) string {

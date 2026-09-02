@@ -469,7 +469,10 @@ var (
 )
 
 func redactText(value string, config gateway.Config, dataDir string) string {
-	secrets := []string{config.ManagementToken, config.PolicyToken, dataDir}
+	secrets := []string{config.ManagementToken, dataDir}
+	for _, path := range config.PolicyPaths {
+		secrets = append(secrets, path.Token)
+	}
 	for _, provider := range config.Providers {
 		secrets = append(secrets, provider.URL, provider.FilePath)
 		for _, values := range provider.Headers {

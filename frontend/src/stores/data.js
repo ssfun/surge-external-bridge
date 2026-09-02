@@ -4,6 +4,7 @@ import { api, encodeID, login } from '@/api.js'
 const resourcePaths = {
   overview: '/api/overview',
   providers: '/api/providers',
+  policyPaths: '/api/policy-paths',
   nodes: '/api/nodes',
   events: '/api/events',
   settings: '/api/settings',
@@ -13,6 +14,7 @@ const resourcePaths = {
 export const routeResources = {
   overview: ['overview', 'providers', 'nodes'],
   providers: ['providers', 'nodes'],
+  policyPaths: ['policyPaths', 'providers', 'nodes'],
   nodes: ['nodes'],
   connections: [],
   logs: ['events', 'providers', 'nodes'],
@@ -22,6 +24,7 @@ export const routeResources = {
 export const backgroundResources = {
   overview: ['overview', 'providers', 'nodes'],
   providers: ['providers', 'nodes'],
+  policyPaths: ['policyPaths', 'providers', 'nodes'],
   nodes: ['nodes'],
   connections: [],
   logs: ['events'],
@@ -36,6 +39,7 @@ export const useDataStore = defineStore('data', {
   state: () => ({
     overview: null,
     providers: [],
+    policyPaths: [],
     nodes: [],
     events: [],
     settings: null,
@@ -138,6 +142,27 @@ export const useDataStore = defineStore('data', {
         body: JSON.stringify({ provider_ids: providerIDs }),
       })
       await this.reloadResources(['providers', 'nodes', 'overview'])
+    },
+    async savePolicyPath(path, id = '') {
+      await api(id ? `/api/policy-paths/${encodeID(id)}` : '/api/policy-paths', {
+        method: id ? 'PUT' : 'POST',
+        body: JSON.stringify(path),
+      })
+      await this.reloadResources(['policyPaths', 'overview'])
+    },
+    async deletePolicyPath(id) {
+      await api(`/api/policy-paths/${encodeID(id)}`, {
+        method: 'DELETE',
+        headers: { 'X-SurgeEB-Confirm': 'delete-policy-path' },
+      })
+      await this.reloadResources(['policyPaths', 'overview'])
+    },
+    async regeneratePolicyPathToken(id) {
+      await api(`/api/policy-paths/${encodeID(id)}/token`, {
+        method: 'POST',
+        headers: { 'X-SurgeEB-Confirm': 'regenerate-policy-path-token' },
+      })
+      await this.reloadResources(['policyPaths', 'overview', 'settings'])
     },
     async refreshProvider(id) {
       await api(`/api/providers/${encodeID(id)}/refresh`, { method: 'POST' })

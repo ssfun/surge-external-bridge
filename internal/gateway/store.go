@@ -17,6 +17,12 @@ type Store struct {
 type configV1 struct {
 	Config
 	VirtualHost string `json:"virtual_host"`
+	PolicyToken string `json:"policy_token,omitempty"`
+}
+
+type configV2V3 struct {
+	Config
+	PolicyToken string `json:"policy_token,omitempty"`
 }
 
 func NewStore(dir string) *Store {
@@ -85,12 +91,16 @@ func (s *Store) Load() (Config, error) {
 		config.SchemaVersion = SchemaVersion
 		config.SocksHost = legacy.VirtualHost
 		config.PolicyHost = legacy.VirtualHost
+		config.PolicyPaths = defaultPolicyPaths(legacy.PolicyToken)
 		migrated = true
-	case 2:
-		if err := json.Unmarshal(data, &config); err != nil {
-			return Config{}, fmt.Errorf("decode gateway.json schema 2: %w", err)
+	case 2, 3:
+		var legacy configV2V3
+		if err := json.Unmarshal(data, &legacy); err != nil {
+			return Config{}, fmt.Errorf("decode gateway.json schema %d: %w", schema.SchemaVersion, err)
 		}
+		config = legacy.Config
 		config.SchemaVersion = SchemaVersion
+		config.PolicyPaths = defaultPolicyPaths(legacy.PolicyToken)
 		migrated = true
 	case SchemaVersion:
 		if err := json.Unmarshal(data, &config); err != nil {
@@ -100,9 +110,13 @@ func (s *Store) Load() (Config, error) {
 		return Config{}, fmt.Errorf("unsupported gateway schema %d", schema.SchemaVersion)
 	}
 	assignProviderIDs(&config)
-	if config.PolicyToken == "unsafe" {
-		for config.PolicyToken == "unsafe" || config.PolicyToken == config.ManagementToken {
-			config.PolicyToken, err = randomToken()
+	for index := range config.PolicyPaths {
+		path := &config.PolicyPaths[index]
+		if path.Token != "unsafe" {
+			continue
+		}
+		for path.Token == "unsafe" || path.Token == config.ManagementToken {
+			path.Token, err = randomToken()
 			if err != nil {
 				return Config{}, fmt.Errorf("replace legacy unsafe Policy Token: %w", err)
 			}
@@ -124,6 +138,10 @@ func (s *Store) Load() (Config, error) {
 		}
 	}
 	return config, nil
+}
+
+func defaultPolicyPaths(token string) []PolicyPath {
+	return []PolicyPath{{StableID: DefaultPolicyPathID, Name: "全部节点", IncludeAll: true, Token: token}}
 }
 
 func (s *Store) Save(config Config) error {
