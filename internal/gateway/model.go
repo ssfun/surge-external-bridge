@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const SchemaVersion = 4
+const SchemaVersion = 5
 
 const DefaultPolicyPathID = "default"
 
@@ -41,6 +41,8 @@ type PolicyPath struct {
 	Name        string   `json:"name"`
 	IncludeAll  bool     `json:"include_all"`
 	ProviderIDs []string `json:"provider_ids,omitempty"`
+	IncludeName string   `json:"include_name,omitempty"`
+	ExcludeName string   `json:"exclude_name,omitempty"`
 	Token       string   `json:"token,omitempty"`
 }
 

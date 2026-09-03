@@ -193,6 +193,43 @@ func TestStoreMigratesSchemaThreePolicyTokenIntoDefaultPolicyPath(t *testing.T) 
 	}
 }
 
+func TestStoreMigratesSchemaFourAndRetainsPolicyPathFilters(t *testing.T) {
+	dir := t.TempDir()
+	legacy := mustDefaultConfig(t)
+	legacy.SchemaVersion = 4
+	legacy.PolicyPaths = append(legacy.PolicyPaths, PolicyPath{
+		StableID: "pp_12345678", Name: "Legacy Path", IncludeAll: true, Token: "legacy-path-token-1234",
+	})
+	encoded, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gateway.json"), encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(dir)
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.SchemaVersion != SchemaVersion || len(loaded.PolicyPaths) != 2 || loaded.PolicyPaths[1].StableID != "pp_12345678" {
+		t.Fatalf("schema four Policy Paths were not retained: %+v", loaded.PolicyPaths)
+	}
+	loaded.PolicyPaths[1].IncludeName = "Hong Kong|Singapore"
+	loaded.PolicyPaths[1].ExcludeName = "Expired"
+	if err := store.Save(loaded); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := reloaded.PolicyPaths[1]
+	if path.IncludeName != "Hong Kong|Singapore" || path.ExcludeName != "Expired" {
+		t.Fatalf("Policy Path filters were not retained: %+v", path)
+	}
+}
+
 func TestStoreMigratesSingleVirtualHostToIndependentPublishedHosts(t *testing.T) {
 	dir := t.TempDir()
 	legacy := mustDefaultConfig(t)

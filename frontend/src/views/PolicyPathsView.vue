@@ -15,7 +15,7 @@ const dialogOpen = ref(false)
 const editingID = ref('')
 const saving = ref(false)
 const busy = reactive(new Set())
-const form = reactive({ name: '', token: '', include_all: true, provider_ids: [] })
+const form = reactive({ name: '', token: '', include_all: true, provider_ids: [], include_name: '', exclude_name: '' })
 const selectedCount = computed(() => form.include_all ? providers.value.length : form.provider_ids.length)
 
 function open(path = null) {
@@ -24,6 +24,8 @@ function open(path = null) {
   form.token = ''
   form.include_all = path?.include_all ?? true
   form.provider_ids = [...(path?.provider_ids || [])]
+  form.include_name = path?.include_name || ''
+  form.exclude_name = path?.exclude_name || ''
   dialogOpen.value = true
 }
 
@@ -52,7 +54,10 @@ async function save() {
   }
   saving.value = true
   try {
-    await data.savePolicyPath({ name: form.name, token: form.token, include_all: form.include_all, provider_ids: form.provider_ids }, editingID.value)
+    await data.savePolicyPath({
+      name: form.name, token: form.token, include_all: form.include_all, provider_ids: form.provider_ids,
+      include_name: form.include_name, exclude_name: form.exclude_name,
+    }, editingID.value)
     ui.toast(editingID.value ? 'Policy Path 已更新' : 'Policy Path 已添加')
     dialogOpen.value = false
     editingID.value = ''
@@ -97,6 +102,13 @@ function providerNames(path) {
   const names = new Map(providers.value.map((provider) => [provider.stable_id, provider.name]))
   return path.provider_ids.map((id) => names.get(id) || id).join('、') || '当前没有关联 Provider'
 }
+
+function filterDescription(path) {
+  const filters = []
+  if (path.include_name) filters.push(`包含 /${path.include_name}/`)
+  if (path.exclude_name) filters.push(`排除 /${path.exclude_name}/`)
+  return filters.join(' · ')
+}
 </script>
 
 <template>
@@ -121,6 +133,7 @@ function providerNames(path) {
         <div>
           <div class="provider-title-line"><h3>{{ path.name }}</h3><span v-if="path.default" class="pill ok">默认</span><span class="pill" :class="path.token ? 'ok' : 'warn'">{{ path.token ? '独立 Token' : '未设置 Token' }}</span></div>
           <p>{{ providerNames(path) }}</p>
+          <p v-if="filterDescription(path)">节点筛选：{{ filterDescription(path) }}</p>
         </div>
         <div class="actions policy-path-actions">
           <button class="button ghost" type="button" @click="open(path)">编辑</button>
@@ -165,7 +178,15 @@ function providerNames(path) {
             <div v-if="!providers.length" class="modal-hint">暂无 Provider，请先添加节点来源。</div>
           </div>
         </section>
-        <p v-if="editingID" class="modal-footnote">名称和范围不会更改路径 ID 或节点凭据；修改 Token 会立即使旧链接失效。默认 Policy Path 继续兼容现有 <code>/proxies</code> 地址。</p>
+        <section class="form-section">
+          <div class="form-section-title"><b>节点筛选</b><span>可选 · 正则表达式</span></div>
+          <div class="form-grid">
+            <label class="field"><span>名称包含</span><input v-model="form.include_name" data-testid="policy-path-include" spellcheck="false" placeholder="留空包含全部节点"></label>
+            <label class="field"><span>名称排除</span><input v-model="form.exclude_name" data-testid="policy-path-exclude" spellcheck="false" placeholder="留空不排除节点"></label>
+          </div>
+          <small class="field-help">在 Provider 范围上继续匹配最终展示名（包括 Provider 前缀）；先包含，后排除。</small>
+        </section>
+        <p v-if="editingID" class="modal-footnote">名称、范围和节点筛选不会更改路径 ID 或节点凭据；修改 Token 会立即使旧链接失效。默认 Policy Path 继续兼容现有 <code>/proxies</code> 地址。</p>
       </div>
       <div class="modal-actions actions"><button class="button" type="button" :disabled="saving" @click="close">取消</button><button class="button primary" type="submit" :disabled="saving || !form.name || (!form.include_all && !form.provider_ids.length)" :aria-busy="saving">{{ saving ? '保存中…' : '保存' }}</button></div>
     </form>

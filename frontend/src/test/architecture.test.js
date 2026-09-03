@@ -1,4 +1,5 @@
 import { createPinia, setActivePinia } from 'pinia'
+import { readFileSync } from 'node:fs'
 import { DOMWrapper, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { nextTick } from 'vue'
@@ -29,6 +30,11 @@ function testRouter(component, name = 'overview') {
 
 describe('component update boundaries', () => {
   beforeEach(() => setActivePinia(createPinia()))
+
+  it('wraps long Policy Path descriptions inside their cards', () => {
+    const styles = readFileSync('public/styles.css', 'utf8')
+    expect(styles).toMatch(/\.policy-path-head p\{[^}]*overflow-wrap:anywhere/)
+  })
 
   it('uses the concise SurgeEB title in the left navigation', async () => {
     const pinia = createPinia()
@@ -554,6 +560,7 @@ describe('component update boundaries', () => {
     ]
     data.policyPaths = [{
       id: 'default', name: '全部节点', include_all: true, provider_ids: [], token: 'default-token',
+      include_name: '香港|新加坡', exclude_name: '过期',
       url: 'http://127.0.0.1:18080/proxies?token=default-token', default: true, provider_count: 2, projection_count: 3,
     }]
     data.savePolicyPath = vi.fn(async () => {})
@@ -565,9 +572,12 @@ describe('component update boundaries', () => {
 
     expect(wrapper.get('[data-testid="policy-path-card"]').text()).toContain('全部 Provider')
     expect(wrapper.get('[data-testid="policy-path-card"]').text()).toContain('3当前节点')
+    expect(wrapper.get('[data-testid="policy-path-card"]').text()).toContain('包含 /香港|新加坡/ · 排除 /过期/')
     await wrapper.findAll('button').find((button) => button.text() === '添加 Policy Path').trigger('click')
     await wrapper.get('[data-testid="policy-path-name"]').setValue('指定节点')
     await wrapper.get('[data-testid="policy-path-token"]').setValue('manual-policy-token-1234')
+    await wrapper.get('[data-testid="policy-path-include"]').setValue('Node$')
+    await wrapper.get('[data-testid="policy-path-exclude"]').setValue('Deprecated')
     const scopeLabels = wrapper.findAll('.policy-path-scope .check-row')
     await scopeLabels[1].get('input').setValue(true)
     const providerRows = wrapper.findAll('[data-testid="policy-path-provider-list"] .check-row')
@@ -576,13 +586,17 @@ describe('component update boundaries', () => {
     await wrapper.get('.policy-path-modal').trigger('submit')
     await vi.waitFor(() => expect(data.savePolicyPath).toHaveBeenCalledWith({
       name: '指定节点', token: 'manual-policy-token-1234', include_all: false, provider_ids: ['first'],
+      include_name: 'Node$', exclude_name: 'Deprecated',
     }, ''))
 
     await wrapper.get('[data-testid="policy-path-card"]').findAll('button').find((button) => button.text() === '编辑').trigger('click')
     expect(wrapper.get('[data-testid="policy-path-token"]').element.value).toBe('')
+    expect(wrapper.get('[data-testid="policy-path-include"]').element.value).toBe('香港|新加坡')
+    expect(wrapper.get('[data-testid="policy-path-exclude"]').element.value).toBe('过期')
     await wrapper.get('.policy-path-modal').trigger('submit')
     await vi.waitFor(() => expect(data.savePolicyPath).toHaveBeenLastCalledWith({
       name: '全部节点', token: '', include_all: true, provider_ids: [],
+      include_name: '香港|新加坡', exclude_name: '过期',
     }, 'default'))
 
     await wrapper.get('[data-testid="policy-path-card"]').findAll('button').find((button) => button.text() === '编辑').trigger('click')
@@ -590,6 +604,7 @@ describe('component update boundaries', () => {
     await wrapper.get('.policy-path-modal').trigger('submit')
     await vi.waitFor(() => expect(data.savePolicyPath).toHaveBeenLastCalledWith({
       name: '全部节点', token: 'updated-default-token-1234', include_all: true, provider_ids: [],
+      include_name: '香港|新加坡', exclude_name: '过期',
     }, 'default'))
 
     await wrapper.get('[data-testid="policy-path-card"]').findAll('button').find((button) => button.text() === '重新生成 Token').trigger('click')

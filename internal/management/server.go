@@ -309,6 +309,8 @@ type publicPolicyPath struct {
 	Name            string   `json:"name"`
 	IncludeAll      bool     `json:"include_all"`
 	ProviderIDs     []string `json:"provider_ids"`
+	IncludeName     string   `json:"include_name,omitempty"`
+	ExcludeName     string   `json:"exclude_name,omitempty"`
 	Token           string   `json:"token,omitempty"`
 	URL             string   `json:"url"`
 	Default         bool     `json:"default"`
@@ -316,18 +318,10 @@ type publicPolicyPath struct {
 	ProjectionCount int      `json:"projection_count"`
 }
 
-func makePublicPolicyPath(config gateway.Config, path gateway.PolicyPath, entries []M.Entry) publicPolicyPath {
-	selected := make(map[string]struct{}, len(path.ProviderIDs))
-	for _, providerID := range path.ProviderIDs {
-		selected[providerID] = struct{}{}
-	}
-	projectionCount := 0
-	for _, entry := range entries {
-		if path.IncludeAll {
-			projectionCount++
-		} else if _, ok := selected[entry.ProviderID]; ok {
-			projectionCount++
-		}
+func makePublicPolicyPath(config gateway.Config, path gateway.PolicyPath, entries []M.Entry) (publicPolicyPath, error) {
+	filtered, err := gateway.FilterPolicyPathEntries(path, entries)
+	if err != nil {
+		return publicPolicyPath{}, err
 	}
 	providerCount := len(path.ProviderIDs)
 	if path.IncludeAll {
@@ -335,10 +329,10 @@ func makePublicPolicyPath(config gateway.Config, path gateway.PolicyPath, entrie
 	}
 	return publicPolicyPath{
 		StableID: path.StableID, Name: path.Name, IncludeAll: path.IncludeAll,
-		ProviderIDs: append([]string{}, path.ProviderIDs...), Token: path.Token,
+		ProviderIDs: append([]string{}, path.ProviderIDs...), IncludeName: path.IncludeName, ExcludeName: path.ExcludeName, Token: path.Token,
 		URL: policyPathURL(config, path), Default: path.StableID == gateway.DefaultPolicyPathID,
-		ProviderCount: providerCount, ProjectionCount: projectionCount,
-	}
+		ProviderCount: providerCount, ProjectionCount: len(filtered),
+	}, nil
 }
 
 func (s *Server) policyPaths(w http.ResponseWriter, _ *http.Request) {
@@ -346,15 +340,31 @@ func (s *Server) policyPaths(w http.ResponseWriter, _ *http.Request) {
 	entries := s.app.Snapshot().Entries()
 	result := make([]publicPolicyPath, 0, len(config.PolicyPaths))
 	for _, path := range config.PolicyPaths {
-		result = append(result, makePublicPolicyPath(config, path, entries))
+		item, err := makePublicPolicyPath(config, path, entries)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, s.publicError(err))
+			return
+		}
+		result = append(result, item)
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) writePolicyPath(w http.ResponseWriter, status int, path gateway.PolicyPath) {
+	item, err := makePublicPolicyPath(s.app.Config(), path, s.app.Snapshot().Entries())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, s.publicError(err))
+		return
+	}
+	writeJSON(w, status, item)
 }
 
 type policyPathRequest struct {
 	Name        string   `json:"name"`
 	IncludeAll  bool     `json:"include_all"`
 	ProviderIDs []string `json:"provider_ids"`
+	IncludeName string   `json:"include_name"`
+	ExcludeName string   `json:"exclude_name"`
 	Token       string   `json:"token"`
 }
 
@@ -368,12 +378,12 @@ func (s *Server) addPolicyPath(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	created, err := s.app.AddPolicyPath(gateway.PolicyPath{Name: request.Name, IncludeAll: request.IncludeAll, ProviderIDs: request.ProviderIDs, Token: request.Token})
+	created, err := s.app.AddPolicyPath(gateway.PolicyPath{Name: request.Name, IncludeAll: request.IncludeAll, ProviderIDs: request.ProviderIDs, IncludeName: request.IncludeName, ExcludeName: request.ExcludeName, Token: request.Token})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, s.publicError(err))
 		return
 	}
-	writeJSON(w, http.StatusCreated, makePublicPolicyPath(s.app.Config(), created, s.app.Snapshot().Entries()))
+	s.writePolicyPath(w, http.StatusCreated, created)
 }
 
 func (s *Server) updatePolicyPath(w http.ResponseWriter, r *http.Request) {
@@ -386,7 +396,7 @@ func (s *Server) updatePolicyPath(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	updated, err := s.app.UpdatePolicyPath(r.PathValue("id"), gateway.PolicyPath{Name: request.Name, IncludeAll: request.IncludeAll, ProviderIDs: request.ProviderIDs, Token: request.Token})
+	updated, err := s.app.UpdatePolicyPath(r.PathValue("id"), gateway.PolicyPath{Name: request.Name, IncludeAll: request.IncludeAll, ProviderIDs: request.ProviderIDs, IncludeName: request.IncludeName, ExcludeName: request.ExcludeName, Token: request.Token})
 	if err != nil {
 		status := http.StatusBadRequest
 		if strings.Contains(err.Error(), "not found") {
@@ -395,7 +405,7 @@ func (s *Server) updatePolicyPath(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, s.publicError(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, makePublicPolicyPath(s.app.Config(), updated, s.app.Snapshot().Entries()))
+	s.writePolicyPath(w, http.StatusOK, updated)
 }
 
 func (s *Server) deletePolicyPath(w http.ResponseWriter, r *http.Request) {
@@ -436,7 +446,7 @@ func (s *Server) regeneratePolicyPathToken(w http.ResponseWriter, r *http.Reques
 		writeError(w, status, s.publicError(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, makePublicPolicyPath(s.app.Config(), updated, s.app.Snapshot().Entries()))
+	s.writePolicyPath(w, http.StatusOK, updated)
 }
 
 func (s *Server) addProvider(w http.ResponseWriter, r *http.Request) {

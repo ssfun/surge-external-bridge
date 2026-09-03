@@ -1,6 +1,10 @@
 package gateway
 
-import "testing"
+import (
+	"testing"
+
+	M "github.com/ssfun/surge-external-bridge/internal/mihomo"
+)
 
 func mustDefaultConfig(t *testing.T) Config {
 	t.Helper()
@@ -21,6 +25,23 @@ func TestDefaultConfigProjectsAllMihomoProviderProtocols(t *testing.T) {
 	config := mustDefaultConfig(t)
 	if len(config.ProjectionTypes) != 1 || config.ProjectionTypes[0] != "*" {
 		t.Fatalf("default projection types=%v, want all protocols", config.ProjectionTypes)
+	}
+}
+
+func TestFilterPolicyPathEntriesCombinesProviderAndDisplayNameFilters(t *testing.T) {
+	entries := []M.Entry{
+		{ProviderID: "provider-a", ProxyName: "Hong Kong", DisplayName: "Alpha · Hong Kong"},
+		{ProviderID: "provider-a", ProxyName: "Expired", DisplayName: "Alpha · Expired"},
+		{ProviderID: "provider-b", ProxyName: "Tokyo", DisplayName: "Alpha · Tokyo"},
+	}
+	filtered, err := FilterPolicyPathEntries(PolicyPath{
+		ProviderIDs: []string{"provider-a"}, IncludeName: `^Alpha · `, ExcludeName: `Expired$`,
+	}, entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered) != 1 || filtered[0].ProxyName != "Hong Kong" {
+		t.Fatalf("filtered Policy Path entries=%+v", filtered)
 	}
 }
 
@@ -74,6 +95,8 @@ func TestValidateConfigNetworkBoundaries(t *testing.T) {
 		{name: "gateway unsafe policy token", config: func() Config { c := cloneConfig(validGateway); c.PolicyPaths[0].Token = "unsafe"; return c }(), wantErr: true},
 		{name: "gateway short custom policy token", config: func() Config { c := cloneConfig(validGateway); c.PolicyPaths[0].Token = "short"; return c }(), wantErr: true},
 		{name: "gateway shared token", config: func() Config { c := cloneConfig(validGateway); c.PolicyPaths[0].Token = c.ManagementToken; return c }(), wantErr: true},
+		{name: "invalid Policy Path include regex", config: func() Config { c := cloneConfig(validGateway); c.PolicyPaths[0].IncludeName = "["; return c }(), wantErr: true},
+		{name: "invalid Policy Path exclude regex", config: func() Config { c := cloneConfig(validGateway); c.PolicyPaths[0].ExcludeName = "("; return c }(), wantErr: true},
 		{name: "gateway public SOCKS IP", config: func() Config { c := validGateway; c.SocksHost = "8.8.8.8"; return c }(), wantErr: true},
 		{name: "gateway public Policy IP", config: func() Config { c := validGateway; c.PolicyHost = "8.8.8.8"; return c }(), wantErr: true},
 		{name: "unspecified SOCKS IP", config: func() Config { c := validGateway; c.SocksHost = "0.0.0.0"; return c }(), wantErr: true},

@@ -709,20 +709,12 @@ func (a *App) ProxiesForPath(id string) (string, string, error) {
 		return "", "", errors.New("Policy Path not found")
 	}
 	snapshot := a.manager.Snapshot()
-	entries := snapshot.Entries()
-	selected := make(map[string]struct{}, len(path.ProviderIDs))
-	if !path.IncludeAll {
-		for _, providerID := range path.ProviderIDs {
-			selected[providerID] = struct{}{}
-		}
+	entries, err := FilterPolicyPathEntries(path, snapshot.Entries())
+	if err != nil {
+		return "", "", err
 	}
 	lines := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if !path.IncludeAll {
-			if _, included := selected[entry.ProviderID]; !included {
-				continue
-			}
-		}
 		lines = append(lines, formatSurgeLine(entry))
 	}
 	content := ""
@@ -731,6 +723,45 @@ func (a *App) ProxiesForPath(id string) (string, string, error) {
 	}
 	revision := sha256.Sum256([]byte(content))
 	return content, hex.EncodeToString(revision[:]), nil
+}
+
+func FilterPolicyPathEntries(path PolicyPath, entries []M.Entry) ([]M.Entry, error) {
+	selected := make(map[string]struct{}, len(path.ProviderIDs))
+	if !path.IncludeAll {
+		for _, providerID := range path.ProviderIDs {
+			selected[providerID] = struct{}{}
+		}
+	}
+	var includeName, excludeName *regexp.Regexp
+	var err error
+	if path.IncludeName != "" {
+		includeName, err = regexp.Compile(path.IncludeName)
+		if err != nil {
+			return nil, fmt.Errorf("invalid Policy Path include expression: %w", err)
+		}
+	}
+	if path.ExcludeName != "" {
+		excludeName, err = regexp.Compile(path.ExcludeName)
+		if err != nil {
+			return nil, fmt.Errorf("invalid Policy Path exclude expression: %w", err)
+		}
+	}
+	filtered := make([]M.Entry, 0, len(entries))
+	for _, entry := range entries {
+		if !path.IncludeAll {
+			if _, included := selected[entry.ProviderID]; !included {
+				continue
+			}
+		}
+		if includeName != nil && !includeName.MatchString(entry.DisplayName) {
+			continue
+		}
+		if excludeName != nil && excludeName.MatchString(entry.DisplayName) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered, nil
 }
 
 func formatSurgeLine(entry M.Entry) string {
@@ -948,6 +979,12 @@ func validatePolicyPaths(config Config) error {
 			return fmt.Errorf("duplicate Policy Path name %q", path.Name)
 		}
 		seenNames[foldedName] = struct{}{}
+		if _, err := regexp.Compile(path.IncludeName); path.IncludeName != "" && err != nil {
+			return fmt.Errorf("Policy Path %q has an invalid include expression: %w", path.Name, err)
+		}
+		if _, err := regexp.Compile(path.ExcludeName); path.ExcludeName != "" && err != nil {
+			return fmt.Errorf("Policy Path %q has an invalid exclude expression: %w", path.Name, err)
+		}
 		requiredToken := config.Mode == ModeGateway || path.StableID != DefaultPolicyPathID
 		if !validPolicyToken(path.Token, requiredToken) || path.Token == "unsafe" {
 			return fmt.Errorf("Policy Path %q requires a Token of at least 16 characters", path.Name)

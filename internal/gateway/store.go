@@ -102,6 +102,12 @@ func (s *Store) Load() (Config, error) {
 		config.SchemaVersion = SchemaVersion
 		config.PolicyPaths = defaultPolicyPaths(legacy.PolicyToken)
 		migrated = true
+	case 4:
+		if err := json.Unmarshal(data, &config); err != nil {
+			return Config{}, fmt.Errorf("decode gateway.json schema 4: %w", err)
+		}
+		config.SchemaVersion = SchemaVersion
+		migrated = true
 	case SchemaVersion:
 		if err := json.Unmarshal(data, &config); err != nil {
 			return Config{}, fmt.Errorf("decode gateway.json: %w", err)
