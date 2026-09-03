@@ -22,6 +22,15 @@ const menuOpen = ref('')
 const reordering = ref(false)
 const enabledCount = computed(() => providers.value.filter((provider) => provider.enabled).length)
 const errorCount = computed(() => providers.value.filter((provider) => provider.last_error || provider.runtimeError).length)
+const publishedProxyNames = computed(() => {
+  const result = new Map()
+  for (const node of nodes.value) {
+    if (!node.provider_id || !node.proxy_name) continue
+    if (!result.has(node.provider_id)) result.set(node.provider_id, new Set())
+    result.get(node.provider_id).add(node.proxy_name)
+  }
+  return result
+})
 
 watch(() => data.loadedAt.providers, () => {
   for (const id of expanded) data.loadProviderRuntime(id, { quiet: true })
@@ -29,8 +38,12 @@ watch(() => data.loadedAt.providers, () => {
 
 function open(provider = null) { menuOpen.value = ''; editing.value = provider; dialogOpen.value = true }
 function closeDialog() { dialogOpen.value = false; editing.value = null }
-function proxyList(provider) { return Array.isArray(provider.runtime?.proxies) ? provider.runtime.proxies : [] }
-function providerCount(provider) { return proxyList(provider).length || provider.runtime?.count || nodes.value.filter((node) => node.provider_id === provider.stable_id).length }
+function proxyList(provider) {
+  const proxies = Array.isArray(provider.runtime?.proxies) ? provider.runtime.proxies : []
+  const names = publishedProxyNames.value.get(provider.stable_id)
+  return names ? proxies.filter((proxy) => names.has(proxy.name)) : []
+}
+function providerCount(provider) { return publishedProxyNames.value.get(provider.stable_id)?.size || 0 }
 function lastDelay(proxy) { return [...(Array.isArray(proxy.history) ? proxy.history : [])].reverse().find((item) => item.delay)?.delay }
 function sourceLabel(provider) { return provider.type === 'http' ? (provider.url || '订阅地址已隐藏') : provider.type === 'file' ? 'Mihomo 私有目录文件' : '内联节点配置' }
 function filterLabel(provider) {
@@ -159,7 +172,7 @@ async function moveProvider(index, offset) {
       </div>
 
       <div class="provider-facts">
-        <div><b>{{ providerCount(provider) }}</b><span>节点</span></div>
+        <div><b>{{ providerCount(provider) }}</b><span>发布节点</span></div>
         <div v-if="provider.type === 'http'"><b>{{ formatDuration(provider.refresh_seconds) }}</b><span>刷新周期</span></div>
         <div v-if="provider.enabled && provider.next_refresh_at"><b>{{ formatDateTime(provider.next_refresh_at) }}</b><span>下次刷新</span></div>
         <div v-else-if="provider.health_check"><b>{{ provider.enabled ? '已开启' : '启用后生效' }}</b><span>健康检查</span></div>
@@ -176,7 +189,7 @@ async function moveProvider(index, offset) {
       <div v-if="provider.last_error || provider.runtimeError" class="provider-error"><b>最近错误</b><span>{{ provider.last_error || provider.runtimeError }}</span></div>
 
       <button v-if="providerCount(provider)" class="provider-disclosure" type="button" :aria-expanded="expanded.has(provider.stable_id)" :aria-busy="loadingRuntime.has(provider.stable_id)" @click="toggle(provider)">
-        <span><b>节点详情</b><small>查看 Mihomo 当前节点状态</small></span>
+        <span><b>节点详情</b><small>查看实际发布的 Mihomo 节点状态</small></span>
         <span>{{ providerCount(provider) }} 个 <i aria-hidden="true" :class="{ open: expanded.has(provider.stable_id) }" /></span>
       </button>
       <div v-if="expanded.has(provider.stable_id)" class="provider-detail">
@@ -194,7 +207,7 @@ async function moveProvider(index, offset) {
             </dl>
           </article>
         </div>
-        <div v-else class="provider-detail-state">当前没有可显示的 Mihomo 节点。</div>
+        <div v-else class="provider-detail-state">当前没有可显示的发布节点。</div>
       </div>
     </article>
 

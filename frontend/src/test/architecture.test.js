@@ -504,6 +504,7 @@ describe('component update boundaries', () => {
       },
       {
         stable_id: 'inline-on', name: '本地节点', type: 'inline', enabled: true, health_check: false,
+        include_name: '香港', exclude_name: '过期',
         filtered_count: 2, filtered_nodes: ['WARP-A', 'WARP-B'], hosts_count: 4,
         runtime: { proxies: [
           { name: '香港 01', type: 'Vless', alive: true, history: [{ delay: 42 }] },
@@ -511,7 +512,7 @@ describe('component update boundaries', () => {
         ] },
       },
     ]
-    data.nodes = [{ id: 'node-1', provider_id: 'inline-on' }]
+    data.nodes = [{ id: 'node-1', provider_id: 'inline-on', proxy_name: '香港 01' }]
     const router = testRouter(ProvidersView, 'providers')
     await router.push('/')
     data.reorderProviders = vi.fn(async () => {})
@@ -520,6 +521,7 @@ describe('component update boundaries', () => {
     const inline = wrapper.get('[data-provider-id="inline-on"]')
 
     expect(wrapper.get('[data-testid="provider-summary"]').text()).toContain('1 / 2 已启用')
+    expect(inline.get('.provider-facts').text()).toContain('1发布节点')
     expect(http.text()).toContain('6 小时')
     expect(http.text()).toContain('筛选包含 香港 · 排除 过期')
     expect(http.text()).not.toContain('最近更新 —')
@@ -539,13 +541,11 @@ describe('component update boundaries', () => {
 
     await inline.get('.provider-disclosure').trigger('click')
     const nodeCards = inline.findAll('[data-testid="provider-node-card"]')
-    expect(nodeCards).toHaveLength(2)
+    expect(nodeCards).toHaveLength(1)
     expect(nodeCards[0].text()).toContain('香港 01')
     expect(nodeCards[0].text()).toContain('Vless')
     expect(nodeCards[0].text()).toContain('42 ms')
-    expect(nodeCards[1].text()).toContain('新加坡 02')
-    expect(nodeCards[1].text()).toContain('未知 / 失败')
-    expect(nodeCards[1].text()).toContain('暂无数据')
+    expect(inline.text()).not.toContain('新加坡 02')
     expect(inline.get('.provider-filter-warning').text()).toContain('已过滤 2 个链式节点')
     expect(inline.get('.provider-filter-warning').text()).toContain('WARP-A、WARP-B')
     expect(inline.text()).toContain('已应用 4 条代理服务器映射')
