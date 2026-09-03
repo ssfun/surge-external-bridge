@@ -18,17 +18,25 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  verify:
+    name: Resolve, test and vet
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 25
     env:
-      GH_TOKEN: ${{ github.token }}
       INPUT_VERSION: ${{ inputs.version }}
+    outputs:
+      version: ${{ steps.versions.outputs.version }}
+      tag: ${{ steps.versions.outputs.tag }}
+      core_version: ${{ steps.versions.outputs.core_version }}
+      source_sha: ${{ steps.source.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
+      - name: Record release source
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@v7
         with:
           go-version-file: .go-version
@@ -77,17 +85,110 @@ jobs:
           test "$(jq -r '.Origin.Ref' <<<"$origin")" = "refs/tags/$actual"
           [[ "$(jq -r '.Origin.Hash' <<<"$origin")" =~ ^[0-9a-f]{40}$ ]]
 
-      - name: Build frontend and verify source and Core
-        run: |
-          make check CORE_VERSION=${{ steps.versions.outputs.core_version }}
-          make test-race CORE_VERSION=${{ steps.versions.outputs.core_version }}
-
-      - name: Build audited release artifacts
-        run: make release VERSION=${{ steps.versions.outputs.version }} CORE_VERSION=${{ steps.versions.outputs.core_version }}
-
+      - name: Build frontend and run fast verification
+        run: make check CORE_VERSION=${{ steps.versions.outputs.core_version }}
       - uses: actions/upload-artifact@v7
         with:
-          name: surge-external-bridge-${{ steps.versions.outputs.version }}
+          name: release-webassets
+          path: internal/webassets/static/
+          if-no-files-found: error
+          retention-days: 1
+
+  race:
+    name: Race detector
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.verify.outputs.source_sha }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: .go-version
+          cache: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-webassets
+          path: internal/webassets/static
+      - run: make go-test-race CORE_VERSION=${{ needs.verify.outputs.core_version }}
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: linux
+            goarch: amd64
+    env:
+      GOCACHE: /tmp/surgeeb-go-build-cache
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.verify.outputs.source_sha }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: .go-version
+          cache: false
+      - name: Restore Go modules
+        uses: actions/cache@v6
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-${{ runner.os }}-${{ hashFiles('.go-version', 'go.sum') }}
+      - name: Restore target build cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.GOCACHE }}
+          key: go-build-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-${{ hashFiles('.go-version', 'go.sum') }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-webassets
+          path: internal/webassets/static
+      - name: Build target
+        run: make dist-platform VERSION=${{ needs.verify.outputs.version }} CORE_VERSION=${{ needs.verify.outputs.core_version }} TARGET_GOOS=${{ matrix.goos }} TARGET_GOARCH=${{ matrix.goarch }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-binary-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/SurgeEB-${{ matrix.goos }}-${{ matrix.goarch }}
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Verify and publish release
+    needs: [verify, race, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.verify.outputs.source_sha }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: .go-version
+          cache: true
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-binary-*
+          path: dist
+          merge-multiple: true
+      - name: Verify binaries and generate metadata
+        run: make release-metadata VERSION=${{ needs.verify.outputs.version }} CORE_VERSION=${{ needs.verify.outputs.core_version }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: surge-external-bridge-${{ needs.verify.outputs.version }}
           path: |
             dist/SurgeEB-darwin-arm64
             dist/SurgeEB-darwin-amd64
@@ -105,18 +206,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if git rev-parse "${{ steps.versions.outputs.tag }}" >/dev/null 2>&1; then
-            echo "Tag ${{ steps.versions.outputs.tag }} already exists" >&2
+          if git rev-parse "${{ needs.verify.outputs.tag }}" >/dev/null 2>&1; then
+            echo "Tag ${{ needs.verify.outputs.tag }} already exists" >&2
             exit 1
           fi
-          git tag "${{ steps.versions.outputs.tag }}"
-          git push origin "${{ steps.versions.outputs.tag }}"
+          git tag "${{ needs.verify.outputs.tag }}"
+          git push origin "${{ needs.verify.outputs.tag }}"
 
       - name: Publish GitHub Release
         shell: bash
         run: |
           set -euo pipefail
-          tag="${{ steps.versions.outputs.tag }}"
+          tag="${{ needs.verify.outputs.tag }}"
           files=(
             dist/SurgeEB-darwin-arm64
             dist/SurgeEB-darwin-amd64
@@ -135,4 +236,4 @@ jobs:
           gh release create "$tag" "${files[@]}" \
             --title "SurgeEB $tag" \
             --generate-notes \
-            --notes "Embedded Mihomo Core: ${{ steps.versions.outputs.core_version }}"
+            --notes "Embedded Mihomo Core: ${{ needs.verify.outputs.core_version }}"

@@ -15,9 +15,9 @@ concurrency:
 
 jobs:
   verify:
-    name: Test, race and vet
+    name: Fast tests and vet
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -30,26 +30,96 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: make check
-      - run: make test-race
+      - uses: actions/upload-artifact@v7
+        with:
+          name: webassets
+          path: internal/webassets/static/
+          if-no-files-found: error
+          retention-days: 1
 
-  build:
-    name: Four-platform build
+  race:
+    name: Race detector
     needs: verify
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: .go-version
           cache: true
-      - uses: actions/setup-node@v7
+      - uses: actions/download-artifact@v8
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: Build frontend and audited QA artifacts
-        run: make release VERSION=0.0.0-ci.${{ github.run_number }}
+          name: webassets
+          path: internal/webassets/static
+      - run: make go-test-race
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: linux
+            goarch: amd64
+    env:
+      GOCACHE: /tmp/surgeeb-go-build-cache
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: .go-version
+          cache: false
+      - name: Restore Go modules
+        uses: actions/cache@v6
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-${{ runner.os }}-${{ hashFiles('.go-version', 'go.sum') }}
+      - name: Restore target build cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.GOCACHE }}
+          key: go-build-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-${{ hashFiles('.go-version', 'go.sum') }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: webassets
+          path: internal/webassets/static
+      - name: Build target
+        run: make dist-platform VERSION=0.0.0-ci.${{ github.run_number }} TARGET_GOOS=${{ matrix.goos }} TARGET_GOARCH=${{ matrix.goarch }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: binary-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/SurgeEB-${{ matrix.goos }}-${{ matrix.goarch }}
+          if-no-files-found: error
+          retention-days: 1
+
+  package:
+    name: Assemble audited QA artifacts
+    needs: [race, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: .go-version
+          cache: true
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: binary-*
+          path: dist
+          merge-multiple: true
+      - name: Verify binaries and generate metadata
+        run: make release-metadata VERSION=0.0.0-ci.${{ github.run_number }}
       - uses: actions/upload-artifact@v7
         with:
           name: surge-external-bridge-ci-${{ github.run_number }}
