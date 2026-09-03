@@ -253,8 +253,9 @@ func TestPolicyPathLifecycleFiltersCurrentProviderSnapshot(t *testing.T) {
 		return response, content
 	}
 
+	manualToken := "manual-policy-token-1234"
 	response, body := requestJSON(http.MethodPost, "/api/policy-paths", policyPathRequest{
-		Name: "First Only", ProviderIDs: []string{first.StableID},
+		Name: "First Only", ProviderIDs: []string{first.StableID}, Token: manualToken,
 	}, nil)
 	if response.StatusCode != http.StatusCreated {
 		t.Fatalf("create Policy Path status=%d body=%s", response.StatusCode, body)
@@ -263,8 +264,11 @@ func TestPolicyPathLifecycleFiltersCurrentProviderSnapshot(t *testing.T) {
 	if err := json.Unmarshal(body, &created); err != nil {
 		t.Fatal(err)
 	}
-	if created.Default || created.Token == "" || created.ProviderCount != 1 || created.ProjectionCount != 1 {
+	if created.Default || created.Token != manualToken || created.ProviderCount != 1 || created.ProjectionCount != 1 {
 		t.Fatalf("created Policy Path=%+v", created)
+	}
+	if len(created.StableID) != len("pp_")+8 || !strings.HasPrefix(created.StableID, "pp_") {
+		t.Fatalf("generated Policy Path ID %q is not compact", created.StableID)
 	}
 	createdURL, err := url.Parse(created.URL)
 	if err != nil {
@@ -273,6 +277,33 @@ func TestPolicyPathLifecycleFiltersCurrentProviderSnapshot(t *testing.T) {
 	response, body = requestJSON(http.MethodGet, createdURL.RequestURI(), nil, nil)
 	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), "First Node") || strings.Contains(string(body), "Second Node") {
 		t.Fatalf("filtered Policy Path status=%d body=%s", response.StatusCode, body)
+	}
+	updatedToken := "updated-policy-token-1234"
+	response, body = requestJSON(http.MethodPut, "/api/policy-paths/"+created.StableID, policyPathRequest{
+		Name: "First Only", ProviderIDs: []string{first.StableID}, Token: updatedToken,
+	}, nil)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("manual Policy Path Token update status=%d body=%s", response.StatusCode, body)
+	}
+	var updated publicPolicyPath
+	if err := json.Unmarshal(body, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Token != updatedToken || updated.StableID != created.StableID {
+		t.Fatalf("manual Policy Path Token update=%+v", updated)
+	}
+	response, _ = requestJSON(http.MethodGet, createdURL.RequestURI(), nil, nil)
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("previous manual Policy Path Token status=%d, want 401", response.StatusCode)
+	}
+	created = updated
+	createdURL, err = url.Parse(created.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, body = requestJSON(http.MethodGet, createdURL.RequestURI(), nil, nil)
+	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), "First Node") {
+		t.Fatalf("updated manual Policy Path Token status=%d body=%s", response.StatusCode, body)
 	}
 	etag := response.Header.Get("ETag")
 	response, _ = requestJSON(http.MethodGet, createdURL.RequestURI(), nil, map[string]string{"If-None-Match": etag})

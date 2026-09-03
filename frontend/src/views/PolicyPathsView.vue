@@ -15,12 +15,13 @@ const dialogOpen = ref(false)
 const editingID = ref('')
 const saving = ref(false)
 const busy = reactive(new Set())
-const form = reactive({ name: '', include_all: true, provider_ids: [] })
+const form = reactive({ name: '', token: '', include_all: true, provider_ids: [] })
 const selectedCount = computed(() => form.include_all ? providers.value.length : form.provider_ids.length)
 
 function open(path = null) {
   editingID.value = path?.id || ''
   form.name = path?.name || ''
+  form.token = ''
   form.include_all = path?.include_all ?? true
   form.provider_ids = [...(path?.provider_ids || [])]
   dialogOpen.value = true
@@ -51,7 +52,7 @@ async function save() {
   }
   saving.value = true
   try {
-    await data.savePolicyPath({ name: form.name, include_all: form.include_all, provider_ids: form.provider_ids }, editingID.value)
+    await data.savePolicyPath({ name: form.name, token: form.token, include_all: form.include_all, provider_ids: form.provider_ids }, editingID.value)
     ui.toast(editingID.value ? 'Policy Path 已更新' : 'Policy Path 已添加')
     dialogOpen.value = false
     editingID.value = ''
@@ -148,6 +149,7 @@ function providerNames(path) {
         <p>名称用于复制 Surge 策略组配置；链接 ID 不会因改名而变化。</p>
         <section class="form-section">
           <label class="field"><span>名称</span><input v-model.trim="form.name" data-testid="policy-path-name" maxlength="80" required placeholder="例如：香港节点"><small>不能包含等号或换行。</small></label>
+          <label class="field"><span>访问 Token</span><input v-model="form.token" data-testid="policy-path-token" type="text" autocomplete="off" minlength="16" :placeholder="editingID ? '留空保持当前值' : '留空自动生成'"><small>{{ editingID ? '可直接设置新值；留空保持当前 Token。' : '至少 16 位；留空时自动生成强随机 Token。' }}</small></label>
         </section>
         <section class="form-section">
           <div class="form-section-title"><b>Provider 范围</b><span>当前选择 {{ selectedCount }} 个</span></div>
@@ -163,7 +165,7 @@ function providerNames(path) {
             <div v-if="!providers.length" class="modal-hint">暂无 Provider，请先添加节点来源。</div>
           </div>
         </section>
-        <p v-if="editingID" class="modal-footnote">修改范围不会更改链接或节点凭据；默认 Policy Path 继续兼容现有 <code>/proxies</code> 地址。</p>
+        <p v-if="editingID" class="modal-footnote">名称和范围不会更改路径 ID 或节点凭据；修改 Token 会立即使旧链接失效。默认 Policy Path 继续兼容现有 <code>/proxies</code> 地址。</p>
       </div>
       <div class="modal-actions actions"><button class="button" type="button" :disabled="saving" @click="close">取消</button><button class="button primary" type="submit" :disabled="saving || !form.name || (!form.include_all && !form.provider_ids.length)" :aria-busy="saving">{{ saving ? '保存中…' : '保存' }}</button></div>
     </form>

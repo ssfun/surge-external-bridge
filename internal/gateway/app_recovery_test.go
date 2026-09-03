@@ -70,6 +70,35 @@ func TestSettingsPatchPreservesTokenRotatedAfterStaleSettingsRead(t *testing.T) 
 	}
 }
 
+func TestPolicyPathUpdateWithoutTokenPreservesConcurrentRotation(t *testing.T) {
+	application := newRunningTestApp(t)
+	settings := application.Config().Settings()
+	settings.PolicyToken = "original-policy-token-1234"
+	if err := application.UpdateSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	stale, ok := application.PolicyPath(DefaultPolicyPathID)
+	if !ok {
+		t.Fatal("default Policy Path not found")
+	}
+	rotated, err := application.RegeneratePolicyPathToken(DefaultPolicyPathID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale.Name = "Renamed after stale read"
+	stale.Token = ""
+	updated, err := application.UpdatePolicyPath(DefaultPolicyPathID, stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Token != rotated.Token {
+		t.Fatalf("Policy Path update restored stale Token %q; want rotated %q", updated.Token, rotated.Token)
+	}
+	if updated.Name != stale.Name {
+		t.Fatalf("Policy Path name=%q, want %q", updated.Name, stale.Name)
+	}
+}
+
 func TestPolicyPathPublicationWaitsForConfigApply(t *testing.T) {
 	application := newRunningTestApp(t)
 	application.applyMu.Lock()

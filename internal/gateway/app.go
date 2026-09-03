@@ -357,11 +357,11 @@ func (a *App) AddPolicyPath(path PolicyPath) (PolicyPath, error) {
 	}
 	allocated := false
 	for attempts := 0; attempts < 8; attempts++ {
-		value, err := randomToken()
+		value, err := randomPolicyPathID()
 		if err != nil {
 			return PolicyPath{}, err
 		}
-		path.StableID = "pp_" + value
+		path.StableID = value
 		if _, exists := candidate.PolicyPath(path.StableID); !exists {
 			allocated = true
 			break
@@ -407,7 +407,9 @@ func (a *App) UpdatePolicyPath(id string, path PolicyPath) (PolicyPath, error) {
 			continue
 		}
 		path.StableID = id
-		path.Token = candidate.PolicyPaths[index].Token
+		if path.Token == "" {
+			path.Token = candidate.PolicyPaths[index].Token
+		}
 		normalizePolicyPathSelection(&path, candidate.Providers)
 		candidate.PolicyPaths[index] = path
 		if err := a.savePolicyPaths(candidate, "Policy Path 已更新"); err != nil {
@@ -913,7 +915,7 @@ func validPolicyToken(token string, required bool) bool {
 	return len(token) >= 16
 }
 
-var policyPathIDPattern = regexp.MustCompile(`^pp_[A-Za-z0-9_-]{16,80}$`)
+var policyPathIDPattern = regexp.MustCompile(`^pp_[A-Za-z0-9_-]{8,80}$`)
 
 func validatePolicyPaths(config Config) error {
 	if len(config.PolicyPaths) == 0 || len(config.PolicyPaths) > 128 {

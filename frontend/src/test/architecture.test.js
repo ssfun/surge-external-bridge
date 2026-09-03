@@ -567,6 +567,7 @@ describe('component update boundaries', () => {
     expect(wrapper.get('[data-testid="policy-path-card"]').text()).toContain('3当前节点')
     await wrapper.findAll('button').find((button) => button.text() === '添加 Policy Path').trigger('click')
     await wrapper.get('[data-testid="policy-path-name"]').setValue('指定节点')
+    await wrapper.get('[data-testid="policy-path-token"]').setValue('manual-policy-token-1234')
     const scopeLabels = wrapper.findAll('.policy-path-scope .check-row')
     await scopeLabels[1].get('input').setValue(true)
     const providerRows = wrapper.findAll('[data-testid="policy-path-provider-list"] .check-row')
@@ -574,8 +575,22 @@ describe('component update boundaries', () => {
     await providerRows[0].get('input').setValue(true)
     await wrapper.get('.policy-path-modal').trigger('submit')
     await vi.waitFor(() => expect(data.savePolicyPath).toHaveBeenCalledWith({
-      name: '指定节点', include_all: false, provider_ids: ['first'],
+      name: '指定节点', token: 'manual-policy-token-1234', include_all: false, provider_ids: ['first'],
     }, ''))
+
+    await wrapper.get('[data-testid="policy-path-card"]').findAll('button').find((button) => button.text() === '编辑').trigger('click')
+    expect(wrapper.get('[data-testid="policy-path-token"]').element.value).toBe('')
+    await wrapper.get('.policy-path-modal').trigger('submit')
+    await vi.waitFor(() => expect(data.savePolicyPath).toHaveBeenLastCalledWith({
+      name: '全部节点', token: '', include_all: true, provider_ids: [],
+    }, 'default'))
+
+    await wrapper.get('[data-testid="policy-path-card"]').findAll('button').find((button) => button.text() === '编辑').trigger('click')
+    await wrapper.get('[data-testid="policy-path-token"]').setValue('updated-default-token-1234')
+    await wrapper.get('.policy-path-modal').trigger('submit')
+    await vi.waitFor(() => expect(data.savePolicyPath).toHaveBeenLastCalledWith({
+      name: '全部节点', token: 'updated-default-token-1234', include_all: true, provider_ids: [],
+    }, 'default'))
 
     await wrapper.get('[data-testid="policy-path-card"]').findAll('button').find((button) => button.text() === '重新生成 Token').trigger('click')
     await vi.waitFor(() => expect(data.regeneratePolicyPathToken).toHaveBeenCalledWith('default'))

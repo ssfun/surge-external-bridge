@@ -77,7 +77,7 @@ chmod +x SurgeEB
 配置台提供：
 
 - 总览：产品/Core 版本、Provider/节点/连接数、实时流量、内存和最近错误。
-- 订阅：Provider 增删改、排序、启停、手动刷新、健康检查、订阅状态和名称投影筛选；Policy Path 可创建多个独立链接，并选择全部或指定 Provider。
+- 订阅：Provider 增删改、排序、启停、手动刷新、健康检查、订阅状态和名称投影筛选；Policy Path 可创建多个独立链接，选择全部或指定 Provider，并自动生成或手动设置各自的 Token。
 - 节点：协议、能力、Mihomo 延迟历史、TCP/UDP 诊断和 Surge 行复制。
 - 连接：实时目标、节点链、规则、流量，以及关闭单个或全部连接。
 - 日志：Mihomo 结构化实时日志与产品事件，敏感字段二次脱敏。
@@ -122,7 +122,7 @@ listeners: []
 - 两个发布主机直接使用 IP 时，只允许回环、私网、Tailscale CGNAT 或链路本地地址；
 - 不支持把管理台、Policy 或 SOCKS 裸露到公网。
 
-`/proxies` 与 `/proxies/{id}` 含 SOCKS 凭据，固定返回 `Cache-Control: no-store`。每个 Policy Path 使用独立强随机 Token 和按自身内容计算的 ETag；重新生成某条路径的 Token 或删除路径不会影响其他链接。敏感复制必须显式确认。
+`/proxies` 与 `/proxies/{id}` 含 SOCKS 凭据，固定返回 `Cache-Control: no-store`。每个 Policy Path 使用独立 Token 和按自身内容计算的 ETag；Token 默认强随机生成，也可手动设置至少 16 位的值。重新生成某条路径的 Token 或删除路径不会影响其他链接。敏感复制必须显式确认。
 
 默认 `/proxies` 在升级后继续保留原 Token 和“全部 Provider”语义。指定 Provider 的路径按全局 Provider 顺序发布；Provider 重命名会原子更新引用，停用时暂不输出，重新启用后恢复，删除后从相关路径移除。一个 Provider 可以同时属于多个 Policy Path。
 

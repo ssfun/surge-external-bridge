@@ -355,6 +355,7 @@ type policyPathRequest struct {
 	Name        string   `json:"name"`
 	IncludeAll  bool     `json:"include_all"`
 	ProviderIDs []string `json:"provider_ids"`
+	Token       string   `json:"token"`
 }
 
 func (s *Server) addPolicyPath(w http.ResponseWriter, r *http.Request) {
@@ -367,7 +368,7 @@ func (s *Server) addPolicyPath(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	created, err := s.app.AddPolicyPath(gateway.PolicyPath{Name: request.Name, IncludeAll: request.IncludeAll, ProviderIDs: request.ProviderIDs})
+	created, err := s.app.AddPolicyPath(gateway.PolicyPath{Name: request.Name, IncludeAll: request.IncludeAll, ProviderIDs: request.ProviderIDs, Token: request.Token})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, s.publicError(err))
 		return
@@ -385,7 +386,7 @@ func (s *Server) updatePolicyPath(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	updated, err := s.app.UpdatePolicyPath(r.PathValue("id"), gateway.PolicyPath{Name: request.Name, IncludeAll: request.IncludeAll, ProviderIDs: request.ProviderIDs})
+	updated, err := s.app.UpdatePolicyPath(r.PathValue("id"), gateway.PolicyPath{Name: request.Name, IncludeAll: request.IncludeAll, ProviderIDs: request.ProviderIDs, Token: request.Token})
 	if err != nil {
 		status := http.StatusBadRequest
 		if strings.Contains(err.Error(), "not found") {

@@ -99,6 +99,14 @@ func randomToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(key), nil
 }
 
+func randomPolicyPathID() (string, error) {
+	key := make([]byte, 6)
+	if _, err := rand.Read(key); err != nil {
+		return "", err
+	}
+	return "pp_" + base64.RawURLEncoding.EncodeToString(key), nil
+}
+
 type Settings struct {
 	Mode            string   `json:"mode"`
 	HTTPBind        string   `json:"http_bind"`
