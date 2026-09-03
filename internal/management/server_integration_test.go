@@ -284,9 +284,24 @@ func TestPolicyPathLifecycleFiltersCurrentProviderSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if createdURL.Path != "/proxies" || createdURL.Query().Get("token") != manualToken || strings.Contains(created.URL, created.StableID) {
+		t.Fatalf("public Policy Path URL=%q, want token-only /proxies URL", created.URL)
+	}
 	response, body = requestJSON(http.MethodGet, createdURL.RequestURI(), nil, nil)
 	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), "First Node") || strings.Contains(string(body), "Deprecated Node") || strings.Contains(string(body), "Second Node") {
 		t.Fatalf("filtered Policy Path status=%d body=%s", response.StatusCode, body)
+	}
+	response, body = requestJSON(http.MethodPost, "/api/policy-paths", policyPathRequest{
+		Name: "Duplicate Token", IncludeAll: true, Token: manualToken,
+	}, nil)
+	if response.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "already used by another Policy Path") {
+		t.Fatalf("duplicate Token create status=%d body=%s", response.StatusCode, body)
+	}
+	response, body = requestJSON(http.MethodPut, "/api/policy-paths/"+created.StableID, policyPathRequest{
+		Name: "First Only", ProviderIDs: []string{first.StableID}, IncludeName: "Node$", ExcludeName: "Deprecated", Token: settings.PolicyToken,
+	}, nil)
+	if response.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "already used by another Policy Path") {
+		t.Fatalf("duplicate Token update status=%d body=%s", response.StatusCode, body)
 	}
 	updatedToken := "updated-policy-token-1234"
 	response, body = requestJSON(http.MethodPut, "/api/policy-paths/"+created.StableID, policyPathRequest{
@@ -316,6 +331,11 @@ func TestPolicyPathLifecycleFiltersCurrentProviderSnapshot(t *testing.T) {
 		t.Fatalf("updated manual Policy Path Token status=%d body=%s", response.StatusCode, body)
 	}
 	etag := response.Header.Get("ETag")
+	removedIDURL := "/proxies/" + url.PathEscape(created.StableID) + "?token=" + url.QueryEscape(created.Token)
+	response, body = requestJSON(http.MethodGet, removedIDURL, nil, nil)
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("removed ID-based Policy Path URL status=%d body=%s", response.StatusCode, body)
+	}
 	response, _ = requestJSON(http.MethodGet, createdURL.RequestURI(), nil, map[string]string{"If-None-Match": etag})
 	if response.StatusCode != http.StatusNotModified {
 		t.Fatalf("conditional Policy Path status=%d, want 304", response.StatusCode)
@@ -379,8 +399,8 @@ func TestPolicyPathLifecycleFiltersCurrentProviderSnapshot(t *testing.T) {
 	}
 	regeneratedURL, _ := url.Parse(regenerated.URL)
 	response, _ = requestJSON(http.MethodGet, regeneratedURL.RequestURI(), nil, nil)
-	if response.StatusCode != http.StatusNotFound {
-		t.Fatalf("deleted Policy Path URL status=%d, want 404", response.StatusCode)
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("deleted token-only Policy Path URL status=%d, want 401", response.StatusCode)
 	}
 	if _, ok := application.Provider(second.StableID); !ok {
 		t.Fatal("unselected Provider was mutated by Policy Path lifecycle")

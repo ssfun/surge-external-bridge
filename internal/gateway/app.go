@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -22,6 +23,7 @@ import (
 
 var Version = "0.2.0-dev"
 var BuildVersionMarker = "surgeeb-version:0.2.0-dev"
+var ErrInvalidPolicyToken = errors.New("invalid Policy Token")
 
 type App struct {
 	mu               sync.RWMutex
@@ -355,6 +357,11 @@ func (a *App) AddPolicyPath(path PolicyPath) (PolicyPath, error) {
 	if !path.IncludeAll && len(path.ProviderIDs) == 0 {
 		return PolicyPath{}, errors.New("Policy Path must include at least one Provider")
 	}
+	if path.Token != "" {
+		if err := validatePolicyPathTokenAvailability(candidate, path.Token, ""); err != nil {
+			return PolicyPath{}, err
+		}
+	}
 	allocated := false
 	for attempts := 0; attempts < 8; attempts++ {
 		value, err := randomPolicyPathID()
@@ -409,6 +416,9 @@ func (a *App) UpdatePolicyPath(id string, path PolicyPath) (PolicyPath, error) {
 		path.StableID = id
 		if path.Token == "" {
 			path.Token = candidate.PolicyPaths[index].Token
+		}
+		if err := validatePolicyPathTokenAvailability(candidate, path.Token, id); err != nil {
+			return PolicyPath{}, err
 		}
 		normalizePolicyPathSelection(&path, candidate.Providers)
 		candidate.PolicyPaths[index] = path
@@ -701,6 +711,23 @@ func (a *App) Proxies() (string, string, error) {
 func (a *App) ProxiesForPath(id string) (string, string, error) {
 	a.applyMu.Lock()
 	defer a.applyMu.Unlock()
+	return a.proxiesForPathLocked(id)
+}
+
+func (a *App) ProxiesForToken(token string) (string, string, error) {
+	a.applyMu.Lock()
+	defer a.applyMu.Unlock()
+	config := a.Config()
+	for _, path := range config.PolicyPaths {
+		matches := token != "" && len(token) == len(path.Token) && subtle.ConstantTimeCompare([]byte(token), []byte(path.Token)) == 1
+		if matches || (token == "" && path.StableID == DefaultPolicyPathID && path.Token == "") {
+			return a.proxiesForPathLocked(path.StableID)
+		}
+	}
+	return "", "", ErrInvalidPolicyToken
+}
+
+func (a *App) proxiesForPathLocked(id string) (string, string, error) {
 	if status := a.Status(); status.State != "running" {
 		return "", "", errors.New("Mihomo 身份数据面当前不可用")
 	}
@@ -1077,6 +1104,15 @@ func policyPathTokenAvailable(config Config, token, exceptID string) bool {
 		}
 	}
 	return true
+}
+
+func validatePolicyPathTokenAvailability(config Config, token, exceptID string) error {
+	for _, path := range config.PolicyPaths {
+		if path.StableID != exceptID && path.Token == token {
+			return errors.New("Policy Path Token is already used by another Policy Path")
+		}
+	}
+	return nil
 }
 
 func validateProvider(provider Provider) error {

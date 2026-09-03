@@ -52,6 +52,10 @@ async function save() {
     ui.toast('请至少选择一个 Provider', true)
     return
   }
+  if (form.token && policyPaths.value.some((path) => path.id !== editingID.value && path.token === form.token)) {
+    ui.toast('该 Token 已被其他 Policy Path 使用', true)
+    return
+  }
   saving.value = true
   try {
     await data.savePolicyPath({
@@ -159,10 +163,10 @@ function filterDescription(path) {
     <form class="modal policy-path-modal" role="dialog" aria-modal="true" aria-labelledby="policy-path-dialog-title" @submit.prevent="save">
       <div class="modal-header"><div><div class="eyebrow">POLICY PATH</div><h2 id="policy-path-dialog-title">{{ editingID ? '编辑 Policy Path' : '添加 Policy Path' }}</h2></div><button class="modal-close" type="button" aria-label="关闭" @click="close">×</button></div>
       <div class="modal-scroll">
-        <p>名称用于复制 Surge 策略组配置；链接 ID 不会因改名而变化。</p>
+        <p>Token 用于区分并访问对应 Policy Path；同一实例内不能重复。</p>
         <section class="form-section">
           <label class="field"><span>名称</span><input v-model.trim="form.name" data-testid="policy-path-name" maxlength="80" required placeholder="例如：香港节点"><small>不能包含等号或换行。</small></label>
-          <label class="field"><span>访问 Token</span><input v-model="form.token" data-testid="policy-path-token" type="text" autocomplete="off" minlength="16" :placeholder="editingID ? '留空保持当前值' : '留空自动生成'"><small>{{ editingID ? '可直接设置新值；留空保持当前 Token。' : '至少 16 位；留空时自动生成强随机 Token。' }}</small></label>
+          <label class="field"><span>访问 Token</span><input v-model="form.token" data-testid="policy-path-token" type="text" autocomplete="off" minlength="16" :placeholder="editingID ? '留空保持当前值' : '留空自动生成'"><small>{{ editingID ? '可直接设置不重复的新值；留空保持当前 Token。' : '至少 16 位且不能重复；留空时自动生成强随机 Token。' }}</small></label>
         </section>
         <section class="form-section">
           <div class="form-section-title"><b>Provider 范围</b><span>当前选择 {{ selectedCount }} 个</span></div>

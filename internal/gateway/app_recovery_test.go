@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -130,6 +131,54 @@ func TestPolicyPathPublicationWaitsForConfigApply(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Policy Path publication did not resume after config apply completed")
+	}
+}
+
+func TestPolicyPathTokenAuthenticationUsesPostApplyConfig(t *testing.T) {
+	application := newRunningTestApp(t)
+	settings := application.Config().Settings()
+	settings.PolicyToken = "original-policy-token-1234"
+	if err := application.UpdateSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+
+	application.applyMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			application.applyMu.Unlock()
+		}
+	}()
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		_, _, err := application.ProxiesForToken("original-policy-token-1234")
+		done <- err
+	}()
+	<-started
+	select {
+	case err := <-done:
+		t.Fatalf("Policy Token authentication escaped an in-progress config apply: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	application.mu.Lock()
+	application.config.PolicyPaths[0].Token = "rotated-policy-token-1234"
+	application.mu.Unlock()
+	application.applyMu.Unlock()
+	locked = false
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrInvalidPolicyToken) {
+			t.Fatalf("old Policy Token error=%v, want ErrInvalidPolicyToken", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Policy Token authentication did not resume after config apply completed")
+	}
+	if _, _, err := application.ProxiesForToken("rotated-policy-token-1234"); err != nil {
+		t.Fatalf("rotated Policy Token was rejected: %v", err)
 	}
 }
 

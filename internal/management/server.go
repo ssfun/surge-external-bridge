@@ -49,7 +49,6 @@ func New(application *gateway.App) (*Server, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", server.health)
 	mux.HandleFunc("GET /proxies", server.proxies)
-	mux.HandleFunc("GET /proxies/{id}", server.policyProxies)
 	mux.HandleFunc("GET /api/session", server.sessionStatus)
 	mux.HandleFunc("POST /api/session", server.sessionLogin)
 	mux.HandleFunc("DELETE /api/session", server.sessionLogout)
@@ -150,25 +149,11 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) proxies(w http.ResponseWriter, r *http.Request) {
-	s.servePolicyPath(w, r, gateway.DefaultPolicyPathID)
-}
-
-func (s *Server) policyProxies(w http.ResponseWriter, r *http.Request) {
-	s.servePolicyPath(w, r, r.PathValue("id"))
-}
-
-func (s *Server) servePolicyPath(w http.ResponseWriter, r *http.Request, id string) {
-	config := s.app.Config()
-	path, ok := config.PolicyPath(id)
-	if !ok {
-		writeError(w, http.StatusNotFound, "Policy Path not found")
-		return
-	}
-	if path.Token != "" && !constantEqual(r.URL.Query().Get("token"), path.Token) {
+	content, revision, err := s.app.ProxiesForToken(r.URL.Query().Get("token"))
+	if errors.Is(err, gateway.ErrInvalidPolicyToken) {
 		writeError(w, http.StatusUnauthorized, "invalid Policy Token")
 		return
 	}
-	content, revision, err := s.app.ProxiesForPath(id)
 	if err != nil {
 		w.Header().Set("Cache-Control", "no-store")
 		writeError(w, http.StatusServiceUnavailable, s.publicError(err))
@@ -1083,7 +1068,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'")
-		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/proxies" || strings.HasPrefix(r.URL.Path, "/proxies/") {
+		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/proxies" {
 			w.Header().Set("Cache-Control", "no-store")
 		}
 		next.ServeHTTP(w, r)
@@ -1169,9 +1154,6 @@ func policyURL(config gateway.Config) string {
 
 func policyPathURL(config gateway.Config, path gateway.PolicyPath) string {
 	base := config.PolicyBaseURL() + "/proxies"
-	if path.StableID != gateway.DefaultPolicyPathID {
-		base += "/" + url.PathEscape(path.StableID)
-	}
 	if path.Token != "" {
 		base += "?token=" + url.QueryEscape(path.Token)
 	}

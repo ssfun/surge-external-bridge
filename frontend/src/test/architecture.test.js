@@ -559,9 +559,9 @@ describe('component update boundaries', () => {
       { stable_id: 'second', name: '第二订阅', enabled: false },
     ]
     data.policyPaths = [{
-      id: 'default', name: '全部节点', include_all: true, provider_ids: [], token: 'default-token',
+      id: 'default', name: '全部节点', include_all: true, provider_ids: [], token: 'default-policy-token-1234',
       include_name: '香港|新加坡', exclude_name: '过期',
-      url: 'http://127.0.0.1:18080/proxies?token=default-token', default: true, provider_count: 2, projection_count: 3,
+      url: 'http://127.0.0.1:18080/proxies?token=default-policy-token-1234', default: true, provider_count: 2, projection_count: 3,
     }]
     data.savePolicyPath = vi.fn(async () => {})
     data.regeneratePolicyPathToken = vi.fn(async () => {})
@@ -575,6 +575,9 @@ describe('component update boundaries', () => {
     expect(wrapper.get('[data-testid="policy-path-card"]').text()).toContain('包含 /香港|新加坡/ · 排除 /过期/')
     await wrapper.findAll('button').find((button) => button.text() === '添加 Policy Path').trigger('click')
     await wrapper.get('[data-testid="policy-path-name"]').setValue('指定节点')
+    await wrapper.get('[data-testid="policy-path-token"]').setValue('default-policy-token-1234')
+    await wrapper.get('.policy-path-modal').trigger('submit')
+    expect(data.savePolicyPath).not.toHaveBeenCalled()
     await wrapper.get('[data-testid="policy-path-token"]').setValue('manual-policy-token-1234')
     await wrapper.get('[data-testid="policy-path-include"]').setValue('Node$')
     await wrapper.get('[data-testid="policy-path-exclude"]').setValue('Deprecated')

@@ -122,7 +122,7 @@ listeners: []
 - 两个发布主机直接使用 IP 时，只允许回环、私网、Tailscale CGNAT 或链路本地地址；
 - 不支持把管理台、Policy 或 SOCKS 裸露到公网。
 
-`/proxies` 与 `/proxies/{id}` 含 SOCKS 凭据，固定返回 `Cache-Control: no-store`。每个 Policy Path 使用独立 Token 和按自身内容计算的 ETag；Token 默认强随机生成，也可手动设置至少 16 位的值。重新生成某条路径的 Token 或删除路径不会影响其他链接。敏感复制必须显式确认。
+Policy Path 链接统一使用 `/proxies?token=...`，由 Token 区分对应的 Provider 范围，不提供带 `pp_` ID 的公开入口。响应含 SOCKS 凭据，固定返回 `Cache-Control: no-store`。每个 Policy Path 使用同一实例内唯一的 Token 和按自身内容计算的 ETag；Token 默认强随机生成，也可手动设置至少 16 位的值，添加或修改时不允许与其他路径重复。重新生成某条路径的 Token 或删除路径不会影响其他链接。敏感复制必须显式确认。
 
 默认 `/proxies` 在升级后继续保留原 Token 和“全部 Provider”语义。指定 Provider 的路径按全局 Provider 顺序发布；Provider 重命名会原子更新引用，停用时暂不输出，重新启用后恢复，删除后从相关路径移除。一个 Provider 可以同时属于多个 Policy Path。
 
@@ -131,6 +131,8 @@ listeners: []
 ## 多设备统一 Policy Path
 
 所有 SurgeEB 实例配置相同的 `socks_host`、`policy_host` 与 `projection_key`，并保持 Provider 名称和 Mihomo 节点名一致，即可发布相同的节点凭据和 Policy Path：
+
+在各实例为对应 Policy Path 手动设置相同 Token，即可得到一致的公开 URL。`pp_` ID 仅用于各实例内部管理，不进入新生成的链接。
 
 ```ini
 [Proxy Group]
