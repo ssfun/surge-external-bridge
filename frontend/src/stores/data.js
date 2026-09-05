@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { api, encodeID, login } from '@/api.js'
+import { api, authState, encodeID, login } from '@/api.js'
 
 const resourcePaths = {
   overview: '/api/overview',
@@ -46,7 +46,8 @@ export const useDataStore = defineStore('data', {
     service: null,
     loaded: {},
     loadedAt: {},
-    initialError: '',
+    resourceErrors: {},
+    pendingRefresh: [],
   }),
   actions: {
     resetSession() {
@@ -65,10 +66,13 @@ export const useDataStore = defineStore('data', {
           value = await api(resourcePaths[name])
         } catch (error) {
           if (generation !== requestGeneration) return false
+          this.resourceErrors[name] = error.message || '连接失败'
           if (name === 'service') value = { error: error.message || '服务状态检测失败' }
           else throw error
         }
         if (generation !== requestGeneration) return false
+        if (!value?.error) delete this.resourceErrors[name]
+        this.pendingRefresh = this.pendingRefresh.filter((item) => item !== name)
         const snapshot = JSON.stringify(value)
         const changed = snapshots.get(name) !== snapshot
         snapshots.set(name, snapshot)
@@ -90,16 +94,32 @@ export const useDataStore = defineStore('data', {
     },
     async refreshRoute(routeName, { background = false } = {}) {
       const names = [...(background ? backgroundResources[routeName] || [] : routeResources[routeName] || [])]
-      if (!this.loaded.overview && !names.includes('overview')) names.unshift('overview')
+      if (!names.includes('overview')) names.unshift('overview')
+      for (const name of this.pendingRefresh) if (!names.includes(name)) names.push(name)
       const results = await Promise.allSettled(names.map((name) => this.loadResource(name, { background })))
       const failure = results.find((result) => result.status === 'rejected')
       if (failure) throw failure.reason
     },
     async reloadResources(names) {
-      await Promise.all(names.map(async (name) => {
+      const results = await Promise.allSettled(names.map(async (name) => {
         if (requests.has(name)) await requests.get(name).catch(() => {})
         return this.loadResource(name)
       }))
+      const failure = results.find((result) => result.status === 'rejected')
+      if (failure) throw failure.reason
+    },
+    async refreshAfterMutation(names) {
+      try {
+        await this.reloadResources(names)
+        return true
+      } catch {
+        this.pendingRefresh = [...new Set([...this.pendingRefresh, ...names.filter((name) => this.resourceErrors[name])])]
+        // The write has already succeeded. Retry only reads, never the mutation.
+        return false
+      }
+    },
+    async retryPendingRefresh() {
+      return this.refreshAfterMutation([...this.pendingRefresh])
     },
     async loadProviderRuntime(id, { quiet = false } = {}) {
       const key = `provider-runtime:${id}`
@@ -130,54 +150,63 @@ export const useDataStore = defineStore('data', {
         method: id ? 'PUT' : 'POST',
         body,
       })
-      await this.reloadResources(['providers', 'nodes', 'overview'])
+      await this.refreshAfterMutation(['providers', 'nodes', 'overview'])
     },
     async deleteProvider(id) {
       await api(`/api/providers/${encodeID(id)}`, { method: 'DELETE' })
-      await this.reloadResources(['providers', 'nodes', 'overview'])
+      await this.refreshAfterMutation(['providers', 'nodes', 'overview'])
     },
     async reorderProviders(providerIDs) {
       await api('/api/providers/order', {
         method: 'PUT',
         body: JSON.stringify({ provider_ids: providerIDs }),
       })
-      await this.reloadResources(['providers', 'nodes', 'overview'])
+      await this.refreshAfterMutation(['providers', 'nodes', 'overview'])
     },
     async savePolicyPath(path, id = '') {
       await api(id ? `/api/policy-paths/${encodeID(id)}` : '/api/policy-paths', {
         method: id ? 'PUT' : 'POST',
         body: JSON.stringify(path),
       })
-      await this.reloadResources(['policyPaths', 'overview'])
+      await this.refreshAfterMutation(['policyPaths', 'overview'])
     },
     async deletePolicyPath(id) {
       await api(`/api/policy-paths/${encodeID(id)}`, {
         method: 'DELETE',
         headers: { 'X-SurgeEB-Confirm': 'delete-policy-path' },
       })
-      await this.reloadResources(['policyPaths', 'overview'])
+      await this.refreshAfterMutation(['policyPaths', 'overview'])
     },
     async regeneratePolicyPathToken(id) {
       await api(`/api/policy-paths/${encodeID(id)}/token`, {
         method: 'POST',
         headers: { 'X-SurgeEB-Confirm': 'regenerate-policy-path-token' },
       })
-      await this.reloadResources(['policyPaths', 'overview', 'settings'])
+      await this.refreshAfterMutation(['policyPaths', 'overview', 'settings'])
     },
     async refreshProvider(id) {
       await api(`/api/providers/${encodeID(id)}/refresh`, { method: 'POST' })
-      await this.reloadResources(['providers', 'nodes', 'overview'])
+      await this.refreshAfterMutation(['providers', 'nodes', 'overview'])
       await this.loadProviderRuntime(id, { quiet: true })
     },
     async healthCheckProvider(id) {
       await api(`/api/providers/${encodeID(id)}/healthcheck`, { method: 'POST' })
-      await this.reloadResources(['providers', 'nodes', 'overview'])
+      await this.refreshAfterMutation(['providers', 'nodes', 'overview'])
       await this.loadProviderRuntime(id, { quiet: true })
     },
     async updateSettings(body) {
       const result = await api('/api/settings', { method: 'PUT', body: JSON.stringify(body) })
-      if (body.management_token && !result.reconnect) await login(body.management_token)
-      if (!result.reconnect) await this.reloadResources(['settings', 'overview', 'providers', 'nodes'])
+      if (body.management_token && !result.reconnect) {
+        try { await login(body.management_token) }
+        catch {
+          authState.authenticated = false
+          authState.required = true
+          result.sessionExpired = true
+          result.refreshed = false
+          return result
+        }
+      }
+      if (!result.reconnect) result.refreshed = await this.refreshAfterMutation(['settings', 'overview', 'providers', 'nodes'])
       return result
     },
   },

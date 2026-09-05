@@ -100,13 +100,13 @@ func TestPolicyPathUpdateWithoutTokenPreservesConcurrentRotation(t *testing.T) {
 	}
 }
 
-func TestPolicyPathPublicationWaitsForConfigApply(t *testing.T) {
+func TestPolicyPathPublicationWaitsForCommit(t *testing.T) {
 	application := newRunningTestApp(t)
-	application.applyMu.Lock()
+	application.publicationMu.Lock()
 	locked := true
 	defer func() {
 		if locked {
-			application.applyMu.Unlock()
+			application.publicationMu.Unlock()
 		}
 	}()
 	started := make(chan struct{})
@@ -122,7 +122,7 @@ func TestPolicyPathPublicationWaitsForConfigApply(t *testing.T) {
 		t.Fatalf("Policy Path publication escaped an in-progress config apply: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
-	application.applyMu.Unlock()
+	application.publicationMu.Unlock()
 	locked = false
 	select {
 	case err := <-done:
@@ -142,11 +142,11 @@ func TestPolicyPathTokenAuthenticationUsesPostApplyConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	application.applyMu.Lock()
+	application.publicationMu.Lock()
 	locked := true
 	defer func() {
 		if locked {
-			application.applyMu.Unlock()
+			application.publicationMu.Unlock()
 		}
 	}()
 	started := make(chan struct{})
@@ -166,7 +166,7 @@ func TestPolicyPathTokenAuthenticationUsesPostApplyConfig(t *testing.T) {
 	application.mu.Lock()
 	application.config.PolicyPaths[0].Token = "rotated-policy-token-1234"
 	application.mu.Unlock()
-	application.applyMu.Unlock()
+	application.publicationMu.Unlock()
 	locked = false
 
 	select {

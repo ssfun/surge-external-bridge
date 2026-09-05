@@ -156,7 +156,7 @@ Surge External Bridge 采用全新数据目录和配置，不读取或迁移旧�
 
 ```text
 ~/.surge-external-bridge/
-├── gateway.json          # 0600，schema 4；包含 projection_key、Provider 与 Policy Path
+├── gateway.json          # 0600，schema 5；包含 projection_key、Provider 与 Policy Path
 ├── controller.key        # 0600，内部 Controller Secret 来源
 └── mihomo/               # 0700，Provider 最近成功缓存与 Unix Socket
 ```

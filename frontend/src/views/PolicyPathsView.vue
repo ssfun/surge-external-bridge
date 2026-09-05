@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router'
 import PageHeader from '@/components/PageHeader.vue'
 import { useDataStore } from '@/stores/data.js'
 import { useUIStore } from '@/stores/ui.js'
+import { useDialog } from '@/composables/useDialog.js'
 import { copyText } from '@/utils.js'
 
 const data = useDataStore()
@@ -12,6 +13,8 @@ const ui = useUIStore()
 const router = useRouter()
 const { policyPaths, providers } = storeToRefs(data)
 const dialogOpen = ref(false)
+const dialog = ref(null)
+useDialog(() => dialogOpen.value, dialog, close)
 const editingID = ref('')
 const saving = ref(false)
 const busy = reactive(new Set())
@@ -160,7 +163,7 @@ function filterDescription(path) {
   </div>
 
   <div v-if="dialogOpen" class="overlay" @click.self="close">
-    <form class="modal policy-path-modal" role="dialog" aria-modal="true" aria-labelledby="policy-path-dialog-title" @submit.prevent="save">
+    <form ref="dialog" class="modal policy-path-modal" role="dialog" aria-modal="true" aria-labelledby="policy-path-dialog-title" @submit.prevent="save">
       <div class="modal-header"><div><div class="eyebrow">POLICY PATH</div><h2 id="policy-path-dialog-title">{{ editingID ? '编辑 Policy Path' : '添加 Policy Path' }}</h2></div><button class="modal-close" type="button" aria-label="关闭" @click="close">×</button></div>
       <div class="modal-scroll">
         <p>Token 用于区分并访问对应 Policy Path；同一实例内不能重复。</p>

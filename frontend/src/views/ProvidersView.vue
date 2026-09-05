@@ -7,7 +7,7 @@ import ProviderDialog from '@/components/ProviderDialog.vue'
 import { api, encodeID } from '@/api.js'
 import { useDataStore } from '@/stores/data.js'
 import { useUIStore } from '@/stores/ui.js'
-import { copyText, formatDateTime, formatDuration, providerTypeLabel } from '@/utils.js'
+import { copyText, formatDateTime, formatDuration, providerTypeLabel, latestHealth } from '@/utils.js'
 
 const data = useDataStore()
 const ui = useUIStore()
@@ -44,7 +44,6 @@ function proxyList(provider) {
   return names ? proxies.filter((proxy) => names.has(proxy.name)) : []
 }
 function providerCount(provider) { return publishedProxyNames.value.get(provider.stable_id)?.size || 0 }
-function lastDelay(proxy) { return [...(Array.isArray(proxy.history) ? proxy.history : [])].reverse().find((item) => item.delay)?.delay }
 function sourceLabel(provider) { return provider.type === 'http' ? (provider.url || '订阅地址已隐藏') : provider.type === 'file' ? 'Mihomo 私有目录文件' : '内联节点配置' }
 function filterLabel(provider) {
   const values = []
@@ -203,7 +202,7 @@ async function moveProvider(index, offset) {
             </div>
             <dl class="provider-node-metrics">
               <div><dt>类型</dt><dd>{{ proxy.type || '—' }}</dd></div>
-              <div><dt>延迟</dt><dd>{{ lastDelay(proxy) ? `${lastDelay(proxy)} ms` : '暂无数据' }}</dd></div>
+              <div><dt>最近测速</dt><dd>{{ latestHealth(proxy.history).label }}<small v-if="latestHealth(proxy.history).time"> · {{ latestHealth(proxy.history).time }}</small></dd></div>
             </dl>
           </article>
         </div>

@@ -803,12 +803,13 @@ describe('route lifecycle and request ownership', () => {
     vi.useRealTimers()
   })
 
-  it('requests only resources owned by the active route', async () => {
+  it('requests route resources and the shared gateway status', async () => {
     const data = useDataStore()
     data.loaded.overview = true
     vi.stubGlobal('fetch', vi.fn(async (path) => ({ ok: true, status: 200, json: async () => path === '/api/nodes' ? [] : {} })))
     await data.refreshRoute('nodes')
-    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(fetch).toHaveBeenCalledWith('/api/overview', expect.any(Object))
     expect(fetch).toHaveBeenCalledWith('/api/nodes', expect.any(Object))
     expect(routeResources.nodes).toEqual(['nodes'])
   })

@@ -73,17 +73,24 @@ export async function api(path, options = {}) {
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...(options.headers || {}),
   }
-  const response = await fetch(path, { ...options, headers })
-  if (!response.ok) {
-    if (response.status === 401) {
-      authState.required = true
-      authState.authenticated = false
+  const controller = new AbortController()
+  const timer = (options.method || 'GET') === 'GET' ? setTimeout(() => controller.abort(), 15000) : null
+  try {
+    const response = await fetch(path, { ...options, signal: options.signal || controller.signal, headers })
+    if (!response.ok) {
+      if (response.status === 401) {
+        authState.required = true
+        authState.authenticated = false
+      }
+      throw await responseError(response)
     }
-    throw await responseError(response)
-  }
-  if (token) clearLegacyToken()
-  if (authState.required) authState.authenticated = true
-  return response.status === 204 ? null : response.json()
+    if (token) clearLegacyToken()
+    if (authState.required) authState.authenticated = true
+    return response.status === 204 ? null : await response.json()
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error('读取超时，请检查网关连接')
+    throw error
+  } finally { if (timer) clearTimeout(timer) }
 }
 
 export function encodeID(value) {

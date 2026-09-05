@@ -8,7 +8,7 @@ import { api, encodeID } from '@/api.js'
 import { useDataStore } from '@/stores/data.js'
 import { useRealtimeStore } from '@/stores/realtime.js'
 import { useUIStore } from '@/stores/ui.js'
-import { copyText, formatBytes, nodeConnectionStats } from '@/utils.js'
+import { copyText, formatBytes, nodeConnectionStats, latestHealth } from '@/utils.js'
 
 const router = useRouter()
 const data = useDataStore()
@@ -44,9 +44,7 @@ const connectionStats = computed(() => {
 function clearFilters() { name.value = ''; provider.value = ''; type.value = ''; alive.value = '' }
 function capabilityList(node) { return [node.udp && 'UDP', node.uot && 'UOT', node.xudp && 'XUDP', node.tfo && 'TFO', node.mptcp && 'MPTCP', node.smux && 'SMUX'].filter(Boolean) }
 function stats(node) { return connectionStats.value.get(node.id) || { count: 0, upload: 0, download: 0, chains: [] } }
-function delayValues(node) { return (Array.isArray(node.history) ? node.history : []).map((item) => Number(item.delay)).filter((value) => Number.isFinite(value) && value > 0) }
-function latestDelay(node) { return delayValues(node).at(-1) }
-function previousDelays(node) { return delayValues(node).slice(-4, -1).map((value) => `${value} ms`).join(' / ') }
+function previousDelays(node) { return (Array.isArray(node.history) ? node.history : []).slice(-4, -1).map((item) => latestHealth([item]).label).join(' / ') }
 function chainLabel(node) {
   const ownNames = new Set([node.name, node.proxy_name].filter(Boolean))
   return stats(node).chains.filter((item) => !ownNames.has(item)).join(' → ')
@@ -66,7 +64,7 @@ async function nodeAction(node, action) {
       delete errors[node.id]
     } else if (action === 'health') {
       const result = await api(`/api/nodes/${encodeID(node.id)}/healthcheck`, { method: 'POST' })
-      await data.reloadResources(['nodes'])
+      await data.refreshAfterMutation(['nodes'])
       ui.toast(`Mihomo 延迟 ${result.delay || '—'} ms`)
     } else if (action === 'copy') {
       if (!window.confirm('单节点行包含 SOCKS 密码，确认复制？')) return
@@ -87,7 +85,7 @@ function runAction(node, action) {
 </script>
 
 <template>
-  <PageHeader eyebrow="NODES" title="当前投影节点" description="查看节点可用性与实时使用情况；端到端诊断仅验证项目内核链路，不经过 Surge。"><LiveControls /></PageHeader>
+  <PageHeader eyebrow="NODES" title="当前节点" description="查看节点测速与实时使用情况；连接诊断通过网关测试 TCP/UDP，不经过 Surge。"><LiveControls /></PageHeader>
 
   <template v-if="nodes.length">
     <div class="node-summary" data-testid="node-summary">
@@ -117,7 +115,7 @@ function runAction(node, action) {
         </header>
 
         <div class="node-card-metrics">
-          <div><span>当前延迟</span><b :class="{ muted: !latestDelay(node) }">{{ latestDelay(node) ? `${latestDelay(node)} ms` : '暂无数据' }}</b><small v-if="previousDelays(node)">历史 {{ previousDelays(node) }}</small></div>
+          <div><span>最近测速</span><b>{{ latestHealth(node.history).label }}</b><small v-if="latestHealth(node.history).time">{{ latestHealth(node.history).time }}</small><small v-if="previousDelays(node)">历史 {{ previousDelays(node) }}</small></div>
           <div><span>实时连接</span><b>{{ stats(node).count }} 个</b><small v-if="stats(node).count">↑ {{ formatBytes(stats(node).upload) }} · ↓ {{ formatBytes(stats(node).download) }}</small><small v-else>暂无活跃连接</small></div>
         </div>
 

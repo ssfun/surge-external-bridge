@@ -35,7 +35,7 @@ async function copyPolicy() {
   <PageHeader
     eyebrow="OVERVIEW"
     title="网关总览"
-    :description="overview.provider_count ? '节点更新由 Mihomo Provider 原地生效；Surge 始终负责系统代理、规则与 TUN。' : '先添加订阅，Surge External Bridge 会把 Mihomo 节点投影给 Surge。'"
+    :description="overview.provider_count ? '订阅更新后自动生效；系统代理、规则与 TUN 仍由 Surge 管理。' : '先添加订阅，再复制配置到 Surge。'"
   >
     <button v-if="overview.provider_count" class="button" type="button" @click="router.push({ name: 'providers' })">查看订阅</button>
     <button v-else class="button primary" type="button" @click="dialogOpen = true">添加第一个 Provider</button>
@@ -47,11 +47,11 @@ async function copyPolicy() {
     <div class="card welcome-card">
       <div class="eyebrow">GET STARTED</div>
       <h2>把 Surge 不原生支持的节点接入策略组</h2>
-      <p>订阅和协议节点由 Mihomo 直接管理；上游更新会自动进入 Surge 投影，无需转换配置或重启内核。</p>
+      <p>添加订阅后即可生成 Surge 配置；节点更新自动生效，无需重启。</p>
       <button class="button primary" type="button" @click="dialogOpen = true">添加订阅</button>
     </div>
     <div class="setup-steps">
-      <div class="setup-step"><b>添加 Provider</b><span>粘贴订阅 URL，或使用私有文件 / Inline payload。</span></div>
+      <div class="setup-step"><b>添加 Provider</b><span>粘贴订阅链接、上传文件或粘贴节点配置。</span></div>
       <div class="setup-step"><b>确认节点可用</b><span>在节点页查看 Mihomo 延迟，按需运行 TCP/UDP 诊断。</span></div>
       <div class="setup-step"><b>复制到 Surge</b><span>复制 Policy Path 配置，加入 Surge 策略组。</span></div>
     </div>

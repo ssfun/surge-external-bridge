@@ -36,7 +36,22 @@ export const useRealtimeStore = defineStore('realtime', {
     paused: false,
     reduced: localStorage.getItem('surgeeb-reduced-updates') === '1',
     logLevel: '',
+    activeStreams: [],
+    streamStates: {},
+    receivedAt: {},
   }),
+  getters: {
+    streamStatus(state) {
+      if (state.paused) return 'paused'
+      if (!state.activeStreams.length) return 'idle'
+      const statuses = state.activeStreams.map((name) => state.streamStates[name])
+      if (statuses.includes('disconnected')) return 'disconnected'
+      return statuses.every((status) => status === 'connected') ? 'connected' : 'connecting'
+    },
+    lastReceivedAt(state) {
+      return Math.max(0, ...state.activeStreams.map((name) => state.receivedAt[name] || 0))
+    },
+  },
   actions: {
     applyPayload(name, data) {
       if (name === 'logs') {
@@ -94,11 +109,12 @@ export const useRealtimeStore = defineStore('realtime', {
     sync(routeName) {
       enabled = true
       activeRoute = routeName
+      this.activeStreams = routeStreams[routeName] || []
       const desired = new Set(document.hidden || this.paused ? [] : routeStreams[routeName] || [])
       for (const [name, socket] of sockets) {
         if (desired.has(name)) continue
-        socket.close()
         sockets.delete(name)
+        socket.close()
       }
       for (const name of desired) this.connect(name)
     },
@@ -108,25 +124,40 @@ export const useRealtimeStore = defineStore('realtime', {
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
       const socket = new WebSocket(`${protocol}//${location.host}${streamPath(name, this.logLevel)}`)
       sockets.set(name, socket)
+      if (this.streamStates[name] !== 'disconnected') this.streamStates[name] = 'connecting'
+      socket.onopen = () => {
+        if (sockets.get(name) === socket) this.streamStates[name] = 'connected'
+      }
       socket.onmessage = (event) => {
-        if (this.paused) return
+        if (this.paused || sockets.get(name) !== socket) return
         try {
           const data = JSON.parse(event.data)
+          this.receivedAt[name] = Date.now()
+          this.streamStates[name] = 'connected'
           this.queuePayload(name, data)
         } catch {}
       }
       socket.onclose = () => {
-        if (sockets.get(name) === socket) sockets.delete(name)
+        if (sockets.get(name) !== socket) return
+        sockets.delete(name)
+        this.streamStates[name] = 'disconnected'
         window.clearTimeout(reconnectTimers.get(name))
         reconnectTimers.set(name, window.setTimeout(() => {
           if (enabled && !document.hidden && !this.paused && (routeStreams[activeRoute] || []).includes(name)) this.connect(name)
         }, 3000))
       }
     },
+    resetSession() {
+      this.stop()
+      this.$reset()
+    },
     stop() {
       enabled = false
-      for (const socket of sockets.values()) socket.close()
+      const closing = [...sockets.values()]
       sockets.clear()
+      for (const socket of closing) socket.close()
+      this.activeStreams = []
+      this.streamStates = {}
       for (const timer of reconnectTimers.values()) window.clearTimeout(timer)
       reconnectTimers.clear()
       for (const timer of deliveryTimers.values()) window.clearTimeout(timer)

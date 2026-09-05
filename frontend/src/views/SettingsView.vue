@@ -26,6 +26,7 @@ function populate(value) {
   generatedCredential.policy = false
 }
 watch(settings, (value) => { if (!dirty.value) populate(value) }, { immediate: true })
+watch(() => data.loadedAt.settings, () => { if (!dirty.value) populate(settings.value) })
 const protectedState = computed(() => settings.value?.data_directory_protected && settings.value?.configuration_protected && settings.value?.controller_key_protected)
 const generatedCredentialTitle = computed(() => generatedCredential.management && generatedCredential.policy
   ? '两个独立的 24 位 Token 已生成并显示'
@@ -110,9 +111,9 @@ async function save() {
   try {
     const result = await data.updateSettings(body)
     dirty.value = false
-    if (!result.reconnect) populate(settings.value)
+    if (!result.reconnect && result.refreshed !== false) populate(settings.value)
     appliedMessage.value = result.reconnect ? '设置已保存，请使用新的配置台地址重新连接。' : ''
-    ui.toast(result.reconnect ? '设置已保存，请使用新的配置台地址重新连接' : '设置已保存')
+    ui.toast(result.sessionExpired ? '设置已保存，请使用新的 Management Token 重新登录' : result.reconnect ? '设置已保存，请使用新的配置台地址重新连接' : '设置已保存')
   } catch (error) { ui.toast(error.message, true) }
   finally { saving.value = false }
 }
@@ -131,7 +132,7 @@ async function serviceAction(install) {
 
 <template>
   <PageHeader eyebrow="SETTINGS" title="设置" description="设置 Surge 如何连接网关，以及其他设备是否可以访问。" />
-  <div v-if="!settings" class="card empty-state"><div class="empty-state-icon">…</div><b>正在加载设置</b><span>只请求部署与服务状态。</span></div>
+  <div v-if="!settings" class="card empty-state"><div class="empty-state-icon">…</div><b>正在加载设置</b><span>请稍候，正在读取当前配置。</span></div>
   <template v-else>
     <form @submit.prevent="save" @input="markDirty">
       <section class="settings-section">
@@ -140,7 +141,7 @@ async function serviceAction(install) {
           <div class="settings-card-head"><div><h3>使用范围与地址</h3><p>选择只供本机使用，或允许同一局域网内的设备连接。</p></div><span class="pill" :class="form.mode === 'gateway' ? 'warn' : 'ok'">{{ form.mode === 'gateway' ? '局域网' : '仅本机' }}</span></div>
           <div class="settings-deployment-grid">
             <label class="field"><span>使用范围</span><span class="select-control"><select v-model="form.mode" data-testid="settings-mode" @change="modeChanged"><option value="local">仅本机</option><option value="gateway">局域网网关</option></select></span><small>{{ form.mode === 'gateway' ? '自动监听所有本机网卡；同一局域网内的设备可通过下方访问地址连接。' : '自动限制为 127.0.0.1，只有这台电脑可以访问。' }}</small></label>
-            <label class="field"><span>SOCKS 发布主机</span><input v-model="form.socks_host" data-testid="settings-socks-host" spellcheck="false" placeholder="192.168.50.10"><small>写入投影节点的 SOCKS 主机，不要带协议和端口。</small></label>
+            <label class="field"><span>SOCKS 发布主机</span><input v-model="form.socks_host" data-testid="settings-socks-host" spellcheck="false" placeholder="192.168.50.10"><small>Surge 连接节点时使用的 SOCKS 主机，不要带协议和端口。</small></label>
             <label class="field"><span>Policy Path 发布主机</span><input v-model="form.policy_host" data-testid="settings-policy-host" spellcheck="false" placeholder="surge.eb"><small>用于生成 policy-path URL，可与 SOCKS 主机不同，不要带协议和端口。</small></label>
           </div>
           <div class="settings-subsection"><div class="settings-subsection-head"><b>监听地址</b><span>切换使用范围时自动生成，仍可按需精确绑定网卡</span></div>

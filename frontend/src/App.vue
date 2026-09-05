@@ -32,6 +32,8 @@ function navigationActive(name) {
 
 const gateway = computed(() => overview.value?.gateway || {})
 const running = computed(() => gateway.value.state === 'running')
+const unavailable = computed(() => Boolean(data.resourceErrors.overview) || realtime.streamStatus === 'disconnected')
+const gatewayLabel = computed(() => unavailable.value ? '连接中断，状态待确认' : running.value ? 'Mihomo 网关运行中' : 'Mihomo 网关异常')
 let refreshTimer = 0
 let lastBackgroundError = ''
 const bootError = ref('')
@@ -121,7 +123,7 @@ async function signOut() {
   if (!window.confirm('退出当前配置台会话？')) return
   try {
     await logout()
-    realtime.stop()
+    realtime.resetSession()
     data.resetSession()
     bootError.value = ''
   } catch (error) {
@@ -152,14 +154,16 @@ async function signOut() {
         </button>
       </nav>
       <div class="side-status">
-        <div class="engine-line"><i :class="running ? 'ok' : 'bad'" /><span>{{ running ? 'Mihomo 网关运行中' : 'Mihomo 网关异常' }}</span></div>
+        <div class="engine-line"><i :class="running && !unavailable ? 'ok' : 'bad'" /><span>{{ gatewayLabel }}</span></div>
         <code>socks {{ gateway.socks_address || '—' }}</code>
-        <small>{{ gateway.projection_count || 0 }} 个可用节点</small>
+        <small>{{ gateway.projection_count || 0 }} 个发布节点</small>
         <button v-if="authState.required" class="logout-link" type="button" @click="signOut">退出登录</button>
       </div>
       <button v-if="authState.required" class="button ghost compact mobile-logout" type="button" @click="signOut">退出登录</button>
     </aside>
     <main id="main-content" tabindex="-1">
+      <div v-if="unavailable && overview" class="banner bad" role="status"><b>连接中断</b><span>正在尝试重新连接，以下为最后收到的数据。</span></div>
+      <div v-if="data.pendingRefresh.length" class="banner" role="status" data-testid="refresh-warning"><b>操作已成功，部分状态尚未刷新</b><span>无需重复提交，后台会重试读取。</span><button class="button" @click="data.retryPendingRefresh()">重新读取状态</button></div>
       <RouterView v-if="overview" v-slot="{ Component }">
         <component :is="Component" :key="route.name" />
       </RouterView>

@@ -1,18 +1,18 @@
 <script setup>
-import { nextTick, reactive, ref, watch } from 'vue'
+import { reactive, ref, watch } from 'vue'
 import { api, encodeID } from '@/api.js'
 import { useDataStore } from '@/stores/data.js'
 import { useUIStore } from '@/stores/ui.js'
+import { useDialog } from '@/composables/useDialog.js'
 
 const props = defineProps({ open: Boolean, provider: { type: Object, default: null } })
 const emit = defineEmits(['close', 'saved'])
 const data = useDataStore()
 const ui = useUIStore()
 const dialog = ref(null)
-const nameInput = ref(null)
 const busy = ref(false)
 const submitError = ref('')
-let returnFocus = null
+useDialog(() => props.open, dialog, close)
 
 const httpDefaults = { refresh_seconds: 21600, size_limit: 16777216 }
 const healthCheckDefaults = { health_check_seconds: 300, health_check_timeout: 5000 }
@@ -51,28 +51,15 @@ function resetForm() {
 
 watch([() => form.type, () => form.health_check], ensureActiveDefaults, { flush: 'sync' })
 
-watch(() => props.open, async (open) => {
+watch(() => props.open, (open) => {
   if (!open) return
-  returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
   resetForm()
   submitError.value = ''
-  await nextTick()
-  nameInput.value?.focus({ preventScroll: true })
 }, { immediate: true })
 
 function close() {
   if (busy.value) return
   emit('close')
-  nextTick(() => returnFocus?.isConnected && returnFocus.focus())
-}
-
-function trapFocus(event) {
-  const items = [...dialog.value.querySelectorAll('button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),summary,[tabindex]:not([tabindex="-1"])')]
-  if (!items.length) return event.preventDefault()
-  const first = items[0]
-  const last = items.at(-1)
-  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
-  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
 }
 
 function revealInvalidControl(event) {
@@ -111,7 +98,7 @@ async function submit() {
     const id = props.provider?.stable_id || ''
     if (form.type === 'file' && form.file) await data.saveProvider(body, id, form.file)
     else await data.saveProvider(body, id)
-    ui.toast('Provider 已通过进程内受控 ApplyConfig 生效')
+    ui.toast('订阅已保存并生效')
     emit('saved')
   } catch (error) {
     submitError.value = error.message
@@ -133,8 +120,6 @@ async function submit() {
         tabindex="-1"
         @submit.prevent="submit"
         @invalid.capture="revealInvalidControl"
-        @keydown.esc.prevent.stop="close"
-        @keydown.tab="trapFocus"
       >
         <div class="modal-header">
           <div><div class="eyebrow">{{ provider ? 'EDIT PROVIDER' : 'NEW PROVIDER' }}</div><h2 id="provider-dialog-title">{{ provider ? '编辑' : '添加' }} Provider</h2></div>
@@ -143,10 +128,10 @@ async function submit() {
         <div class="modal-scroll">
           <p id="provider-dialog-description">先完成来源与节点筛选；请求、刷新和健康检查可在高级选项中按需调整。</p>
           <section class="form-section provider-primary" data-testid="provider-primary">
-            <div class="form-section-title"><b>配置信息</b><span>{{ form.type === 'http' ? 'Mihomo 定时拉取并保留最近成功缓存。' : form.type === 'file' ? '文件必须位于 Mihomo 私有数据目录内。' : '适合临时粘贴或测试，不执行远端刷新。' }}</span></div>
+            <div class="form-section-title"><b>配置信息</b><span>{{ form.type === 'http' ? '定时更新，失败时保留最近成功的节点。' : form.type === 'file' ? '上传的文件会保存在网关的私有目录。' : '适合临时粘贴或测试，不执行远端刷新。' }}</span></div>
             <div class="form-grid">
-              <label class="field"><span>名称</span><input ref="nameInput" v-model="form.name" required autocomplete="off"></label>
-              <label class="field"><span>来源类型</span><span class="select-control"><select v-model="form.type" data-testid="provider-type"><option value="http">HTTP 订阅</option><option value="file">私有文件</option><option value="inline">Inline payload</option></select></span></label>
+              <label class="field"><span>名称</span><input v-model="form.name" required autocomplete="off"></label>
+              <label class="field"><span>来源类型</span><span class="select-control"><select v-model="form.type" data-testid="provider-type"><option value="http">HTTP 订阅</option><option value="file">私有文件</option><option value="inline">粘贴节点配置</option></select></span></label>
             </div>
             <label class="field"><span>节点名 Provider 前缀</span><input v-model="form.prefix" data-testid="provider-prefix" placeholder="留空使用配置名称" autocomplete="off"><small>仅改变 Surge 中的节点展示名；留空时使用上方名称，填写后使用此值作为 Provider 前缀。</small></label>
             <div v-if="form.type === 'http'" class="conditional">

@@ -25,7 +25,14 @@ export function formatDateTime(value) {
 }
 
 export function providerTypeLabel(type) {
-  return ({ http: 'HTTP 订阅', file: '私有文件', inline: 'Inline' })[type] || type
+  return ({ http: 'HTTP 订阅', file: '私有文件', inline: '粘贴配置' })[type] || type
+}
+
+export function latestHealth(history) {
+  const record = Array.isArray(history) ? history.at(-1) : null
+  if (!record) return { label: '尚未测速', time: '' }
+  const delay = Number(record.delay)
+  return { label: Number.isFinite(delay) && delay > 0 ? `${delay} ms` : '测速失败', time: formatDateTime(record.time) }
 }
 
 export function nodeConnectionStats(node, connections) {
