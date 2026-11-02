@@ -880,20 +880,21 @@ func isVirtualGatewayInterface(name string) bool {
 }
 
 type settingsRequest struct {
-	Mode            string   `json:"mode"`
-	HTTPBind        string   `json:"http_bind"`
-	SocksBind       string   `json:"socks_bind"`
-	SocksPort       uint16   `json:"socks_port"`
-	SocksHost       string   `json:"socks_host"`
-	PolicyHost      string   `json:"policy_host"`
-	ProjectionKey   string   `json:"projection_key"`
-	ManagementToken *string  `json:"management_token"`
-	PolicyToken     *string  `json:"policy_token"`
-	PrefixProvider  bool     `json:"prefix_provider"`
-	ProjectionTypes []string `json:"projection_types"`
-	NodeTestURL     string   `json:"node_test_url"`
-	NodeTestUDP     string   `json:"node_test_udp_address"`
-	NodeTestTimeout int      `json:"node_test_timeout_seconds"`
+	NodeDNS         *M.NodeDNSConfig `json:"node_dns"`
+	Mode            string           `json:"mode"`
+	HTTPBind        string           `json:"http_bind"`
+	SocksBind       string           `json:"socks_bind"`
+	SocksPort       uint16           `json:"socks_port"`
+	SocksHost       string           `json:"socks_host"`
+	PolicyHost      string           `json:"policy_host"`
+	ProjectionKey   string           `json:"projection_key"`
+	ManagementToken *string          `json:"management_token"`
+	PolicyToken     *string          `json:"policy_token"`
+	PrefixProvider  bool             `json:"prefix_provider"`
+	ProjectionTypes []string         `json:"projection_types"`
+	NodeTestURL     string           `json:"node_test_url"`
+	NodeTestUDP     string           `json:"node_test_udp_address"`
+	NodeTestTimeout int              `json:"node_test_timeout_seconds"`
 }
 
 func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
@@ -917,7 +918,7 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "新的 HTTP 监听地址不可用："+s.publicError(err))
 		return
 	}
-	if err := s.app.UpdateSettingsPatch(next, request.ManagementToken, request.PolicyToken); err != nil {
+	if err := s.app.UpdateSettingsPatch(next, request.ManagementToken, request.PolicyToken, request.NodeDNS); err != nil {
 		if prepared != nil {
 			_ = prepared.Close()
 		}

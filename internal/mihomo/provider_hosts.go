@@ -430,11 +430,12 @@ func normalizeProviderHostValue(raw any) (resolver.HostValue, error) {
 	return value, nil
 }
 
-func buildProviderHostResolver(cfgProviders map[string]P.ProxyProvider, definitions []ProviderDefinition) (*providerHostResolver, map[string]int, error) {
+func buildProviderHostResolver(cfgProviders map[string]P.ProxyProvider, definitions []ProviderDefinition, policies ...*nodeDNSPolicy) (*providerHostResolver, map[string]int, error) {
 	merged := make(map[string]providerHostMapping)
 	owners := make(map[string]string)
 	counts := make(map[string]int, len(definitions))
 	expected := make(map[string]hostTarget)
+	nodes := make(map[string]struct{})
 	for _, definition := range definitions {
 		key, err := ProviderKey(definition.StableID)
 		if err != nil {
@@ -444,7 +445,21 @@ func buildProviderHostResolver(cfgProviders map[string]P.ProxyProvider, definiti
 		if !ok {
 			continue
 		}
-		state := provider.candidateState().hosts
+		candidate := provider.candidateState()
+		state := candidate.hosts
+		// hosts.expected also contains source nodes rejected by Provider filters.
+		// Keep it for the existing hosts conflict checks, but scope custom DNS only
+		// to the adapters accepted for this candidate publication.
+		for _, proxy := range candidate.proxies {
+			if proxy == nil {
+				continue
+			}
+			host, _, err := net.SplitHostPort(proxy.Addr())
+			host = strings.ToLower(strings.TrimSuffix(host, "."))
+			if err == nil && host != "" {
+				nodes[host] = struct{}{}
+			}
+		}
 		_, hostError := provider.hostState()
 		if hostError != "" && stateEmpty(state) {
 			return nil, nil, fmt.Errorf("Provider %q hosts: %s", definition.Name, hostError)
@@ -477,6 +492,11 @@ func buildProviderHostResolver(cfgProviders map[string]P.ProxyProvider, definiti
 			return nil, nil, fmt.Errorf("hosts mappings from another Provider change proxy server %q", server)
 		}
 	}
+	snapshot := hostResolver.state.Load()
+	snapshot.nodes = nodes
+	if len(policies) > 0 {
+		snapshot.dns = policies[0]
+	}
 	return hostResolver, counts, nil
 }
 
@@ -504,8 +524,14 @@ func equalIPs(left, right []netip.Addr) bool {
 	return true
 }
 
+type providerHostSnapshot struct {
+	hosts *trie.DomainTrie[resolver.HostValue]
+	nodes map[string]struct{}
+	dns   *nodeDNSPolicy
+}
+
 type providerHostResolver struct {
-	hosts atomic.Pointer[trie.DomainTrie[resolver.HostValue]]
+	state atomic.Pointer[providerHostSnapshot]
 }
 
 var sharedProviderHostResolver = func() *providerHostResolver {
@@ -530,7 +556,7 @@ func newProviderHostResolver(mappings map[string]providerHostMapping) (*provider
 	}
 	tree.Optimize()
 	hostResolver := &providerHostResolver{}
-	hostResolver.hosts.Store(tree)
+	hostResolver.state.Store(&providerHostSnapshot{hosts: tree})
 	return hostResolver, nil
 }
 
@@ -538,16 +564,23 @@ func (r *providerHostResolver) replace(candidate *providerHostResolver) {
 	if candidate == nil {
 		tree := trie.New[resolver.HostValue]()
 		tree.Optimize()
-		r.hosts.Store(tree)
+		r.state.Store(&providerHostSnapshot{hosts: tree})
 		return
 	}
-	r.hosts.Store(candidate.hosts.Load())
+	r.state.Store(candidate.state.Load())
 }
 
 func (r *providerHostResolver) resolve(host string) (hostTarget, error) {
+	return resolveProviderHost(r.state.Load(), host)
+}
+
+func resolveProviderHost(snapshot *providerHostSnapshot, host string) (hostTarget, error) {
 	current := strings.ToLower(strings.TrimSuffix(host, "."))
 	seen := map[string]struct{}{}
-	hosts := r.hosts.Load()
+	var hosts *trie.DomainTrie[resolver.HostValue]
+	if snapshot != nil {
+		hosts = snapshot.hosts
+	}
 	for steps := 0; steps <= 64; steps++ {
 		if _, exists := seen[current]; exists {
 			return hostTarget{}, errors.New("domain alias cycle")
@@ -570,7 +603,12 @@ func (r *providerHostResolver) resolve(host string) (hostTarget, error) {
 }
 
 func (r *providerHostResolver) lookup(ctx context.Context, host string, family int) ([]netip.Addr, error) {
-	target, err := r.resolve(host)
+	// Mihomo's proxy-server resolver is also consulted by generic dialers.
+	// Restrict DNS policy to the accepted Provider node names. In-flight calls
+	// retain this one immutable hosts+scope+DNS snapshot across alias resolution.
+	snapshot := r.state.Load()
+	canonical := strings.ToLower(strings.TrimSuffix(host, "."))
+	target, err := resolveProviderHost(snapshot, host)
 	if err != nil {
 		return nil, err
 	}
@@ -586,13 +624,21 @@ func (r *providerHostResolver) lookup(ctx context.Context, host string, family i
 		}
 		return filtered, nil
 	}
+	selected := resolver.SystemResolver
+	if snapshot != nil {
+		if _, node := snapshot.nodes[canonical]; node {
+			selected = snapshot.dns.forDomain(target.domain)
+		}
+	}
+	// Returning the selected upstream's error is intentional: failure is not a
+	// reason to leak a rule-matched query to the system/default DNS service.
 	switch family {
 	case 4:
-		return resolver.SystemResolver.LookupIPv4(ctx, target.domain)
+		return selected.LookupIPv4(ctx, target.domain)
 	case 6:
-		return resolver.SystemResolver.LookupIPv6(ctx, target.domain)
+		return selected.LookupIPv6(ctx, target.domain)
 	default:
-		return resolver.SystemResolver.LookupIP(ctx, target.domain)
+		return selected.LookupIP(ctx, target.domain)
 	}
 }
 

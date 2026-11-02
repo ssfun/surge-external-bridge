@@ -39,6 +39,7 @@ type ManagerOptions struct {
 	SocksPort        uint16
 	MasterKey        []byte
 	PrefixProvider   bool
+	NodeDNS          NodeDNSConfig
 	Providers        []ProviderDefinition
 	PollInterval     time.Duration
 	OnEvent          func(level, message string)
@@ -71,6 +72,7 @@ type Manager struct {
 	providerErrors map[string]string
 	hostCounts     map[string]int
 	hostResolver   *providerHostResolver
+	nodeDNS        *nodeDNSPolicy
 	status         ManagerStatus
 	healthMu       sync.Mutex
 	healthTasks    map[string]*providerHealthTask
@@ -91,7 +93,13 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 	if options.PollInterval <= 0 {
 		options.PollInterval = time.Second
 	}
+	nodeDNS, err := compileNodeDNS(options.NodeDNS)
+	if err != nil {
+		return nil, err
+	}
+	options.NodeDNS = options.NodeDNS.Clone()
 	return &Manager{
+		nodeDNS:        nodeDNS,
 		options:        options,
 		store:          NewSnapshotStore(nil),
 		versions:       make(map[string]uint32),
@@ -219,7 +227,7 @@ func (m *Manager) startLocked() error {
 		}
 		return err
 	}
-	hostResolver, hostCounts, err := buildProviderHostResolver(cfg.Providers, m.options.Providers)
+	hostResolver, hostCounts, err := buildProviderHostResolver(cfg.Providers, m.options.Providers, m.nodeDNS)
 	if err != nil {
 		closeProviders(cfg.Providers)
 		m.fail(err)
@@ -421,7 +429,7 @@ func (m *Manager) ApplyProvidersBeforeCommit(definitions []ProviderDefinition, b
 	if err := initializeProviders(candidate.Providers); err != nil {
 		return err
 	}
-	hostResolver, hostCounts, err := buildProviderHostResolver(candidate.Providers, definitions)
+	hostResolver, hostCounts, err := buildProviderHostResolver(candidate.Providers, definitions, m.nodeDNS)
 	if err != nil {
 		closeProviders(candidate.Providers)
 		return err
@@ -538,7 +546,7 @@ func (m *Manager) StartWithProviders(definitions []ProviderDefinition) error {
 	return m.startLocked()
 }
 
-func (m *Manager) ConfigureWhenStopped(bind, advertise string, port uint16, prefixProvider bool, masterKey []byte, definitions []ProviderDefinition) error {
+func (m *Manager) ConfigureWhenStopped(bind, advertise string, port uint16, prefixProvider bool, masterKey []byte, definitions []ProviderDefinition, dnsConfig ...NodeDNSConfig) error {
 	if strings.TrimSpace(bind) == "" || strings.TrimSpace(advertise) == "" || port == 0 || len(masterKey) < MasterKeySize {
 		return errors.New("invalid projection settings")
 	}
@@ -548,6 +556,14 @@ func (m *Manager) ConfigureWhenStopped(bind, advertise string, port uint16, pref
 	defer m.mu.Unlock()
 	if m.listener != nil {
 		return errors.New("Mihomo manager is running")
+	}
+	if len(dnsConfig) > 0 {
+		policy, err := compileNodeDNS(dnsConfig[0])
+		if err != nil {
+			return err
+		}
+		m.options.NodeDNS = dnsConfig[0].Clone()
+		m.nodeDNS = policy
 	}
 	m.options.SocksBind, m.options.SocksAdvertise, m.options.SocksPort = bind, advertise, port
 	m.options.PrefixProvider = prefixProvider
@@ -559,13 +575,13 @@ func (m *Manager) ConfigureWhenStopped(bind, advertise string, port uint16, pref
 // ApplyProjectionSettings changes only the product-owned projection and SOCKS
 // topology. Mihomo Providers remain the authoritative node source and the
 // Embedded Core is not restarted or reconfigured.
-func (m *Manager) ApplyProjectionSettings(bind, advertise string, port uint16, prefixProvider bool, masterKey []byte) error {
-	return m.ApplyProjectionSettingsBeforeCommit(bind, advertise, port, prefixProvider, masterKey, nil)
+func (m *Manager) ApplyProjectionSettings(bind, advertise string, port uint16, prefixProvider bool, masterKey []byte, dnsConfig ...NodeDNSConfig) error {
+	return m.ApplyProjectionSettingsBeforeCommit(bind, advertise, port, prefixProvider, masterKey, nil, dnsConfig...)
 }
 
 // ApplyProjectionSettingsBeforeCommit acquires the publication guard only after
 // waiting for other Provider work and preparing the candidate listener/snapshot.
-func (m *Manager) ApplyProjectionSettingsBeforeCommit(bind, advertise string, port uint16, prefixProvider bool, masterKey []byte, beforeCommit func()) error {
+func (m *Manager) ApplyProjectionSettingsBeforeCommit(bind, advertise string, port uint16, prefixProvider bool, masterKey []byte, beforeCommit func(), dnsConfig ...NodeDNSConfig) error {
 	if strings.TrimSpace(bind) == "" || strings.TrimSpace(advertise) == "" || port == 0 {
 		return errors.New("SOCKS bind, advertise, and port are required")
 	}
@@ -593,6 +609,19 @@ func (m *Manager) ApplyProjectionSettingsBeforeCommit(bind, advertise string, po
 	if err != nil {
 		return err
 	}
+	policy := m.nodeDNS
+	nodeConfig := m.options.NodeDNS
+	if len(dnsConfig) > 0 {
+		policy, err = compileNodeDNS(dnsConfig[0])
+		if err != nil {
+			return err
+		}
+		nodeConfig = dnsConfig[0].Clone()
+	}
+	state := *m.hostResolver.state.Load()
+	state.dns = policy
+	candidateResolver := &providerHostResolver{}
+	candidateResolver.state.Store(&state)
 	var newListener *SOCKSListener
 	if bind != oldBind || port != oldPort {
 		address := net.JoinHostPort(bind, fmt.Sprint(port))
@@ -604,7 +633,8 @@ func (m *Manager) ApplyProjectionSettingsBeforeCommit(bind, advertise string, po
 	if beforeCommit != nil {
 		beforeCommit()
 	}
-	m.store.Store(candidate)
+	replaceProviderRuntime(candidate, m.hostResolver, candidateResolver, m.store)
+	m.nodeDNS = policy
 	if newListener != nil {
 		newListener.Start()
 		m.mu.Lock()
@@ -618,6 +648,7 @@ func (m *Manager) ApplyProjectionSettingsBeforeCommit(bind, advertise string, po
 	m.options.SocksBind, m.options.SocksAdvertise, m.options.SocksPort = bind, advertise, port
 	m.options.PrefixProvider = prefixProvider
 	m.options.MasterKey = append([]byte(nil), masterKey...)
+	m.options.NodeDNS = nodeConfig
 	m.status.SocksAddress = m.listener.Address()
 	m.status.ProjectionHash = candidate.Revision()
 	m.status.ProjectionCount = len(candidate.Entries())

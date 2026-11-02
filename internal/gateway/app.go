@@ -66,7 +66,7 @@ func New(dataDir string) (*App, error) {
 		HomeDir: filepath.Join(dataDir, "mihomo"), ControllerSocket: controllerSocket,
 		ControllerSecret: controllerSecret,
 		SocksBind:        config.SocksBind, SocksAdvertise: config.SocksHost, SocksPort: config.SocksPort,
-		MasterKey: masterKey, PrefixProvider: config.PrefixProvider, Providers: definitions(config),
+		MasterKey: masterKey, PrefixProvider: config.PrefixProvider, Providers: definitions(config), NodeDNS: config.NodeDNS,
 		OnEvent: application.addEvent,
 	})
 	if err != nil {
@@ -464,7 +464,7 @@ func (a *App) UpdateSettings(settings Settings) error {
 // UpdateSettingsPatch applies non-secret settings while preserving credentials
 // whose pointers are nil. Credential selection happens after applyMu is held so
 // a concurrent Token rotation cannot be overwritten by an earlier HTTP read.
-func (a *App) UpdateSettingsPatch(settings Settings, managementToken, policyToken *string) error {
+func (a *App) UpdateSettingsPatch(settings Settings, managementToken, policyToken *string, nodeDNSPatch ...*M.NodeDNSConfig) error {
 	a.applyMu.Lock()
 	defer a.applyMu.Unlock()
 	lockPublication, unlockPublication := a.publicationGuard()
@@ -483,6 +483,13 @@ func (a *App) UpdateSettingsPatch(settings Settings, managementToken, policyToke
 	} else {
 		settings.PolicyToken = *policyToken
 	}
+	if len(nodeDNSPatch) > 0 {
+		if nodeDNSPatch[0] == nil {
+			settings.NodeDNS = previous.NodeDNS.Clone()
+		} else {
+			settings.NodeDNS = nodeDNSPatch[0].Clone()
+		}
+	}
 	candidate := cloneConfig(previous)
 	candidate.SetSettings(settings)
 	if err := ValidateConfig(candidate); err != nil {
@@ -491,12 +498,12 @@ func (a *App) UpdateSettingsPatch(settings Settings, managementToken, policyToke
 	nextKey := projectionMasterKey(candidate.ProjectionKey)
 	wasRunning := a.manager.Status().State == "running"
 	if wasRunning {
-		if err := a.manager.ApplyProjectionSettingsBeforeCommit(candidate.SocksBind, candidate.SocksHost, candidate.SocksPort, candidate.PrefixProvider, nextKey, lockPublication); err != nil {
+		if err := a.manager.ApplyProjectionSettingsBeforeCommit(candidate.SocksBind, candidate.SocksHost, candidate.SocksPort, candidate.PrefixProvider, nextKey, lockPublication, candidate.NodeDNS); err != nil {
 			return err
 		}
 	} else {
 		lockPublication()
-		if err := a.manager.ConfigureWhenStopped(candidate.SocksBind, candidate.SocksHost, candidate.SocksPort, candidate.PrefixProvider, nextKey, definitions(candidate)); err != nil {
+		if err := a.manager.ConfigureWhenStopped(candidate.SocksBind, candidate.SocksHost, candidate.SocksPort, candidate.PrefixProvider, nextKey, definitions(candidate), candidate.NodeDNS); err != nil {
 			return err
 		}
 		if err := a.manager.Start(); err != nil {
@@ -509,7 +516,7 @@ func (a *App) UpdateSettingsPatch(settings Settings, managementToken, policyToke
 	if err := a.store.Save(candidate); err != nil {
 		var rollbackErr error
 		if wasRunning {
-			rollbackErr = a.manager.ApplyProjectionSettings(previous.SocksBind, previous.SocksHost, previous.SocksPort, previous.PrefixProvider, previousKey)
+			rollbackErr = a.manager.ApplyProjectionSettings(previous.SocksBind, previous.SocksHost, previous.SocksPort, previous.PrefixProvider, previousKey, previous.NodeDNS)
 		} else {
 			rollbackErr = a.restoreStoppedSettings(previous, previousKey)
 		}
@@ -569,7 +576,7 @@ func (a *App) restoreStoppedSettings(previous Config, previousKey []byte) error 
 	if err := a.manager.Stop(); err != nil {
 		return fmt.Errorf("stop unpersisted runtime: %w", err)
 	}
-	if err := a.manager.ConfigureWhenStopped(previous.SocksBind, previous.SocksHost, previous.SocksPort, previous.PrefixProvider, previousKey, definitions(previous)); err != nil {
+	if err := a.manager.ConfigureWhenStopped(previous.SocksBind, previous.SocksHost, previous.SocksPort, previous.PrefixProvider, previousKey, definitions(previous), previous.NodeDNS); err != nil {
 		return fmt.Errorf("restore previous stopped configuration: %w", err)
 	}
 	return nil
@@ -647,6 +654,9 @@ func definitions(config Config) []M.ProviderDefinition {
 }
 
 func ValidateConfig(config Config) error {
+	if err := M.ValidateNodeDNS(config.NodeDNS); err != nil {
+		return err
+	}
 	if config.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("schema version must be %d", SchemaVersion)
 	}
@@ -822,6 +832,7 @@ func providerHasRedirectSensitiveCredentials(provider Provider) bool {
 
 func cloneConfig(config Config) Config {
 	clone := config
+	clone.NodeDNS = config.NodeDNS.Clone()
 	clone.ProjectionTypes = append([]string(nil), config.ProjectionTypes...)
 	clone.Providers = append([]Provider(nil), config.Providers...)
 	clone.PolicyPaths = append([]PolicyPath(nil), config.PolicyPaths...)

@@ -16,12 +16,19 @@ const dirty = ref(false)
 const saving = ref(false)
 const appliedMessage = ref('')
 const form = reactive({ mode: 'local', http_bind: '', socks_bind: '', socks_port: 0, socks_host: '', policy_host: '', projection_key: '', prefix_provider: false, management_token: '', policy_token: '', node_test_url: '', node_test_udp_address: '', node_test_timeout_seconds: 10 })
+const nodeDNS = reactive({ nameservers: '', bootstrap: '', rules: [] })
+const dnsLines = (value) => String(value || '').split(/[\n,]+/).map((line) => line.trim()).filter(Boolean)
+function addDNSRule() { nodeDNS.rules.push({ domain: '', nameservers: '' }); markDirty() }
+function removeDNSRule(index) { nodeDNS.rules.splice(index, 1); markDirty() }
 const credentialVisible = reactive({ management: false })
 const generatedCredential = reactive({ management: false, policy: false })
 
 function populate(value) {
   if (!value) return
   Object.assign(form, value, { management_token: '' })
+  nodeDNS.nameservers = (value.node_dns?.nameservers || []).join('\n')
+  nodeDNS.bootstrap = (value.node_dns?.bootstrap_nameservers || []).join('\n')
+  nodeDNS.rules = (value.node_dns?.rules || []).map((rule) => ({ domain: rule.domain, nameservers: (rule.nameservers || []).join('\n') }))
   credentialVisible.management = false
   generatedCredential.management = false
   generatedCredential.policy = false
@@ -104,6 +111,7 @@ async function save() {
     socks_host: form.socks_host, policy_host: form.policy_host, projection_key: form.projection_key, prefix_provider: form.prefix_provider,
     projection_types: ['*'], node_test_url: form.node_test_url, node_test_udp_address: form.node_test_udp_address,
     node_test_timeout_seconds: Number(form.node_test_timeout_seconds),
+    node_dns: { nameservers: dnsLines(nodeDNS.nameservers), bootstrap_nameservers: dnsLines(nodeDNS.bootstrap), rules: nodeDNS.rules.map((rule) => ({ domain: rule.domain.trim(), nameservers: dnsLines(rule.nameservers) })) },
   }
   if (form.management_token) body.management_token = form.management_token
   if (form.policy_token && form.policy_token !== settings.value?.policy_token) body.policy_token = form.policy_token
@@ -167,6 +175,25 @@ async function serviceAction(install) {
             <label class="check-row settings-check"><input v-model="form.prefix_provider" type="checkbox"><span><b>节点名添加 Provider 前缀</b><small>只改变 Surge 中的展示名，便于区分同名节点。</small></span></label>
           </div>
         </div>
+        <div class="card settings-card" data-testid="settings-node-dns">
+          <div class="settings-card-head"><div><h3>节点 DNS</h3><p>解析所有 Provider 的节点服务器域名。Provider hosts 优先；留空沿用系统 DNS，不修改系统设置，也不开放 DNS 端口。</p></div></div>
+          <div class="settings-secondary-grid">
+            <label class="field"><span>默认 DNS（可选）</span><textarea v-model="nodeDNS.nameservers" data-testid="node-dns-default" rows="3" spellcheck="false" placeholder="223.5.5.5&#10;https://dns.example.com/dns-query"></textarea><small>每行一个，或用逗号分隔。未命中规则时使用；留空使用系统 DNS。支持 UDP、TCP、DoH 和 DoT。</small></label>
+            <label class="field"><span>引导 DNS（可选）</span><textarea v-model="nodeDNS.bootstrap" data-testid="node-dns-bootstrap" rows="3" spellcheck="false" placeholder="223.5.5.5&#10;tcp://1.1.1.1:53"></textarea><small>仅解析 DoH / DoT 上游自身的域名。填写带域名的加密上游时必填，只接受 IP 地址形式的 UDP / TCP。</small></label>
+          </div>
+          <div class="settings-subsection">
+            <div class="settings-subsection-head"><b>域名规则</b><button class="button ghost compact" type="button" data-testid="node-dns-add-rule" @click="addDNSRule">添加规则</button></div>
+            <p class="node-dns-help">精确域名优先，其次是最具体的后缀，与行顺序无关。<code>*.example.com</code> 匹配任意层级子域名，不含根域；<code>+.example.com</code> 同时包含根域。同后缀并存时，子域名使用 * 规则。</p>
+            <div v-for="(rule, index) in nodeDNS.rules" :key="index" class="node-dns-rule" data-testid="node-dns-rule">
+              <label class="field"><span>域名</span><input v-model="rule.domain" :aria-label="`规则 ${index + 1} 域名`" required spellcheck="false" placeholder="*.example.com"></label>
+              <label class="field"><span>指定 DNS</span><textarea v-model="rule.nameservers" :aria-label="`规则 ${index + 1} DNS`" required rows="2" spellcheck="false" placeholder="tls://1.1.1.1:853"></textarea></label>
+              <button class="button ghost compact" type="button" :aria-label="`删除规则 ${index + 1}`" @click="removeDNSRule(index)">删除</button>
+            </div>
+            <p v-if="!nodeDNS.rules.length" class="node-dns-help">尚无域名规则，所有节点使用默认 DNS。</p>
+          </div>
+          <div class="settings-note">命中规则或已配置默认 DNS 后，解析失败不会回退到系统 DNS。多个上游作为同一组查询。节点地址与 TLS SNI 保持不变；不导入订阅内的 dns 配置。</div>
+          <details class="node-dns-details"><summary>地址格式与适用范围</summary><p>可填写 IP[:端口]、udp://IP[:端口]、tcp://IP[:端口]、tls://主机[:端口] 或 https://主机[:端口]/dns-query。加密连接会校验证书，不接受凭据、查询参数、# 后缀或代理选项。</p><p>规则只用于已加载的节点域名；其他目标地址和订阅下载域名沿用原解析方式。Mihomo 的通用连接若恰好使用同一个节点域名，也会命中此设置。ECH 查询仍沿用系统解析。</p></details>
+        </div>
         <details class="settings-disclosure" data-testid="settings-diagnostics">
           <summary><span><b>连接测试地址</b><small>一般不需要修改，用于检查节点是否可以正常联网</small></span><i></i></summary>
           <div class="settings-disclosure-body">
@@ -203,3 +230,11 @@ async function serviceAction(install) {
     </section>
   </template>
 </template>
+
+<style scoped>
+.node-dns-help, .node-dns-details { color: var(--muted); font-size: 13px; line-height: 1.7; }
+.node-dns-rule { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) auto; gap: 12px; align-items: center; padding: 12px 0; }
+.node-dns-rule .field { margin: 0; }
+.node-dns-details summary { cursor: pointer; }
+@media (max-width: 640px) { .node-dns-rule { grid-template-columns: minmax(0, 1fr); } .node-dns-rule > button { justify-self: end; } }
+</style>

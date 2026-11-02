@@ -6,9 +6,11 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	M "github.com/ssfun/surge-external-bridge/internal/mihomo"
 )
 
-const SchemaVersion = 5
+const SchemaVersion = 6
 
 const DefaultPolicyPathID = "default"
 
@@ -18,22 +20,23 @@ const (
 )
 
 type Config struct {
-	SchemaVersion   int          `json:"schema_version"`
-	Mode            string       `json:"mode"`
-	HTTPBind        string       `json:"http_bind"`
-	SocksBind       string       `json:"socks_bind"`
-	SocksPort       uint16       `json:"socks_port"`
-	SocksHost       string       `json:"socks_host"`
-	PolicyHost      string       `json:"policy_host"`
-	ProjectionKey   string       `json:"projection_key"`
-	ManagementToken string       `json:"management_token,omitempty"`
-	PrefixProvider  bool         `json:"prefix_provider"`
-	ProjectionTypes []string     `json:"projection_types"`
-	NodeTestURL     string       `json:"node_test_url"`
-	NodeTestUDP     string       `json:"node_test_udp_address"`
-	NodeTestTimeout int          `json:"node_test_timeout_seconds"`
-	Providers       []Provider   `json:"providers"`
-	PolicyPaths     []PolicyPath `json:"policy_paths"`
+	SchemaVersion   int             `json:"schema_version"`
+	Mode            string          `json:"mode"`
+	HTTPBind        string          `json:"http_bind"`
+	SocksBind       string          `json:"socks_bind"`
+	SocksPort       uint16          `json:"socks_port"`
+	SocksHost       string          `json:"socks_host"`
+	PolicyHost      string          `json:"policy_host"`
+	ProjectionKey   string          `json:"projection_key"`
+	ManagementToken string          `json:"management_token,omitempty"`
+	PrefixProvider  bool            `json:"prefix_provider"`
+	ProjectionTypes []string        `json:"projection_types"`
+	NodeTestURL     string          `json:"node_test_url"`
+	NodeTestUDP     string          `json:"node_test_udp_address"`
+	NodeDNS         M.NodeDNSConfig `json:"node_dns"`
+	NodeTestTimeout int             `json:"node_test_timeout_seconds"`
+	Providers       []Provider      `json:"providers"`
+	PolicyPaths     []PolicyPath    `json:"policy_paths"`
 }
 
 type PolicyPath struct {
@@ -110,20 +113,21 @@ func randomPolicyPathID() (string, error) {
 }
 
 type Settings struct {
-	Mode            string   `json:"mode"`
-	HTTPBind        string   `json:"http_bind"`
-	SocksBind       string   `json:"socks_bind"`
-	SocksPort       uint16   `json:"socks_port"`
-	SocksHost       string   `json:"socks_host"`
-	PolicyHost      string   `json:"policy_host"`
-	ProjectionKey   string   `json:"projection_key"`
-	ManagementToken string   `json:"management_token,omitempty"`
-	PolicyToken     string   `json:"policy_token,omitempty"`
-	PrefixProvider  bool     `json:"prefix_provider"`
-	ProjectionTypes []string `json:"projection_types"`
-	NodeTestURL     string   `json:"node_test_url"`
-	NodeTestUDP     string   `json:"node_test_udp_address"`
-	NodeTestTimeout int      `json:"node_test_timeout_seconds"`
+	Mode            string          `json:"mode"`
+	HTTPBind        string          `json:"http_bind"`
+	SocksBind       string          `json:"socks_bind"`
+	SocksPort       uint16          `json:"socks_port"`
+	SocksHost       string          `json:"socks_host"`
+	PolicyHost      string          `json:"policy_host"`
+	ProjectionKey   string          `json:"projection_key"`
+	ManagementToken string          `json:"management_token,omitempty"`
+	PolicyToken     string          `json:"policy_token,omitempty"`
+	PrefixProvider  bool            `json:"prefix_provider"`
+	ProjectionTypes []string        `json:"projection_types"`
+	NodeTestURL     string          `json:"node_test_url"`
+	NodeTestUDP     string          `json:"node_test_udp_address"`
+	NodeDNS         M.NodeDNSConfig `json:"node_dns"`
+	NodeTestTimeout int             `json:"node_test_timeout_seconds"`
 }
 
 func (c Config) Settings() Settings {
@@ -137,10 +141,12 @@ func (c Config) Settings() Settings {
 		ManagementToken: c.ManagementToken, PolicyToken: policyToken,
 		PrefixProvider: c.PrefixProvider, ProjectionTypes: append([]string(nil), c.ProjectionTypes...),
 		NodeTestURL: c.NodeTestURL, NodeTestUDP: c.NodeTestUDP, NodeTestTimeout: c.NodeTestTimeout,
+		NodeDNS: c.NodeDNS.Clone(),
 	}
 }
 
 func (c *Config) SetSettings(settings Settings) {
+	c.NodeDNS = settings.NodeDNS.Clone()
 	c.Mode, c.HTTPBind = settings.Mode, settings.HTTPBind
 	c.SocksBind, c.SocksPort = settings.SocksBind, settings.SocksPort
 	c.SocksHost, c.PolicyHost = settings.SocksHost, settings.PolicyHost

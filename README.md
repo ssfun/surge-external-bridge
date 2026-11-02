@@ -81,7 +81,7 @@ chmod +x SurgeEB
 - 节点：协议、能力、Mihomo 延迟历史、TCP/UDP 诊断和 Surge 行复制。
 - 连接：实时目标、节点链、规则、流量，以及关闭单个或全部连接。
 - 日志：Mihomo 结构化实时日志与产品事件，敏感字段二次脱敏。
-- 设置：仅本机/局域网网关模式、HTTP/SOCKS 监听、独立 SOCKS/Policy 发布主机、Token、诊断目标、Projection Key 和用户级系统服务。
+- 设置：仅本机/局域网网关模式、HTTP/SOCKS 监听、独立 SOCKS/Policy 发布主机、Token、节点 DNS、诊断目标、Projection Key 和用户级系统服务。
 
 浏览器只访问产品 allowlist。允许的 Mihomo 能力包括版本、只读配置、Provider/节点健康、连接、流量、内存和结构化日志。`PUT/PATCH /configs`、restart、upgrade、debug 和未来未列入清单的 Controller 路由均不暴露。
 
@@ -106,6 +106,22 @@ listeners: []
 ```
 
 同时禁用 iptables、NTP 系统时间写入、named listeners、tunnels、HTTP/Mixed/Redir/TProxy、DNS listener 和系统代理操作。配置在 `ApplyConfig` 前与运行后各验证一次；私有 Controller 使用数据目录内权限为 `0600` 的 Unix Socket。唯一代理入口是 Projection 与 Router 就绪后才开放的产品自管认证 SOCKS5 listener。
+
+## 节点 DNS
+
+在设置页填写默认 DNS、引导 DNS 和域名规则；保存在 `gateway.json` 的 `node_dns`，对所有 Provider 生效。旧 schema 自动升级，未配置时保留原来的 hosts / 系统 DNS 行为。
+
+- Provider `hosts` 优先；IP 映射直接使用，域名别名继续按目标域名匹配 DNS 规则。原始节点 `server`、TLS SNI 和投影凭据不改变。
+- 精确域名优先于后缀，后缀越具体越优先，与规则行顺序无关。`*.example.com` 匹配所有层级子域名、不含根域；`+.example.com` 包含根域。同后缀两者并存时，子域名使用 `*.` 规则。大小写和结尾的点不影响匹配，重复模式会拒绝保存。
+- 未命中时使用默认 DNS；只有未配置默认 DNS 才使用系统 DNS。已选中的规则/默认上游失败会直接返回错误，不回退到系统 DNS。同一列表多个上游由 Mihomo 并发查询。
+- 支持 `IP[:port]`、`udp://IP[:port]`、`tcp://IP[:port]`、`tls://host[:port]` 和 `https://host[:port]/dns-query`。默认端口分别为 53、853、443；加密上游校验证书，不支持用户名密码、查询参数、片段或 Mihomo 代理扩展。UDP/TCP 必须使用字面 IP。
+- 使用域名形式的 DoH/DoT 上游时必须填写引导 DNS，只接受 IP 形式的 UDP/TCP，避免上游自我解析循环。引导 DNS 只解析上游本身，不接管节点查询。
+
+实现复用 Mihomo v1.19.30 的独立 DNS 客户端；核心配置仍为 `dns.enable=false`、`dns.listen=""`，不监听 DNS 端口、不修改操作系统网络，也不导入远程订阅的 `dns` 段。稳定共享解析器以一个不可变快照切换 hosts、已接受节点域名集合和 DNS 策略，覆盖 Provider 刷新、设置回滚与重启。旧查询保留旧快照，底层加密连接由 Mihomo 原生生命周期回收。
+
+自定义策略只匹配已接受的节点服务器域名，其他目标与订阅下载保留原解析方式。上游核心的全局拨号入口不提供用途标记，因此其他内部拨号若恰好使用同一个节点域名，也会使用此策略；这是域名级边界而非每个连接的用途隔离。ECH 查询保持原来的系统解析行为。
+
+可重复的真实 SOCKS 链路验收与查询日志见 [节点 DNS E2E](docs/node-dns-e2e.md)。
 
 ## 仅本机与局域网网关边界
 
@@ -156,7 +172,7 @@ Surge External Bridge 采用全新数据目录和配置，不读取或迁移旧�
 
 ```text
 ~/.surge-external-bridge/
-├── gateway.json          # 0600，schema 5；包含 projection_key、Provider 与 Policy Path
+├── gateway.json          # 0600，schema 6；包含 projection_key、node_dns、Provider 与 Policy Path
 ├── controller.key        # 0600，内部 Controller Secret 来源
 └── mihomo/               # 0700，Provider 最近成功缓存与 Unix Socket
 ```

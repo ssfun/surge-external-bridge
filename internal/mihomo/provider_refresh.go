@@ -43,7 +43,7 @@ func (m *Manager) RefreshProvider(stableID string) error {
 		m.failClosedLocked(cfg, err)
 		return err
 	}
-	hostResolver, hostCounts, err := buildProviderHostResolver(cfg.Providers, definitions)
+	hostResolver, hostCounts, err := buildProviderHostResolver(cfg.Providers, definitions, m.nodeDNS)
 	if err != nil {
 		err = rejectProviderStates(cfg.Providers, map[string]struct{}{key: {}}, err)
 		wrapped := fmt.Errorf("refresh Mihomo Provider: %w", err)
@@ -227,7 +227,7 @@ func (m *Manager) pollProviders() {
 		m.failClosedAsync(cfg, err)
 		return
 	}
-	hostResolver, hostCounts, err := buildProviderHostResolver(cfg.Providers, definitions)
+	hostResolver, hostCounts, err := buildProviderHostResolver(cfg.Providers, definitions, m.nodeDNS)
 	if err != nil {
 		err = rejectProviderStates(cfg.Providers, changedKeys, err)
 		m.mu.Lock()
