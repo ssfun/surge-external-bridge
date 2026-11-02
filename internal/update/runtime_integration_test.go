@@ -83,6 +83,12 @@ func TestRealProcessUpdateAndRollback(t *testing.T) {
 				logs, _ := os.ReadFile(log.Name())
 				t.Fatalf("%v\n%s", err, logs)
 			}
+			// Initial startup may migrate the fixture schema. The transaction
+			// must preserve the configuration accepted by the running version.
+			beforeUpdate, err := os.ReadFile(filepath.Join(dir, "gateway.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
 			oldHealth, _ := readHealth(j)
 			j.InstanceID = oldHealth.InstanceID
 			j.PID = oldHealth.PID
@@ -114,7 +120,7 @@ func TestRealProcessUpdateAndRollback(t *testing.T) {
 				t.Fatalf("health=%+v", current)
 			}
 			after, _ := os.ReadFile(filepath.Join(dir, "gateway.json"))
-			if string(after) != string(data) {
+			if string(after) != string(beforeUpdate) {
 				t.Fatal("configuration changed")
 			}
 		})
