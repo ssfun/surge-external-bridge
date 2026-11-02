@@ -16,6 +16,11 @@ Failure cases to cover:
 - DNS update changes node server/SNI, projection credentials, or opens a DNS listener.
 - Provider refresh drops DNS policy; invalid update or failed persistence publishes rejected policy.
 - Restart loses settings; old schema or old API client clears existing DNS settings.
+- Empty bootstrap rejects encrypted hostname upstreams instead of resolving only the upstream hostname through system DNS.
+- An encrypted upstream hostname overlapping a node rule recurses into that rule.
+- Explicit UDP/TCP bootstrap is ignored, or its NXDOMAIN/transport failures fall back to system DNS.
+- Empty-bootstrap DoH/DoT node NXDOMAIN leaks the node hostname to system DNS.
+- GET/PUT/restart loses an empty-bootstrap +.rfsconfig.com rule; use private fixtures, never contact that domain.
 - UDP/TCP/DoH/DoT fail to use their actual transports; encrypted hostname resolution recurses.
 
 Run at the end of implementation:

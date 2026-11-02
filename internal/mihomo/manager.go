@@ -422,7 +422,7 @@ func (m *Manager) ApplyProvidersBeforeCommit(definitions []ProviderDefinition, b
 	if !running {
 		return errors.New("Mihomo manager is not running")
 	}
-	candidate, err := BuildControlledConfig(m.options.HomeDir, m.options.ControllerSocket, m.options.ControllerSecret, definitions, m.store)
+	candidate, err := buildProviderConfig(current, m.options.HomeDir, definitions, m.store)
 	if err != nil {
 		return err
 	}

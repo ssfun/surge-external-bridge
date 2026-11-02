@@ -116,23 +116,6 @@ func parseNodeDNS(c NodeDNSConfig) (parsedNodeDNS, error) {
 		parsed.domains = append(parsed.domains, domain)
 		parsed.kinds = append(parsed.kinds, kind)
 	}
-	if len(parsed.bootstrap) == 0 {
-		lists := append([][]MDNS.NameServer{parsed.main}, parsed.rules...)
-		for _, list := range lists {
-			for _, server := range list {
-				host := ""
-				if server.Net == "https" {
-					u, _ := url.Parse(server.Addr)
-					host = u.Hostname()
-				} else {
-					host, _, _ = net.SplitHostPort(server.Addr)
-				}
-				if _, err := netip.ParseAddr(host); err != nil {
-					return parsed, errors.New("node DNS encrypted hostname upstreams require a literal-IP UDP/TCP bootstrap nameserver")
-				}
-			}
-		}
-	}
 	return parsed, nil
 }
 
@@ -238,6 +221,8 @@ func compileNodeDNS(c NodeDNSConfig) (*nodeDNSPolicy, error) {
 		if len(servers) == 0 {
 			return nil
 		}
+		// A nonnil, empty native Default resolver uses SystemResolver for upstream
+		// hostnames, bypassing node policy. Explicit bootstrap stays fail-closed.
 		return MDNS.NewResolver(MDNS.Config{Main: servers, Default: parsed.bootstrap, IPv6: true, CacheMaxSize: 1024}).Resolver
 	}
 	policy.fallback = makeResolver(parsed.main)

@@ -179,7 +179,7 @@ async function serviceAction(install) {
           <div class="settings-card-head"><div><h3>节点 DNS</h3><p>解析所有 Provider 的节点服务器域名。Provider hosts 优先；留空沿用系统 DNS，不修改系统设置，也不开放 DNS 端口。</p></div></div>
           <div class="settings-secondary-grid">
             <label class="field"><span>默认 DNS（可选）</span><textarea v-model="nodeDNS.nameservers" data-testid="node-dns-default" rows="3" spellcheck="false" placeholder="223.5.5.5&#10;https://dns.example.com/dns-query"></textarea><small>每行一个，或用逗号分隔。未命中规则时使用；留空使用系统 DNS。支持 UDP、TCP、DoH 和 DoT。</small></label>
-            <label class="field"><span>引导 DNS（可选）</span><textarea v-model="nodeDNS.bootstrap" data-testid="node-dns-bootstrap" rows="3" spellcheck="false" placeholder="223.5.5.5&#10;tcp://1.1.1.1:53"></textarea><small>仅解析 DoH / DoT 上游自身的域名。填写带域名的加密上游时必填，只接受 IP 地址形式的 UDP / TCP。</small></label>
+            <label class="field"><span>引导 DNS（可选）</span><textarea v-model="nodeDNS.bootstrap" data-testid="node-dns-bootstrap" rows="3" spellcheck="false" placeholder="223.5.5.5&#10;tcp://1.1.1.1:53"></textarea><small>仅解析 DoH / DoT 上游自身的域名。留空使用系统 DNS；填写后仅使用指定的 IP 形式 UDP / TCP，失败不回退系统 DNS。</small></label>
           </div>
           <div class="settings-subsection">
             <div class="settings-subsection-head"><b>域名规则</b><button class="button ghost compact" type="button" data-testid="node-dns-add-rule" @click="addDNSRule">添加规则</button></div>

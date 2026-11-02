@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -197,6 +198,17 @@ func TestProviderStateMarksAllDialerProxyNodesUnavailable(t *testing.T) {
 }
 
 func TestControlledProviderFiltersWireGuardDialerProxyBeforeUse(t *testing.T) {
+	// This fixture needs a running core before WireGuard construction, then
+	// parses a separate configuration. Keep both process-global operations out
+	// of the shared manager used by later runtime tests.
+	if os.Getenv("SURGEEB_WIREGUARD_FILTER_HELPER") == "" {
+		command := exec.Command(os.Args[0], "-test.run=^TestControlledProviderFiltersWireGuardDialerProxyBeforeUse$", "-test.v")
+		command.Env = append(os.Environ(), "SURGEEB_WIREGUARD_FILTER_HELPER=1")
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("WireGuard filter helper: %v\n%s", err, output)
+		}
+		return
+	}
 	// Mihomo's log level is process-global and unsynchronised. Initialize the
 	// controlled core before constructing a WireGuard adapter whose shutdown
 	// workers may emit deferred logs after Close returns.

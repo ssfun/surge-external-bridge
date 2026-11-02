@@ -82,7 +82,7 @@ func TestNodeDNSEndToEnd(t *testing.T) {
 	narrowNS, _ := fixture("narrow", false)
 	failNS, _ := fixture("failure", true)
 	systemNS, _ := fixture("system", false)
-	bootstrapNS, _ := fixture("bootstrap", false)
+	bootstrapNS, bootstrapTCP := fixture("bootstrap", false)
 	application, _, endpoint := testManagementServer(t, "node-dns-e2e-token-123456")
 	defer func() { _ = application.Close() }()
 	oldSystem := resolver.SystemResolver
@@ -288,6 +288,51 @@ func TestNodeDNSEndToEnd(t *testing.T) {
 	}
 	results = append(results, "filtered node stays outside DNS scope")
 
+	// Regression failure cases: parsing a live candidate must not write global
+	// DNS settings while native lookups run; replacing old providers must not
+	// close the new provider topology or interrupt an existing node's traffic.
+	func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		done := make(chan error, 1)
+		started := make(chan struct{})
+		go func() {
+			close(started)
+			for ctx.Err() == nil {
+				addresses, err := resolver.LookupIPWithResolver(ctx, "concurrent.unrelated.test", resolver.SystemResolver)
+				if ctx.Err() != nil {
+					break
+				}
+				if err != nil || len(addresses) == 0 {
+					done <- fmt.Errorf("concurrent native DNS: addresses=%v error=%v", addresses, err)
+					return
+				}
+			}
+			done <- nil
+		}()
+		defer func() {
+			cancel()
+			if err := <-done; err != nil {
+				t.Error(err)
+			}
+		}()
+		<-started
+		for i := 0; i < 4; i++ {
+			p := addNode(fmt.Sprintf("concurrent-%d", i), "one.example.test", nil)
+			probe(fmt.Sprintf("concurrent-%d", i), true)
+			if err := application.DeleteProvider(p.StableID); err != nil {
+				t.Fatal(err)
+			}
+			probe("exact", true)
+		}
+		if ctx.Err() != nil {
+			t.Fatal("concurrent provider replacement exceeded deadline")
+		}
+	}()
+	if count("system", "concurrent.unrelated.test") == 0 {
+		t.Fatal("concurrent DNS fixture was not exercised")
+	}
+	results = append(results, "concurrent native DNS and eight live provider replacements")
+
 	// Row order must not change precedence.
 	reversed := []any{rule("failed.example.test", failNS), rule("one.example.test", exactNS), rule("*.deep.example.test", narrowNS), rule("*.example.test", wildcardNS), rule("+.example.test", suffixNS)}
 	policy["rules"] = reversed
@@ -352,7 +397,6 @@ func TestNodeDNSEndToEnd(t *testing.T) {
 	for _, invalid := range []map[string]any{
 		{"rules": []any{rule("ONE.example.test.", exactNS), rule("one.example.test", suffixNS)}},
 		{"rules": []any{rule("a.*.test", exactNS)}}, {"rules": []any{map[string]any{"domain": "*.test", "nameservers": []string{}}}},
-		{"nameservers": []string{"https://dns.example.test/dns-query"}},
 		{"nameservers": []string{"https://user:pass@127.0.0.1/dns-query"}},
 		{"nameservers": []string{"udp://127.0.0.1:0"}}, {"nameservers": []string{"https://127.0.0.1/dns-query#skip-cert-verify"}},
 		{"bootstrap_nameservers": []string{"tls://recursive.test"}},
@@ -423,7 +467,9 @@ func TestNodeDNSEndToEnd(t *testing.T) {
 		record(label, q.Name, q.Qtype)
 		reply := new(D.Msg)
 		reply.SetReply(req)
-		if q.Qtype == D.TypeA {
+		if strings.HasPrefix(q.Name, "failed.") {
+			reply.Rcode = D.RcodeNameError
+		} else if q.Qtype == D.TypeA {
 			reply.Answer = []D.RR{&D.A{Hdr: D.RR_Header{Name: q.Name, Rrtype: D.TypeA, Class: D.ClassINET, Ttl: 1}, A: net.ParseIP("127.0.0.1")}}
 		}
 		return reply
@@ -456,13 +502,59 @@ func TestNodeDNSEndToEnd(t *testing.T) {
 	_, dotPort, _ := net.SplitHostPort(dotListener.Addr().String())
 	_, dohPort, _ := net.SplitHostPort(strings.TrimPrefix(doh.URL, "https://"))
 	for _, tc := range []struct{ label, ns string }{{"dot", "tls://resolver.fixture.test:" + dotPort}, {"doh", "https://resolver.fixture.test:" + dohPort + "/dns-query"}} {
-		putDNS(map[string]any{"nameservers": []string{tc.ns}, "bootstrap_nameservers": []string{bootstrapNS}}, true)
-		probe("default", true)
-		if count(tc.label, nodes["default"]) == 0 || count("bootstrap", "resolver.fixture.test") == 0 {
-			t.Fatalf("%s transport/bootstrap missing", tc.label)
+		// Explicit bootstrap remains the only upstream-host resolver, even on failure.
+		for _, bootstrap := range []string{bootstrapNS, bootstrapTCP, failNS, "tcp://127.0.0.1:1"} {
+			beforeSystem := count("system", "resolver.fixture.test")
+			beforeBootstrap := count("bootstrap", "resolver.fixture.test")
+			putDNS(map[string]any{"nameservers": []string{tc.ns}, "bootstrap_nameservers": []string{bootstrap}}, true)
+			success := bootstrap == bootstrapNS || bootstrap == bootstrapTCP
+			probe("default", success)
+			if count("system", "resolver.fixture.test") != beforeSystem || count("system", nodes["default"]) != 0 {
+				t.Fatalf("%s explicit bootstrap leaked to system", tc.label)
+			}
+			if success && count("bootstrap", "resolver.fixture.test") <= beforeBootstrap {
+				t.Fatalf("%s explicit bootstrap not used", tc.label)
+			}
 		}
-		results = append(results, tc.label+" verified TLS and bootstrap")
+		results = append(results, tc.label+" explicit UDP/TCP bootstrap and failure isolation")
+		// The upstream hostname is itself a loaded node matching the encrypted rule.
+		// Resolving it as an upstream must bypass that rule, avoiding recursion.
+		overlap := addNode("upstream-overlap", "resolver.fixture.test", nil)
+		beforeSystem := count("system", "resolver.fixture.test")
+		beforeEncrypted := count(tc.label, nodes["default"])
+		beforeBootstrap := count("bootstrap", "resolver.fixture.test")
+		putDNS(map[string]any{"nameservers": []string{tc.ns}, "rules": []any{rule("+.fixture.test", tc.ns)}}, true)
+		probe("default", true)
+		probe("upstream-overlap", true)
+		probe("failed", false)
+		if count("system", "resolver.fixture.test") <= beforeSystem || count(tc.label, nodes["default"]) <= beforeEncrypted {
+			t.Fatalf("%s empty bootstrap system resolution or encrypted node query missing", tc.label)
+		}
+		if count("bootstrap", "resolver.fixture.test") != beforeBootstrap || count("system", nodes["default"]) != 0 || count("system", nodes["failed"]) != 0 {
+			t.Fatalf("%s empty bootstrap leaked node queries or used stale bootstrap", tc.label)
+		}
+		if err := application.DeleteProvider(overlap.StableID); err != nil {
+			t.Fatal(err)
+		}
+		// Clear fixture system cache to prove a new resolver performs a fresh lookup.
+		resolver.SystemResolver.(*MDNS.Resolver).ClearCache()
+		results = append(results, tc.label+" empty bootstrap, overlap no recursion, node NXDOMAIN no fallback")
 	}
+	// Persist the user's rule shape using a private DoH endpoint and synthetic node.
+	userPolicy := map[string]any{"nameservers": []string{}, "bootstrap_nameservers": []string{}, "rules": []any{rule("+.rfsconfig.com", "https://resolver.fixture.test:"+dohPort+"/dns-query")}}
+	putDNS(userPolicy, true)
+	gotDNS := settings()["node_dns"].(map[string]any)
+	if (gotDNS["bootstrap_nameservers"] != nil && len(gotDNS["bootstrap_nameservers"].([]any)) != 0) || gotDNS["rules"].([]any)[0].(map[string]any)["domain"] != "+.rfsconfig.com" {
+		t.Fatal("GET lost empty-bootstrap user rule")
+	}
+	addNode("user-rule", "node.rfsconfig.com", nil)
+	probe("user-rule", true)
+	if count("doh", "node.rfsconfig.com") == 0 || count("system", "node.rfsconfig.com") != 0 {
+		t.Fatal("user rule bypassed private DoH")
+	}
+	results = append(results, "user +.rfsconfig.com empty bootstrap GET/PUT private fixture")
+	// Restore encrypted default for the node TLS/SNI scenario.
+	putDNS(map[string]any{"nameservers": []string{"https://resolver.fixture.test:" + dohPort + "/dns-query"}}, true)
 	tlsNodeListener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12})
 	if err != nil {
 		t.Fatal(err)
@@ -500,7 +592,7 @@ func TestNodeDNSEndToEnd(t *testing.T) {
 	}
 	results = append(results, "node TLS SNI preserved")
 	// Restart loads accepted policy; migration from schema 5 defaults to empty DNS.
-	putDNS(policy, true)
+	putDNS(userPolicy, true)
 	dir := application.DataDir()
 	if err := application.Close(); err != nil {
 		t.Fatal(err)
@@ -509,8 +601,11 @@ func TestNodeDNSEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	probe("deep", true)
-	results = append(results, "restart persistence")
+	probe("user-rule", true)
+	if len(application.Config().NodeDNS.BootstrapNameservers) != 0 {
+		t.Fatal("restart changed bootstrap")
+	}
+	results = append(results, "restart persistence of empty-bootstrap user rule")
 	if err := application.Close(); err != nil {
 		t.Fatal(err)
 	}

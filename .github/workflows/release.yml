@@ -112,6 +112,20 @@ jobs:
           name: release-webassets
           path: internal/webassets/static
       - run: make go-test-race CORE_VERSION=${{ needs.verify.outputs.core_version }}
+        env:
+          SURGEEB_NODE_DNS_E2E: "1"
+          SURGEEB_NODE_DNS_ARTIFACT: ${{ runner.temp }}/node-dns-e2e.json
+          SURGEEB_RELATIVE_HOME_ARTIFACT: ${{ runner.temp }}/relative-home-e2e.json
+      - name: Upload DNS and provider reload evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-dns-e2e-evidence
+          path: |
+            ${{ runner.temp }}/node-dns-e2e.json
+            ${{ runner.temp }}/relative-home-e2e.json
+          if-no-files-found: warn
+          retention-days: 14
 
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
