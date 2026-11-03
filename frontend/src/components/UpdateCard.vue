@@ -91,7 +91,7 @@ function changed() { saved.value = false; if (!preferences.auto_check) preferenc
    <label><input v-model="preferences.auto_check" type="checkbox" @change="changed"> 自动检查稳定版本（每 24 小时）</label>
    <label><input v-model="preferences.auto_install" type="checkbox" :disabled="!preferences.auto_check || !status?.service" @change="changed"> 自动安装并重启</label>
    <label v-if="preferences.auto_install">安装时段（运行主机本地时间）<select v-model="preferences.install_hour" @change="changed"><option v-for="hour in 24" :key="hour - 1" :value="hour - 1">{{ String(hour - 1).padStart(2, '0') }}:00–{{ String(hour - 1).padStart(2, '0') }}:59</option></select></label>
-   <label class="field update-proxy"><span>更新代理</span><input v-model="preferences.proxy_url" type="password" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:7890" @input="changed"></label>
+   <label class="field update-proxy"><span>更新代理</span><input v-model="preferences.proxy_url" type="text" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:7890" @input="changed"></label>
    <p class="settings-note">支持 HTTP、HTTPS、SOCKS5 / SOCKS5H，可包含认证信息；留空直连。保存后用于版本检查和下载，不跟随系统代理。请使用更新期间仍可用的独立代理。</p>
    <button class="button ghost" type="button" :disabled="!dirty" @click="save">保存更新设置</button><span v-if="saved" role="status">更新设置已保存</span>
   </fieldset>

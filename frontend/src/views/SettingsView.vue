@@ -175,24 +175,33 @@ async function serviceAction(install) {
             <label class="check-row settings-check"><input v-model="form.prefix_provider" type="checkbox"><span><b>节点名添加 Provider 前缀</b><small>只改变 Surge 中的展示名，便于区分同名节点。</small></span></label>
           </div>
         </div>
-        <div class="card settings-card" data-testid="settings-node-dns">
-          <div class="settings-card-head"><div><h3>节点 DNS</h3><p>解析所有 Provider 的节点服务器域名。Provider hosts 优先；留空沿用系统 DNS，不修改系统设置，也不开放 DNS 端口。</p></div></div>
-          <div class="settings-secondary-grid">
-            <label class="field"><span>默认 DNS（可选）</span><textarea v-model="nodeDNS.nameservers" data-testid="node-dns-default" rows="3" spellcheck="false" placeholder="223.5.5.5&#10;https://dns.example.com/dns-query"></textarea><small>每行一个，或用逗号分隔。未命中规则时使用；留空使用系统 DNS。支持 UDP、TCP、DoH 和 DoT。</small></label>
-            <label class="field"><span>引导 DNS（可选）</span><textarea v-model="nodeDNS.bootstrap" data-testid="node-dns-bootstrap" rows="3" spellcheck="false" placeholder="223.5.5.5&#10;tcp://1.1.1.1:53"></textarea><small>仅解析 DoH / DoT 上游自身的域名。留空使用系统 DNS；填写后仅使用指定的 IP 形式 UDP / TCP，失败不回退系统 DNS。</small></label>
+        <div class="card settings-card node-dns-card" data-testid="settings-node-dns">
+          <div class="settings-card-head"><div><h3>节点 DNS</h3><p>为所有 Provider 的节点域名指定 DNS。留空使用系统 DNS。</p></div></div>
+          <div class="node-dns-defaults">
+            <label class="field"><span>默认 DNS（可选）</span><textarea v-model="nodeDNS.nameservers" data-testid="node-dns-default" rows="2" spellcheck="false" placeholder="223.5.5.5&#10;https://dns.example.com/dns-query"></textarea><small>未命中域名规则时使用；留空使用系统 DNS。</small></label>
+            <label class="field"><span>引导 DNS（可选）</span><textarea v-model="nodeDNS.bootstrap" data-testid="node-dns-bootstrap" rows="2" spellcheck="false" placeholder="223.5.5.5&#10;tcp://1.1.1.1:53"></textarea><small>解析 DoH / DoT 上游域名；留空使用系统 DNS。</small></label>
           </div>
           <div class="settings-subsection">
-            <div class="settings-subsection-head"><b>域名规则</b><button class="button ghost compact" type="button" data-testid="node-dns-add-rule" @click="addDNSRule">添加规则</button></div>
-            <p class="node-dns-help">精确域名优先，其次是最具体的后缀，与行顺序无关。<code>*.example.com</code> 匹配任意层级子域名，不含根域；<code>+.example.com</code> 同时包含根域。同后缀并存时，子域名使用 * 规则。</p>
-            <div v-for="(rule, index) in nodeDNS.rules" :key="index" class="node-dns-rule" data-testid="node-dns-rule">
-              <label class="field"><span>域名</span><input v-model="rule.domain" :aria-label="`规则 ${index + 1} 域名`" required spellcheck="false" placeholder="*.example.com"></label>
-              <label class="field"><span>指定 DNS</span><textarea v-model="rule.nameservers" :aria-label="`规则 ${index + 1} DNS`" required rows="2" spellcheck="false" placeholder="tls://1.1.1.1:853"></textarea></label>
-              <button class="button ghost compact" type="button" :aria-label="`删除规则 ${index + 1}`" @click="removeDNSRule(index)">删除</button>
+            <div class="node-dns-rules-head"><div><b>域名规则</b><span class="pill">{{ nodeDNS.rules.length }} 条</span></div><button class="button ghost compact" type="button" data-testid="node-dns-add-rule" @click="addDNSRule">添加规则</button></div>
+            <p class="node-dns-help">按域名指定 DNS；每行一个地址，也可用逗号分隔。</p>
+            <div class="node-dns-rules">
+              <div v-for="(rule, index) in nodeDNS.rules" :key="index" class="node-dns-rule" data-testid="node-dns-rule">
+                <label class="field"><span>域名</span><input v-model="rule.domain" :aria-label="`规则 ${index + 1} 域名`" required spellcheck="false" placeholder="*.example.com"></label>
+                <label class="field"><span>指定 DNS</span><textarea v-model="rule.nameservers" :aria-label="`规则 ${index + 1} DNS`" required rows="2" spellcheck="false" placeholder="tls://1.1.1.1:853"></textarea></label>
+                <button class="button ghost compact node-dns-remove" type="button" :aria-label="`删除规则 ${index + 1}`" @click="removeDNSRule(index)">删除</button>
+              </div>
+              <p v-if="!nodeDNS.rules.length" class="node-dns-empty">尚无域名规则，将使用默认 DNS；默认留空时使用系统 DNS。</p>
             </div>
-            <p v-if="!nodeDNS.rules.length" class="node-dns-help">尚无域名规则，所有节点使用默认 DNS。</p>
           </div>
-          <div class="settings-note">命中规则或已配置默认 DNS 后，解析失败不会回退到系统 DNS。多个上游作为同一组查询。节点地址与 TLS SNI 保持不变；不导入订阅内的 dns 配置。</div>
-          <details class="node-dns-details"><summary>地址格式与适用范围</summary><p>可填写 IP[:端口]、udp://IP[:端口]、tcp://IP[:端口]、tls://主机[:端口] 或 https://主机[:端口]/dns-query。加密连接会校验证书，不接受凭据、查询参数、# 后缀或代理选项。</p><p>规则只用于已加载的节点域名；其他目标地址和订阅下载域名沿用原解析方式。Mihomo 的通用连接若恰好使用同一个节点域名，也会命中此设置。ECH 查询仍沿用系统解析。</p></details>
+          <details class="node-dns-details">
+            <summary>规则匹配、地址格式与适用范围</summary>
+            <div class="node-dns-details-body">
+              <div><b>匹配顺序</b><p>Provider hosts 优先，其次是精确域名，再按最具体的后缀匹配，与行顺序无关。<code>*.example.com</code> 匹配任意层级子域名，不含根域；<code>+.example.com</code> 同时包含根域。同后缀并存时，子域名使用 * 规则。</p></div>
+              <div><b>地址格式</b><p>所有 DNS 输入均支持每行一个地址，或用逗号分隔。默认与规则 DNS 支持 IP[:端口]、udp://IP[:端口]、tcp://IP[:端口]、tls://主机[:端口] 和 https://主机[:端口]/dns-query。引导 DNS 仅支持 IP 形式的 UDP / TCP。加密连接会校验证书，不接受凭据、查询参数、# 后缀或代理选项。</p></div>
+              <div><b>失败处理</b><p>命中规则或已配置默认 DNS 后，解析失败不会回退到系统 DNS。引导 DNS 填写后也仅使用指定上游，失败不回退。多个上游作为同一组查询。</p></div>
+              <div><b>适用范围</b><p>仅用于已加载的节点域名；其他目标地址和订阅下载域名沿用原解析方式。Mihomo 的通用连接若使用同一个节点域名，也会命中此设置。节点地址与 TLS SNI 保持不变；ECH 查询仍沿用系统解析。不修改系统 DNS、不开放 DNS 端口，也不导入订阅内的 dns 配置。</p></div>
+            </div>
+          </details>
         </div>
         <details class="settings-disclosure" data-testid="settings-diagnostics">
           <summary><span><b>连接测试地址</b><small>一般不需要修改，用于检查节点是否可以正常联网</small></span><i></i></summary>
@@ -232,9 +241,30 @@ async function serviceAction(install) {
 </template>
 
 <style scoped>
-.node-dns-help, .node-dns-details { color: var(--muted); font-size: 13px; line-height: 1.7; }
-.node-dns-rule { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) auto; gap: 12px; align-items: center; padding: 12px 0; }
-.node-dns-rule .field { margin: 0; }
-.node-dns-details summary { cursor: pointer; }
-@media (max-width: 640px) { .node-dns-rule { grid-template-columns: minmax(0, 1fr); } .node-dns-rule > button { justify-self: end; } }
+.node-dns-defaults { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-bottom: 16px; }
+.node-dns-card .field { min-width: 0; margin: 0; align-content: start; }
+.node-dns-card .field textarea { min-height: 64px; height: 64px; line-height: 21px; font-family: var(--mono); font-size: 12px; }
+.node-dns-card .field input { font-family: var(--mono); font-size: 12px; }
+.node-dns-rules-head, .node-dns-rules-head > div { display: flex; align-items: center; gap: 10px; }
+.node-dns-rules-head { justify-content: space-between; flex-wrap: wrap; }
+.node-dns-rules-head b { font-size: 12px; }
+.node-dns-rules-head .pill { padding: 2px 7px; }
+.node-dns-help { margin: 7px 0 12px; color: var(--faint); font-size: 11px; line-height: 1.6; }
+.node-dns-rules { display: grid; gap: 10px; }
+.node-dns-rule { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto; gap: 12px; align-items: start; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(14, 17, 22, .35); }
+.node-dns-rule .field > span { line-height: 18px; }
+.node-dns-remove { margin-top: 24px; min-height: 42px; color: var(--muted); }
+.node-dns-remove:hover { color: var(--bad); border-color: var(--bad); }
+.node-dns-empty { margin: 0; padding: 16px; border: 1px dashed var(--line); border-radius: 10px; color: var(--faint); font-size: 12px; line-height: 1.6; }
+.node-dns-details { margin-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.node-dns-details summary { padding: 12px 0 0; cursor: pointer; }
+.node-dns-details summary:hover { color: var(--text); }
+.node-dns-details summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 4px; }
+.node-dns-details-body { display: grid; gap: 12px; margin-top: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: #101319; }
+.node-dns-details-body b { color: var(--text); font-size: 12px; }
+.node-dns-details-body p { margin: 3px 0 0; }
+@media (max-width: 640px) {
+  .node-dns-defaults, .node-dns-rule { grid-template-columns: minmax(0, 1fr); }
+  .node-dns-remove { margin-top: 0; justify-self: end; }
+}
 </style>

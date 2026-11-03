@@ -82,6 +82,6 @@ macOS worker 日志位于 `update.log`；Linux 使用对应 `surgeeb-update-<id>
 
 留空保持直连，不读取系统或环境代理。保存后，版本检查、SHA256SUMS、程序下载及允许的 HTTPS 跳转使用同一代理；代理无效或连接失败会报错，不回退直连。HTTPS 来源限制和校验流程保持不变。更新期间不能修改设置，请选择独立于正在更新的 SurgeEB 实例的可用代理。
 
-设置以 `proxy_url` 保存到数据目录 `update-settings.json`（文件权限 0600）；认证信息按原值保存，配置台输入框遮蔽显示，代理连接错误不回显凭据。停止实例后执行 CLI 更新也读取此设置。
+设置以 `proxy_url` 保存到数据目录 `update-settings.json`（文件权限 0600）；配置台使用普通文本输入框显示完整代理地址，认证信息按原值保存，代理连接错误不回显凭据。停止实例后执行 CLI 更新也读取此设置。
 
 回归验证：`go test ./internal/update -run TestUpdateProxyIntegration -v -count=1`，可将输出保存为验收记录。测试使用本地 HTTP/HTTPS CONNECT、SOCKS5/SOCKS5H 认证代理和 TLS Release 服务，覆盖检查、校验和、下载与允许跳转、认证、设置持久化、忙时拒绝、无效地址拒绝、失败不回退及凭据保护，不访问 GitHub。
