@@ -9,7 +9,7 @@ const action = ref('')
 const reconnecting = ref(false)
 const accepted = ref(false)
 const requestedVersion = ref('')
-const preferences = reactive({ auto_check: true, auto_install: false, install_hour: 4 })
+const preferences = reactive({ auto_check: true, auto_install: false, install_hour: 4, proxy_url: '' })
 const dirty = ref(false)
 const saved = ref(false)
 let timer
@@ -91,6 +91,8 @@ function changed() { saved.value = false; if (!preferences.auto_check) preferenc
    <label><input v-model="preferences.auto_check" type="checkbox" @change="changed"> 自动检查稳定版本（每 24 小时）</label>
    <label><input v-model="preferences.auto_install" type="checkbox" :disabled="!preferences.auto_check || !status?.service" @change="changed"> 自动安装并重启</label>
    <label v-if="preferences.auto_install">安装时段（运行主机本地时间）<select v-model="preferences.install_hour" @change="changed"><option v-for="hour in 24" :key="hour - 1" :value="hour - 1">{{ String(hour - 1).padStart(2, '0') }}:00–{{ String(hour - 1).padStart(2, '0') }}:59</option></select></label>
+   <label class="field update-proxy"><span>更新代理</span><input v-model="preferences.proxy_url" type="password" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:7890" @input="changed"></label>
+   <p class="settings-note">支持 HTTP、HTTPS、SOCKS5 / SOCKS5H，可包含认证信息；留空直连。保存后用于版本检查和下载，不跟随系统代理。请使用更新期间仍可用的独立代理。</p>
    <button class="button ghost" type="button" :disabled="!dirty" @click="save">保存更新设置</button><span v-if="saved" role="status">更新设置已保存</span>
   </fieldset>
   </div>
@@ -103,7 +105,7 @@ function changed() { saved.value = false; if (!preferences.auto_check) preferenc
 .update-path{overflow-wrap:anywhere}
 .update-preferences{display:grid;align-content:start;gap:12px;min-width:0;border:0;padding:0 0 0 24px;margin:0;border-left:1px solid var(--line)}
 .update-preferences label{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.update-preferences button{justify-self:start}
-.update-release{margin:12px 0}.update-release pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto;font:inherit}.update-release summary{cursor:pointer;margin-top:8px}
+.update-preferences .update-proxy{display:grid;gap:8px;margin:0}.update-proxy input{width:100%;min-width:0;box-sizing:border-box}.update-release{margin:12px 0}.update-release pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto;font:inherit}.update-release summary{cursor:pointer;margin-top:8px}
 @media(max-width:980px){.update-layout{grid-template-columns:1fr;gap:16px}.update-preferences{border-left:0;border-top:1px solid var(--line);padding:16px 0 0}}
 @media(max-width:620px){.settings-update>.settings-card-head{flex-wrap:wrap}}
 </style>

@@ -18,9 +18,10 @@ import (
 )
 
 type Preferences struct {
-	AutoCheck   bool `json:"auto_check"`
-	AutoInstall bool `json:"auto_install"`
-	InstallHour int  `json:"install_hour"`
+	ProxyURL    string `json:"proxy_url"`
+	AutoCheck   bool   `json:"auto_check"`
+	AutoInstall bool   `json:"auto_install"`
+	InstallHour int    `json:"install_hour"`
 }
 type Status struct {
 	CurrentVersion string      `json:"current_version"`
@@ -73,6 +74,10 @@ func NewManager(dir, version string, rt Runtime) (*Manager, error) {
 	if m.prefs.InstallHour < 0 || m.prefs.InstallHour > 23 {
 		return nil, errors.New("invalid update install hour")
 	}
+	m.client, err = NewClientWithProxy(m.prefs.ProxyURL)
+	if err != nil {
+		return nil, err
+	}
 	return m, nil
 }
 func (m *Manager) runtimeNow() Runtime {
@@ -106,8 +111,20 @@ func (m *Manager) Preferences(p Preferences) error {
 			return errors.New("开发版本不能开启自动安装")
 		}
 	}
+	var replacement *Client
+	if p.ProxyURL != m.prefs.ProxyURL {
+		var err error
+		replacement, err = NewClientWithProxy(p.ProxyURL)
+		if err != nil {
+			return err
+		}
+	}
 	if err := writeJSON(filepath.Join(m.dir, "update-settings.json"), p); err != nil {
 		return err
+	}
+	if replacement != nil {
+		m.client.HTTP.CloseIdleConnections()
+		m.client = replacement
 	}
 	m.prefs = p
 	return nil

@@ -10,9 +10,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,15 +39,42 @@ type Release struct {
 	Assets     []Asset `json:"assets"`
 }
 type Client struct {
-	HTTP          *http.Client
-	allowTestHTTP bool
+	HTTP            *http.Client
+	allowTestHTTP   bool
+	proxyConfigured bool
 }
 
 func NewClient() *Client {
+	client, _ := NewClientWithProxy("")
+	return client
+}
+
+// NewClientWithProxy uses only the explicit update proxy; an empty URL is DIRECT.
+func NewClientWithProxy(address string) (*Client, error) {
+	var proxyURL *url.URL
+	if address != "" {
+		invalid := errors.New("更新代理地址无效：请填写 http、https、socks5 或 socks5h 的主机和端口")
+		u, err := url.Parse(address)
+		if err != nil {
+			return nil, invalid
+		}
+		if u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "socks5" && u.Scheme != "socks5h" {
+			return nil, invalid
+		}
+		host, port, err := net.SplitHostPort(u.Host)
+		n, portErr := strconv.Atoi(port)
+		if err != nil || host == "" || portErr != nil || n < 1 || n > 65535 || u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" || strings.ContainsAny(host, " \t\r\n") || strings.Contains(address, "#") {
+			return nil, invalid
+		}
+		proxyURL = u
+	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	// Do not route an update download through the embedded proxy being updated.
+	// Never implicitly inherit a system proxy or the embedded proxy being updated.
 	transport.Proxy = nil
-	return &Client{HTTP: &http.Client{Transport: transport, Timeout: 5 * time.Minute, CheckRedirect: func(r *http.Request, via []*http.Request) error {
+	if proxyURL != nil {
+		transport.Proxy = http.ProxyURL(proxyURL)
+	}
+	return &Client{proxyConfigured: proxyURL != nil, HTTP: &http.Client{Transport: transport, Timeout: 5 * time.Minute, CheckRedirect: func(r *http.Request, via []*http.Request) error {
 		if len(via) >= 8 {
 			return errors.New("too many release redirects")
 		}
@@ -54,7 +83,7 @@ func NewClient() *Client {
 			return errors.New("untrusted release redirect")
 		}
 		return nil
-	}}}
+	}}}, nil
 }
 func normalizedVersion(v string) string {
 	if !strings.HasPrefix(v, "v") {
@@ -91,6 +120,9 @@ func (c *Client) request(ctx context.Context, address string) (*http.Response, e
 	req.Header.Set("Accept", "application/vnd.github+json")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
+		if c.proxyConfigured {
+			return nil, errors.New("通过更新代理请求 GitHub 失败，请检查代理地址、认证和网络连接")
+		}
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {

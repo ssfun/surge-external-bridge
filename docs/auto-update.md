@@ -47,7 +47,7 @@ macOS 不使用 sudo。Linux 用户服务要求用户 systemd manager 可用。�
 
 ## 下载与恢复
 
-1. 固定 GitHub HTTPS 项目来源；仅允许 GitHub 的 Release 资产重定向，不接受用户提供的下载 URL。更新请求不经内嵌 SOCKS，不跟随环境 HTTP 代理，避免依赖被更新组件。
+1. 固定 GitHub HTTPS 项目来源；仅允许 GitHub 的 Release 资产重定向，不接受用户提供的下载 URL。更新请求使用显式配置的更新代理，留空直连，不跟随环境代理；应避免依赖正在更新的内嵌代理。
 2. 临时文件位于目标目录，检查下载大小、唯一精确 SHA256 条目、Go 产品路径、平台/架构、静态构建、更新协议和产品版本。
 3. 等待已进入的管理写请求完成，持久化事务，再冻结后续写入。服务定义、实例 PID/随机标识和安装目标在替换前重新核对。
 4. 停止进程，备份 `gateway.json` 与旧二进制，原子替换。新进程试运行期间保持管理写入冻结，并暂停上传文件垃圾回收。
@@ -75,3 +75,13 @@ macOS worker 日志位于 `update.log`；Linux 使用对应 `surgeeb-update-<id>
 - 未运行：用户真实 macOS LaunchAgent 的替换与下载目录接管（避免触碰现有安装）；Intel 实机更新；公开 Release 到下一公开 Release 的完整端到端安装。平台路径/参数已有自动化测试，不能替代这些实机范围。
 
 可复现的真实进程测试在 `internal/update/runtime_integration_test.go`；设置 `SURGEEB_UPDATE_TEST_OLD`/`SURGEEB_UPDATE_TEST_NEW` 指向本源码构建的 1.0.0/1.0.1 后运行。CI 新增 macOS/Linux 作业持续执行该测试，远端作业尚未触发。
+
+## 更新代理
+
+“软件更新 → 更新代理”可填写 `http://127.0.0.1:7890`、`https://proxy.example:443`、`socks5://127.0.0.1:1080` 或 `socks5h://127.0.0.1:1080`，必须包含主机和端口。支持 `scheme://username:password@host:port` 认证；特殊字符需 URL 编码。SOCKS5 和 SOCKS5H 均由代理解析目标域名。
+
+留空保持直连，不读取系统或环境代理。保存后，版本检查、SHA256SUMS、程序下载及允许的 HTTPS 跳转使用同一代理；代理无效或连接失败会报错，不回退直连。HTTPS 来源限制和校验流程保持不变。更新期间不能修改设置，请选择独立于正在更新的 SurgeEB 实例的可用代理。
+
+设置以 `proxy_url` 保存到数据目录 `update-settings.json`（文件权限 0600）；认证信息按原值保存，配置台输入框遮蔽显示，代理连接错误不回显凭据。停止实例后执行 CLI 更新也读取此设置。
+
+回归验证：`go test ./internal/update -run TestUpdateProxyIntegration -v -count=1`，可将输出保存为验收记录。测试使用本地 HTTP/HTTPS CONNECT、SOCKS5/SOCKS5H 认证代理和 TLS Release 服务，覆盖检查、校验和、下载与允许跳转、认证、设置持久化、忙时拒绝、无效地址拒绝、失败不回退及凭据保护，不访问 GitHub。
