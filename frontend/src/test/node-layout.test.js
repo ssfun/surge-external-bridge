@@ -39,7 +39,7 @@ it('switches node layouts without losing filters, diagnostic results or node act
   expect(wrapper.get('article').text()).toContain('UDP timeout')
   await list.trigger('click')
   await wrapper.get('.node-more').trigger('click')
-  expect(wrapper.get('[role="menuitem"]').text()).toBe('复制 Surge 节点行')
+  expect(wrapper.findAll('[role="menuitem"]').map((button) => button.text())).toEqual(['节点 DNS 诊断', '复制 Surge 节点行'])
   wrapper.unmount()
 })
 

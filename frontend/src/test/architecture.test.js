@@ -654,7 +654,7 @@ describe('component update boundaries', () => {
     expect(cards[0].findAll('button').map((button) => button.text())).toEqual(['Mihomo 测速', '端到端诊断', '更多'])
 
     await cards[0].get('.node-more').trigger('click')
-    expect(wrapper.get('.node-menu-panel').text()).toBe('复制 Surge 节点行')
+    expect(wrapper.get('.node-menu-panel').findAll('[role="menuitem"]').map((button) => button.text())).toEqual(['节点 DNS 诊断', '复制 Surge 节点行'])
     await wrapper.get('select[aria-label="按存活状态过滤"]').setValue('false')
     expect(wrapper.findAll('[data-testid="node-card"]')).toHaveLength(1)
     expect(wrapper.get('[data-testid="node-card"]').text()).toContain('日本 Tokyo 02')

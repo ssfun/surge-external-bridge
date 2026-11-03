@@ -56,7 +56,7 @@ func TestNodeDNSEndToEnd(t *testing.T) {
 			if fail {
 				reply.Rcode = D.RcodeNameError
 			} else if q.Qtype == D.TypeA {
-				reply.Answer = []D.RR{&D.A{Hdr: D.RR_Header{Name: q.Name, Rrtype: D.TypeA, Class: D.ClassINET, Ttl: 1}, A: net.ParseIP("127.0.0.1")}}
+				reply.Answer = []D.RR{&D.A{Hdr: D.RR_Header{Name: q.Name, Rrtype: D.TypeA, Class: D.ClassINET, Ttl: 60}, A: net.ParseIP("127.0.0.1")}}
 			}
 			_ = w.WriteMsg(reply)
 		})
@@ -202,6 +202,147 @@ func TestNodeDNSEndToEnd(t *testing.T) {
 		}
 		return n
 	}
+	// Diagnostic failure scenarios (written before implementation): wrong rule after
+	// alias, hosts leaking DNS, cache bypass reusing production cache, arbitrary
+	// host injection, missing/deleted node, unauthenticated or cross-origin access.
+	nodeID := func(name string) string {
+		for _, entry := range application.Snapshot().Entries() {
+			if entry.ProxyName == name {
+				return entry.PublicID
+			}
+		}
+		t.Fatalf("missing diagnostic node %s", name)
+		return ""
+	}
+	diagnostics := []map[string]any{}
+	diagnose := func(name string, bypass bool) map[string]any {
+		code, raw := request("POST", "/api/nodes/"+nodeID(name)+"/dns-diagnose", map[string]any{"bypass_cache": bypass})
+		if code != 200 {
+			t.Fatalf("diagnostic %s: %d %s", name, code, raw)
+		}
+		var result map[string]any
+		if err := json.Unmarshal(raw, &result); err != nil {
+			t.Fatal(err)
+		}
+		diagnostics = append(diagnostics, result)
+		artifact["diagnostics"] = diagnostics
+		return result
+	}
+	for _, tc := range []struct{ name, source, rule string }{
+		{"exact", "rule", "one.example.test"}, {"deep", "rule", "*.deep.example.test"},
+		{"wild", "rule", "*.example.test"}, {"apex", "rule", "+.example.test"},
+		{"default", "default", ""}, {"alias", "rule", "one.example.test"}, {"hosts", "hosts", ""},
+	} {
+		got := diagnose(tc.name, true)
+		if got["hostname"] != nodes[tc.name] || got["source"] != tc.source || got["matched_rule"] != tc.rule {
+			t.Fatalf("diagnostic selection: %#v", got)
+		}
+		if len(got["ipv4"].(map[string]any)["addresses"].([]any)) == 0 {
+			t.Fatalf("no IPv4 result: %#v", got)
+		}
+	}
+	before := count("exact", nodes["exact"])
+	got := diagnose("exact", true)
+	if count("exact", nodes["exact"]) <= before || got["cache_status"] != "bypassed" {
+		t.Fatal("bypass did not query fixture")
+	}
+	got = diagnose("exact", false)
+	if got["cache_status"] != "unknown" {
+		t.Fatal("invented cache hit")
+	}
+	countA := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		n := 0
+		for _, q := range logs {
+			if q["upstream"] == "exact" && q["domain"] == nodes["exact"]+"." && q["qtype"] == "A" {
+				n++
+			}
+		}
+		return n
+	}
+	cachedA := countA()
+	diagnose("exact", false)
+	if countA() != cachedA {
+		t.Fatal("normal diagnostic did not reuse live A cache")
+	}
+	diagnose("exact", true)
+	if countA() <= cachedA {
+		t.Fatal("bypass did not bypass live A cache")
+	}
+	bypassedA := countA()
+	diagnose("exact", false)
+	if countA() != bypassedA {
+		t.Fatal("bypass disturbed production A cache")
+	}
+	localhost := addNode("diagnostic-localhost", "localhost", nil)
+	got = diagnose("diagnostic-localhost", false)
+	if got["ipv4"].(map[string]any)["source"] != "native_hosts" || got["ipv4"].(map[string]any)["addresses"].([]any)[0] != "127.0.0.1" {
+		t.Fatalf("native hosts: %#v", got)
+	}
+	if err := application.DeleteProvider(localhost.StableID); err != nil {
+		t.Fatal(err)
+	}
+	if count("wildcard", nodes["hosts"]) != 0 {
+		t.Fatal("hosts diagnostic leaked DNS")
+	}
+	got = diagnose("failed", true)
+	if got["ipv4"].(map[string]any)["error"] == "" || count("system", nodes["failed"]) != 0 {
+		t.Fatal("diagnostic failure fallback")
+	}
+	path := "/api/nodes/" + nodeID("exact") + "/dns-diagnose"
+	if code, _ := request("POST", path, map[string]any{"hostname": "injected.test"}); code != 400 {
+		t.Fatalf("arbitrary host accepted: %d", code)
+	}
+	if code, _ := request("POST", "/api/nodes/missing/dns-diagnose", map[string]any{}); code != 404 {
+		t.Fatalf("missing node: %d", code)
+	}
+	for _, tc := range []struct {
+		token, origin string
+		status        int
+	}{{"", endpoint, 401}, {"node-dns-e2e-token-123456", "https://invalid.test", 403}} {
+		req, _ := http.NewRequest("POST", endpoint+path, strings.NewReader(`{}`))
+		if tc.token != "" {
+			req.Header.Set("Authorization", "Bearer "+tc.token)
+		}
+		req.Header.Set("Origin", tc.origin)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != tc.status {
+			t.Fatalf("diagnostic protection: %d", resp.StatusCode)
+		}
+	}
+	removed := addNode("diagnostic-deleted", "deleted.test", nil)
+	removedID := nodeID("diagnostic-deleted")
+	if err := application.DeleteProvider(removed.StableID); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := request("POST", "/api/nodes/"+removedID+"/dns-diagnose", map[string]any{}); code != 404 {
+		t.Fatalf("deleted node: %d", code)
+	}
+	literal := addNode("diagnostic-literal", "127.0.0.1", nil)
+	got = diagnose("diagnostic-literal", true)
+	if got["source"] != "literal" || got["cache_status"] != "not_applicable" {
+		t.Fatalf("literal: %#v", got)
+	}
+	if err := application.DeleteProvider(literal.StableID); err != nil {
+		t.Fatal(err)
+	}
+	putDNS(map[string]any{}, true)
+	got = diagnose("system", true)
+	if got["source"] != "system" || got["cache_status"] != "unknown" || got["bypass_applied"] != false {
+		t.Fatalf("system bypass claim: %#v", got)
+	}
+	putDNS(policy, true)
+	cancelled, cancelDiagnostic := context.WithCancel(context.Background())
+	cancelDiagnostic()
+	if _, err := application.DiagnoseNodeDNS(cancelled, nodeID("exact"), true); err == nil {
+		t.Fatal("cancelled diagnostic performed work")
+	}
+	results = append(results, "node DNS diagnostic selection, bypass, failure isolation, authorization and deletion")
 	probe := func(name string, success bool) {
 		var username, password string
 		for _, entry := range application.Snapshot().Entries() {
@@ -298,6 +439,14 @@ func TestNodeDNSEndToEnd(t *testing.T) {
 		go func() {
 			close(started)
 			for ctx.Err() == nil {
+				diagnostic, diagnosticErr := application.DiagnoseNodeDNS(ctx, nodeID("exact"), false)
+				if ctx.Err() != nil {
+					break
+				}
+				if diagnosticErr != nil || diagnostic.MatchedRule != "one.example.test" || len(diagnostic.IPv4.Addresses) == 0 {
+					done <- fmt.Errorf("concurrent diagnostic: result=%+v error=%v", diagnostic, diagnosticErr)
+					return
+				}
 				addresses, err := resolver.LookupIPWithResolver(ctx, "concurrent.unrelated.test", resolver.SystemResolver)
 				if ctx.Err() != nil {
 					break
@@ -470,7 +619,7 @@ func TestNodeDNSEndToEnd(t *testing.T) {
 		if strings.HasPrefix(q.Name, "failed.") {
 			reply.Rcode = D.RcodeNameError
 		} else if q.Qtype == D.TypeA {
-			reply.Answer = []D.RR{&D.A{Hdr: D.RR_Header{Name: q.Name, Rrtype: D.TypeA, Class: D.ClassINET, Ttl: 1}, A: net.ParseIP("127.0.0.1")}}
+			reply.Answer = []D.RR{&D.A{Hdr: D.RR_Header{Name: q.Name, Rrtype: D.TypeA, Class: D.ClassINET, Ttl: 60}, A: net.ParseIP("127.0.0.1")}}
 		}
 		return reply
 	}

@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	M "github.com/ssfun/surge-external-bridge/internal/mihomo"
 )
 
 type ProbePart struct {
@@ -386,4 +388,10 @@ func validDNS(response []byte, id uint16) error {
 		return fmt.Errorf("DNS rcode %d", flags&15)
 	}
 	return nil
+}
+
+func (a *App) DiagnoseNodeDNS(ctx context.Context, id string, bypass bool) (M.NodeDNSDiagnostic, error) {
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(a.Config().NodeTestTimeout)*time.Second)
+	defer cancel()
+	return a.manager.DiagnoseNodeDNS(ctx, id, bypass)
 }

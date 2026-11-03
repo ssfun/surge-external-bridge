@@ -38,12 +38,14 @@ func (c NodeDNSConfig) Clone() NodeDNSConfig {
 }
 
 type nodeDNSRule struct {
-	domain   string
-	kind     byte // 0 exact, '*' descendants only, '+' apex and descendants
-	resolver resolver.Resolver
+	domain      string
+	kind        byte // 0 exact, '*' descendants only, '+' apex and descendants
+	resolver    resolver.Resolver
+	nameservers []string
 }
 
 type nodeDNSPolicy struct {
+	config   NodeDNSConfig
 	fallback resolver.Resolver
 	rules    []nodeDNSRule // exact first; then most-specific suffix, '*' before '+' on ties
 }
@@ -216,7 +218,7 @@ func compileNodeDNS(c NodeDNSConfig) (*nodeDNSPolicy, error) {
 	if err != nil {
 		return nil, err
 	}
-	policy := &nodeDNSPolicy{}
+	policy := &nodeDNSPolicy{config: c.Clone()}
 	makeResolver := func(servers []MDNS.NameServer) resolver.Resolver {
 		if len(servers) == 0 {
 			return nil
@@ -227,7 +229,7 @@ func compileNodeDNS(c NodeDNSConfig) (*nodeDNSPolicy, error) {
 	}
 	policy.fallback = makeResolver(parsed.main)
 	for i, servers := range parsed.rules {
-		policy.rules = append(policy.rules, nodeDNSRule{domain: parsed.domains[i], kind: parsed.kinds[i], resolver: makeResolver(servers)})
+		policy.rules = append(policy.rules, nodeDNSRule{domain: parsed.domains[i], kind: parsed.kinds[i], resolver: makeResolver(servers), nameservers: append([]string(nil), c.Rules[i].Nameservers...)})
 	}
 	sort.Slice(policy.rules, func(i, j int) bool {
 		a, b := policy.rules[i], policy.rules[j]
@@ -246,16 +248,25 @@ func compileNodeDNS(c NodeDNSConfig) (*nodeDNSPolicy, error) {
 }
 
 func (p *nodeDNSPolicy) forDomain(host string) resolver.Resolver {
-	if p == nil {
-		return resolver.SystemResolver
-	}
-	for _, rule := range p.rules {
-		if host == rule.domain && rule.kind != '*' || rule.kind != 0 && strings.HasSuffix(host, "."+rule.domain) {
-			return rule.resolver
+	selected, _, _, _ := p.selectDomain(host)
+	return selected
+}
+
+// selectDomain is shared by the live resolver and its diagnostic explanation.
+func (p *nodeDNSPolicy) selectDomain(host string) (resolver.Resolver, string, string, []string) {
+	if p != nil {
+		for _, rule := range p.rules {
+			if host == rule.domain && rule.kind != '*' || rule.kind != 0 && strings.HasSuffix(host, "."+rule.domain) {
+				pattern := rule.domain
+				if rule.kind != 0 {
+					pattern = string(rule.kind) + "." + pattern
+				}
+				return rule.resolver, "rule", pattern, rule.nameservers
+			}
+		}
+		if p.fallback != nil {
+			return p.fallback, "default", "", p.config.Nameservers
 		}
 	}
-	if p.fallback != nil {
-		return p.fallback
-	}
-	return resolver.SystemResolver
+	return resolver.SystemResolver, "system", "", nil
 }

@@ -575,6 +575,10 @@ func (r *providerHostResolver) resolve(host string) (hostTarget, error) {
 }
 
 func resolveProviderHost(snapshot *providerHostSnapshot, host string) (hostTarget, error) {
+	return traceProviderHost(snapshot, host, nil)
+}
+
+func traceProviderHost(snapshot *providerHostSnapshot, host string, aliases *[]string) (hostTarget, error) {
 	current := strings.ToLower(strings.TrimSuffix(host, "."))
 	seen := map[string]struct{}{}
 	var hosts *trie.DomainTrie[resolver.HostValue]
@@ -598,6 +602,9 @@ func resolveProviderHost(snapshot *providerHostSnapshot, host string) (hostTarge
 			return hostTarget{ips: append([]netip.Addr(nil), value.IPs...)}, nil
 		}
 		current = strings.ToLower(value.Domain)
+		if aliases != nil {
+			*aliases = append(*aliases, current)
+		}
 	}
 	return hostTarget{}, errors.New("domain alias chain is too deep")
 }

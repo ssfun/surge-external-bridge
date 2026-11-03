@@ -23,6 +23,8 @@ const alive = ref('')
 const menuOpen = ref('')
 const layoutKey = 'surgeeb-node-layout'
 const layout = ref(localStorage.getItem(layoutKey) === 'list' ? 'list' : 'grid')
+const dnsResults = reactive({})
+const dnsBypass = reactive({})
 const results = reactive({})
 const errors = reactive({})
 const busy = reactive(new Set())
@@ -66,7 +68,11 @@ async function nodeAction(node, action) {
   if (busy.has(node.id)) return
   busy.add(node.id)
   try {
-    if (action === 'diagnose') {
+    if (action === 'dns') {
+      delete dnsResults[node.id]
+      delete errors[node.id]
+      dnsResults[node.id] = await api(`/api/nodes/${encodeID(node.id)}/dns-diagnose`, { method: 'POST', body: JSON.stringify({ bypass_cache: Boolean(dnsBypass[node.id]) }) })
+    } else if (action === 'diagnose') {
       results[node.id] = await api(`/api/nodes/${encodeID(node.id)}/diagnose`, { method: 'POST' })
       delete errors[node.id]
     } else if (action === 'health') {
@@ -80,7 +86,7 @@ async function nodeAction(node, action) {
       ui.toast('Surge 节点行已复制')
     }
   } catch (error) {
-    if (action === 'diagnose') errors[node.id] = error.message
+    if (action === 'diagnose' || action === 'dns') errors[node.id] = error.message
     ui.toast(error.message, true)
   } finally { busy.delete(node.id) }
 }
@@ -140,6 +146,24 @@ function runAction(node, action) {
             <p v-if="results[node.id][protocol]?.detail">{{ results[node.id][protocol].detail }}</p>
           </div>
         </div>
+        <section v-if="dnsResults[node.id]" class="node-diagnostic dns-diagnostic" aria-live="polite" aria-label="节点 DNS 诊断结果">
+          <header><b>节点 DNS 诊断</b><span>{{ dnsResults[node.id].duration_ms }} ms</span><button type="button" class="button ghost compact" @click="delete dnsResults[node.id]">收起</button></header>
+          <dl>
+            <dt>原始主机名</dt><dd>{{ dnsResults[node.id].hostname }}</dd>
+            <template v-if="dnsResults[node.id].aliases.length"><dt>hosts 别名链</dt><dd>{{ [dnsResults[node.id].hostname, ...dnsResults[node.id].aliases].join(' → ') }}</dd></template>
+            <template v-if="dnsResults[node.id].effective_domain"><dt>最终查询域名</dt><dd>{{ dnsResults[node.id].effective_domain }}</dd></template>
+            <dt>解析来源</dt><dd>{{ ({ rule: '域名规则', default: '默认 DNS', system: '系统 DNS', hosts: 'Provider hosts', literal: 'IP 字面量', native_hosts: '系统 / Mihomo hosts', mixed_hosts: '按地址族分别解析' })[dnsResults[node.id].source] || dnsResults[node.id].source }}</dd>
+            <template v-if="dnsResults[node.id].matched_rule"><dt>命中规则</dt><dd>{{ dnsResults[node.id].matched_rule }}</dd></template>
+            <template v-if="dnsResults[node.id].nameservers.length"><dt>选定 DNS 组</dt><dd>{{ dnsResults[node.id].nameservers.join('、') }}<small>配置的解析器组，无法确认最终响应服务器。</small></dd><dt>引导 DNS</dt><dd>{{ dnsResults[node.id].bootstrap_nameservers.join('、') || '系统 DNS（留空）' }}</dd></template>
+            <dt>缓存</dt><dd>{{ ({ unknown: '命中状态未知', bypassed: '已绕过应用 DNS 缓存', not_applicable: '无需 DNS 查询' })[dnsResults[node.id].cache_status] }}<small v-if="dnsResults[node.id].source === 'system'">系统解析器无法保证绕过操作系统或上游缓存。</small><small v-else-if="dnsResults[node.id].bypass_applied">使用独立解析器，不清空运行中缓存；上游及系统引导缓存仍可能生效。</small><small v-else-if="dnsResults[node.id].cache_status === 'unknown'">Mihomo 未公开缓存命中信息。</small></dd>
+          </dl>
+          <div v-for="family in ['ipv4', 'ipv6']" :key="family" class="node-diagnostic-result" :class="dnsResults[node.id][family].error ? 'bad' : 'ok'">
+            <div><b>{{ family.toUpperCase() }}</b><span>{{ dnsResults[node.id][family].duration_ms }} ms</span></div>
+            <small>来源：{{ ({ native_hosts: '系统 / Mihomo hosts', hosts: 'Provider hosts', literal: 'IP 字面量', rule: '域名规则', default: '默认 DNS', system: '系统 DNS' })[dnsResults[node.id][family].source] }}</small>
+            <p>{{ dnsResults[node.id][family].addresses.join('、') || '无地址' }}</p><p v-if="dnsResults[node.id][family].error">{{ dnsResults[node.id][family].error }}</p>
+          </div>
+          <small>结果来自请求开始时的节点配置快照 · {{ new Date(dnsResults[node.id].tested_at).toLocaleString() }}</small>
+        </section>
         <div v-if="diagnosticError(node)" class="node-error" aria-live="polite">{{ diagnosticError(node) }}</div>
 
         <footer class="node-card-actions">
@@ -147,7 +171,7 @@ function runAction(node, action) {
           <button class="button ghost compact" type="button" :disabled="busy.has(node.id)" :aria-busy="busy.has(node.id)" @click="runAction(node, 'diagnose')">端到端诊断</button>
           <div class="node-menu" @click.stop @keydown.esc.prevent.stop="menuOpen = ''">
             <button class="button ghost compact node-more" type="button" aria-haspopup="menu" :aria-expanded="menuOpen === node.id" @click.stop="toggleMenu(node.id)">更多</button>
-            <div v-if="menuOpen === node.id" class="node-menu-panel" role="menu"><button class="button ghost" type="button" role="menuitem" :disabled="busy.has(node.id)" @click="runAction(node, 'copy')">复制 Surge 节点行</button></div>
+            <div v-if="menuOpen === node.id" class="node-menu-panel" role="menu"><label class="dns-bypass"><input v-model="dnsBypass[node.id]" type="checkbox" :disabled="busy.has(node.id)">绕过应用 DNS 缓存</label><button class="button ghost" type="button" role="menuitem" :disabled="busy.has(node.id)" @click="runAction(node, 'dns')">节点 DNS 诊断</button><button class="button ghost" type="button" role="menuitem" :disabled="busy.has(node.id)" @click="runAction(node, 'copy')">复制 Surge 节点行</button></div>
           </div>
         </footer>
       </article>
@@ -159,6 +183,16 @@ function runAction(node, action) {
 </template>
 
 <style scoped>
+.dns-diagnostic{display:block;min-width:0;overflow-wrap:anywhere}
+.dns-diagnostic .node-diagnostic-result{margin-top:8px}
+.dns-diagnostic header{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.dns-diagnostic header button{margin-left:auto}
+.dns-diagnostic dl{display:grid;grid-template-columns:90px minmax(0,1fr);gap:7px;margin:10px 0}
+.dns-diagnostic dt,.dns-diagnostic small{color:var(--muted)}
+.dns-diagnostic dd{margin:0;min-width:0}
+.dns-diagnostic small{display:block;margin-top:4px}
+.dns-bypass{display:flex;align-items:center;gap:6px;padding:8px;font-size:12px;white-space:nowrap}
+
 .node-view-switch{margin-left:auto;display:flex;gap:3px;padding:3px;border:1px solid var(--line);border-radius:9px;background:var(--bg)}
 .node-view-switch button{display:flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--muted);font-size:12px;white-space:nowrap}
 .node-view-switch button:hover{color:var(--text)}

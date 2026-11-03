@@ -79,6 +79,7 @@ func New(application *gateway.App) (*Server, error) {
 	mux.HandleFunc("GET /api/nodes", server.authorize(server.nodes))
 	mux.HandleFunc("GET /api/nodes/{id}/runtime", server.authorize(server.nodeRuntime))
 	mux.HandleFunc("POST /api/nodes/{id}/healthcheck", server.authorize(server.nodeHealthCheck))
+	mux.HandleFunc("POST /api/nodes/{id}/dns-diagnose", server.authorize(server.nodeDNSDiagnose))
 	mux.HandleFunc("POST /api/nodes/{id}/diagnose", server.authorize(server.nodeDiagnose))
 	mux.HandleFunc("GET /api/nodes/{id}/surge-line", server.authorize(server.nodeSurgeLine))
 	mux.HandleFunc("GET /api/events", server.authorize(server.events))
@@ -716,6 +717,30 @@ func (s *Server) nodeSurgeLine(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"line": line})
+}
+
+func (s *Server) nodeDNSDiagnose(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "cross-origin mutation is not allowed")
+		return
+	}
+	var body struct {
+		BypassCache bool `json:"bypass_cache"`
+	}
+	if err := decodeJSON(http.MaxBytesReader(w, r.Body, 1024), &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid DNS diagnostic request")
+		return
+	}
+	result, err := s.app.DiagnoseNodeDNS(r.Context(), r.PathValue("id"), body.BypassCache)
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, M.ErrDiagnosticNodeNotFound) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, s.publicError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) nodeDiagnose(w http.ResponseWriter, r *http.Request) {
